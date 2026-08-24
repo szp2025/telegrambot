@@ -114,6 +114,7 @@ def save_active_ads_to_file():
 active_ads_storage = load_active_ads()
 
 class UltimateSecurityCore:
+
     def __init__(self):
         self.network_core_blacklist = NETWORK_CORE_BLACKLIST
         self.ghost_mode_domains = GHOST_MODE_DOMAINS
@@ -123,7 +124,16 @@ class UltimateSecurityCore:
     def sanitize_input(text: str) -> str:
         if not text:
             return ""
-        dangerous_patterns = ["eval(", "exec(", "import os", "subprocess", "__import__", ";--", "DROP TABLE", "UNION SELECT"]
+        dangerous_patterns = [
+            "eval(",
+            "exec(",
+            "import os",
+            "subprocess",
+            "__import__",
+            ";--",
+            "DROP TABLE",
+            "UNION SELECT",
+        ]
         for pattern in dangerous_patterns:
             if pattern.lower() in text.lower():
                 return "[BLOCKED_INJECTION_ATTEMPT]"
