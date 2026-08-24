@@ -10,6 +10,7 @@ from bs4 import BeautifulSoup
 from PIL import Image
 import telebot
 from telebot import types
+from config import ADMIN_CHAT_ID, SAFEPAL_WALLETS, TOKEN
 
 # --- ЦВЕТНОЕ И ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ДЛЯ TERMUX ---
 class TermuxColorFormatter(logging.Formatter):
