@@ -124,16 +124,75 @@ class UltimateSecurityCore:
     def sanitize_input(text: str) -> str:
         if not text:
             return ""
-        dangerous_patterns = [
+            
+            dangerous_patterns = [
+            # === Выполнение кода и обход песочницы Python (Sandbox Escapes) ===
             "eval(",
             "exec(",
-            "import os",
-            "subprocess",
+            "compile(",
             "__import__",
+            "getattr(",
+            "setattr(",
+            "delattr(",
+            "globals(",
+            "locals(",
+            "vars(",
+            "input(",
+            "breakpoint(",
+            
+            # === Магические атрибуты и рефлексия (для доступа к системным модулям через цепочки классов) ===
+            "__subclasses__",
+            "__bases__",
+            "__mro__",
+            "__globals__",
+            "__code__",
+            "__builtins__",
+            "__init__",
+            "__class__",
+            "__dict__",
+            "__closure__",
+            
+            # === Опасные модули и системные вызовы ОС ===
+            "import os",
+            "import sys",
+            "import subprocess",
+            "import pty",
+            "import socket",
+            "import ctypes",
+            "import pickle",
+            "import marshal",
+            "import urllib",
+            "import http",
+            "import requests",
+            "subprocess",
+            "os.system",
+            "os.popen",
+            "os.spawn",
+            "os.exec",
+            "shutil.rmtree",
+            "pty.spawn",
+            "ctypes.CDLL",
+            
+            # === SQL-инъекции (для защиты баз данных) ===
             ";--",
             "DROP TABLE",
+            "DROP DATABASE",
             "UNION SELECT",
+            "UNION ALL SELECT",
+            "OR 1=1",
+            "OR '1'='1",
+            "EXEC xp_",
+            "INFORMATION_SCHEMA",
+            "SLEEP(",
+            "BENCHMARK(",
+            
+            # === Межсайтовый скриптинг (XSS / Web-инъекции на случай веб-вставок) ===
+            "<script>",
+            "javascript:",
+            "onerror=",
+            "onload=",
         ]
+
         for pattern in dangerous_patterns:
             if pattern.lower() in text.lower():
                 return "[BLOCKED_INJECTION_ATTEMPT]"
