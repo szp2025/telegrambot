@@ -27,6 +27,67 @@ from config import (
     TOKEN,
 )
 
+class AdvancedSecurityGuard:
+    def __init__(self):
+        # Словарь для отслеживания частоты запросов пользователей (Анти-флуд): {chat_id: [timestamps]}
+        self.flood_storage = {}
+        self.flood_limit_count = 5  # Максимум сообщений
+        self.flood_time_window = 3.0  # За сколько секунд (секунды)
+        
+        # Черный список мошеннических паттернов
+        self.scam_patterns = [
+            r"seed[-_\s]*phrase", r"сид[-_\s]*фраз", r"private[-_\s]*key", 
+            r"приватн[ых|ой]\s*ключ", r"вериф[икация|уйте]\s*кошел", r"wallet[-_\s]*verif",
+            r"airdrops?", r"бесплатн\w*\s*токен\w*", r"клищ\s*по\sссылк"
+        ]
+        
+        # Шаблоны фишинговых / подозрительных ссылок
+        self.phishing_domains = ["bit.ly", "t.ly", "cutt.ly", "tinyurl.com", "grabify.link"]
+
+    # 1. Триггер «Анти-Флуд / Rate Limiting»
+    def check_flood(self, chat_id: int) -> bool:
+        now = time.time()
+        if chat_id not in self.flood_storage:
+            self.flood_storage[chat_id] = []
+        
+        # Очищаем старые таймстампы
+        self.flood_storage[chat_id] = [t for t in self.flood_storage[chat_id] if now - t < self.flood_time_window]
+        self.flood_storage[chat_id].append(now)
+        
+        if len(self.flood_storage[chat_id]) > self.flood_limit_count:
+            return True  # Флуд обнаружен!
+        return False
+
+    # 2. Триггер обнаружения фишинговых и вредоносных ссылок
+    def detect_phishing(self, text: str) -> bool:
+        text_lower = text.lower()
+        for domain in self.phishing_domains:
+            if domain in text_lower:
+                return True
+        # Проверка на кириллические омоглифы в ссылках (например, tеlegram с русской е)
+        if re.search(r"https?://[^\s]*[а-яА-ЯёЁ][^\s]*", text):
+            return True
+        return False
+
+    # 3. Триггер проверки «Инъекций» (Расширенный санитизатор)
+    def sanitize_and_check_injection(self, text: str) -> tuple[bool, str]:
+        dangerous_patterns = [r"rm\s*-rf", r";", r"&&", r"\|\s*sh", r"DROP\s+TABLE", r"SELECT\s+.*FROM", r"<script>"]
+        for pattern in dangerous_patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                return True, "[BLOCKED_INJECTION_ATTEMPT]"
+        return False, text
+
+    # 5. Триггер «Черный список по паттернам мошенничества»
+    def detect_scam(self, text: str) -> bool:
+        text_lower = text.lower()
+        for pattern in self.scam_patterns:
+            if re.search(pattern, text_lower):
+                return True
+        return False
+
+# Инициализируем защитный модуль
+sec_guard = AdvancedSecurityGuard()
+
 # --- ЦВЕТНОЕ И ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ДЛЯ TERMUX ---
 class TermuxColorFormatter(logging.Formatter):
     def format(self, record):
