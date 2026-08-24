@@ -30,7 +30,7 @@ from config import (
 class TermuxColorFormatter(logging.Formatter):
     def format(self, record):
         log_message = super().format(record)
-       color = LOG_COLORS.get(record.levelname, LOG_COLORS["RESET"])
+        color = LOG_COLORS.get(record.levelname, LOG_COLORS["RESET"])
         return f"{color}[🛡️ ZERO-LAG SECURITY CORE] {log_message}{self.COLORS['RESET']}"
 
 handler = logging.StreamHandler()
