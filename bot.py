@@ -115,9 +115,9 @@ active_ads_storage = load_active_ads()
 
 class UltimateSecurityCore:
     def __init__(self):
-    self.network_core_blacklist = NETWORK_CORE_BLACKLIST
-    self.ghost_mode_domains = GHOST_MODE_DOMAINS
-    self.scam_username_markers = SCAM_USERNAME_MARKERS
+        self.network_core_blacklist = NETWORK_CORE_BLACKLIST
+        self.ghost_mode_domains = GHOST_MODE_DOMAINS
+        self.scam_username_markers = SCAM_USERNAME_MARKERS
 
     @staticmethod
     def sanitize_input(text: str) -> str:
