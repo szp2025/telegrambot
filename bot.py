@@ -259,7 +259,7 @@ class MiningComboManager:
                     is_searching = True
                     break
                     
-img_url = None
+            img_url = None
             if not is_searching:
                 images = content.find_all("img")
                 
