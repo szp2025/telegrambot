@@ -41,36 +41,27 @@ logger.addHandler(handler)
 
 bot = telebot.TeleBot(TOKEN, threaded=True)
 
-# --- БЕЗОПАСНАЯ РЕГИСТРАЦИЯ КОМАНД С ЗАЩИТОЙ ОТ ТАЙМАУТОВ И СЕТЕВЫХ СБОЕВ ---
+# --- БЕЗОПАСНАЯ РЕГИСТРАЦИЯ КОМАНД ---
 try:
     print("[🛡️ SECURITY CORE] Регистрация команд в Telegram API...")
-    bot.set_my_commands(
-        [
-            types.BotCommand("start", "Главное меню и проверка"),
-            types.BotCommand("profile", "👤 Личный профиль и статы игр"),
-            types.BotCommand("all_combo", "Проверить комбо-карты"),
-            types.BotCommand("miners", "📱 Телефонные майнеры"),
-            types.BotCommand("faucets", "🚰 Крипто-краны"),
-            types.BotCommand("calc", "Крипто-конвертер"),
-            types.BotCommand("farm", "Статус защищенной фермы"),
-            types.BotCommand("timers", "⏰ Персональные таймеры сбора"),
-            types.BotCommand("reviews", "💬 Отзывы пользователей"),
-            types.BotCommand("ads", "📢 Реклама и монетизация"),
-            types.BotCommand("proofs", "Скрины выплат"),
-        ],
-        timeout=10,
-    )
+    bot.set_my_commands([
+        types.BotCommand("start", "Главное меню и проверка"),
+        types.BotCommand("profile", "👤 Личный профиль и статы игр"),
+        types.BotCommand("all_combo", "Проверить комбо-карты"),
+        types.BotCommand("miners", "📱 Телефонные майнеры"),
+        types.BotCommand("faucets", "🚰 Крипто-краны"),
+        types.BotCommand("calc", "Крипто-конвертер"),
+        types.BotCommand("farm", "Статус защищенной фермы"),
+        types.BotCommand("timers", "⏰ Персональные таймеры сбора"),
+        types.BotCommand("reviews", "💬 Отзывы пользователей"),
+        types.BotCommand("ads", "📢 Реклама и монетизация"),
+        types.BotCommand("proofs", "Скрины выплат")
+    ])
     print("[🛡️ SECURITY CORE] Команды успешно зарегистрированы.")
 except Exception as e:
-    print(
-        f"[⚠️ WARNING] Не удалось зарегистрировать команды (проблема с сетью"
-        f" или таймаут): {e}"
-    )
-    print(
-        "[🛡️ SECURITY CORE] Бот продолжает запуск в автономном режиме"
-        " обхода..."
-    )
-
+    print(f"[⚠️ WARNING] Команды не зарегистрированы (проблема сети/таймаут): {e}")
+    print("[🛡️ SECURITY CORE] Бот продолжает запуск в автономном режиме обхода...")
+    
 # Хранилища данных
 user_game_timers = {}
 cloud_proofs = []
