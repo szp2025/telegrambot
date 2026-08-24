@@ -264,13 +264,23 @@ class MiningComboManager:
                     
             img_url = None
             if not is_searching:
-                # 1. Ищем строго по классу или alt ежедневного комбо
-                target_img = soup.find("img", {"class": "daily-combo-image"}) or soup.find("img", {"alt": "Countdown Image"})
+                # Специальный поиск для Doodle Jump или стандартных классов
+                if game_key == "doodle-jump":
+                    target_img = soup.find("img", {"class": "wp-image-1"}) or soup.find("div", {"class": "entry-content"}).find("img") if soup.find("div", {"class": "entry-content"}) else None
+                    if not target_img:
+                        # Берем первую подходящую картинку из контента статьи
+                        images = content.find_all("img")
+                        for img in images:
+                            src = img.get("data-lazy-src") or img.get("src") or img.get("data-src")
+                            if src and "wp-content/uploads" in src.lower():
+                                img_url = src if not src.startswith("/") else f"{self.base_url}{src}"
+                                break
                 
-                if target_img:
-                    img_url = target_img.get("data-lazy-src") or target_img.get("src") or target_img.get("data-src")
+                if not img_url:
+                    target_img = soup.find("img", {"class": "daily-combo-image"}) or soup.find("img", {"alt": "Countdown Image"})
+                    if target_img:
+                        img_url = target_img.get("data-lazy-src") or target_img.get("src") or target_img.get("data-src")
                 
-                # 2. Если по классам не нашли, перебираем остальные, исключая обложки
                 if not img_url:
                     images = content.find_all("img")
                     valid_images = []
@@ -279,12 +289,10 @@ class MiningComboManager:
                         if src:
                             if src.startswith("/"):
                                 src = f"{self.base_url}{src}"
-                            
                             src_lower = src.lower()
                             skip_words = ["logo", "icon", "avatar", "cover", "header", "banner"]
                             if "wp-content/uploads" in src_lower and not any(x in src_lower for x in skip_words):
                                 valid_images.append(src)
-                                
                     if valid_images:
                         img_url = valid_images[0]
                         
