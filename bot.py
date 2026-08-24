@@ -258,19 +258,36 @@ class MiningComboManager:
                 if "searching for" in p.get_text(strip=True).lower():
                     is_searching = True
                     break
-            img_url = None
+                    
+img_url = None
             if not is_searching:
                 images = content.find_all("img")
-                valid_images = []
-                for img in images:
-                    src = img.get("src") or img.get("data-src")
-                    if src:
-                        if src.startswith("/"):
-                            src = f"{self.base_url}{src}"
-                        if "wp-content/uploads" in src.lower() and not any(x in src.lower() for x in ["logo", "icon", "avatar"]):
-                            valid_images.append(src)
-                if valid_images:
-                    img_url = valid_images[0]
+                
+                # 1. Сначала пробуем найти строго по классу или alt ежедневного комбо
+                target_img = soup.find("img", {"class": "daily-combo-image"}) or soup.find("img", {"alt": "Countdown Image"})
+                
+                if target_img:
+                    img_url = target_img.get("data-lazy-src") or target_img.get("src") or target_img.get("data-src")
+                
+                # 2. Если по классам не нашли, перебираем остальные, но отсеиваем обложки (cover) и иконки
+                if not img_url:
+                    valid_images = []
+                    for img in images:
+                        src = img.get("data-lazy-src") or img.get("src") or img.get("data-src")
+                        if src:
+                            if src.startswith("/"):
+                                src = f"{self.base_url}{src}"
+                            
+                            src_lower = src.lower()
+                            # Исключаем логотипы, иконки И ОБЛОЖКИ (cover)
+                            skip_words = ["logo", "icon", "avatar", "cover", "header", "banner"]
+                            if "wp-content/uploads" in src_lower and not any(x in src_lower for x in skip_words):
+                                valid_images.append(src)
+                                
+                    if valid_images:
+                        img_url = valid_images[0]
+
+            
             if is_searching:
                 return None, date_text
             return img_url, date_text
