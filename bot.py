@@ -751,6 +751,26 @@ def handle_text_all(message: types.Message):
         send_message_direct(chat_id, "✅ **Спасибо за ваш отзыв!**", reply_markup=get_reviews_keyboard(), parse_mode="Markdown")
         return
 
+    if chat_id in user_input_states and user_input_states[chat_id].get("step") == "waiting_review_text":
+        user_input_states.pop(chat_id, None)
+        
+        # --- НОВАЯ ПРОВЕРКА АНТИСПАМА И БЕЗОПАСНОСТИ ---
+        clean_review_text = security_core.sanitize_input(raw_text)
+        is_threat, security_msg = security_core.analyze_traffic(raw_text)
+        
+        if is_threat or clean_review_text == "[BLOCKED_INJECTION_ATTEMPT]" or "http://" in raw_text.lower() or "https://" in raw_text.lower() or "t.me/" in raw_text.lower():
+            send_message_direct(chat_id, "⚠️ **Ваш отзыв отклонен системой безопасности!** Обнаружены запрещенные ссылки или потенциальная угроза спама.", parse_mode="Markdown")
+            return
+        # -----------------------------------------------
+
+        try: user_name = bot.get_chat(chat_id).first_name or "Аноним"
+        except: user_name = "Аноним"
+        
+        user_reviews_storage.append({"user": user_name, "text": clean_review_text, "date": time.strftime("%d.%m.%Y %H:%M")})
+        send_message_direct(ADMIN_CHAT_ID, f"💬 **Новый отзыв от {user_name}:**\n\n`{clean_review_text}`", parse_mode="Markdown")
+        send_message_direct(chat_id, "✅ **Спасибо за ваш отзыв!**", reply_markup=get_reviews_keyboard(), parse_mode="Markdown")
+        return
+
     if chat_id in user_input_states and user_input_states[chat_id].get("step") == "waiting_ad_content":
         order_data = user_input_states.pop(chat_id, None)
         tariff = order_data["tariff"]
@@ -814,12 +834,34 @@ def handle_text_all(message: types.Message):
         try:
             amt = float(text.replace(",", "."))
             c_id = {"btc": "bitcoin", "eth": "ethereum", "usdt": "tether", "gram": "the-open-network"}.get(state["crypto"], "bitcoin")
-            rate = requests.get(f"https://api.coingecko.com/api/v3/simple/price?ids={c_id}&vs_currencies={state['fiat']}", timeout=3).json().get(c_id, {}).get(state['fiat'], 0)
-            send_message_direct(chat_id, f"💎 **{amt} {state['crypto'].upper()}** = **{rate * amt:,.2f} {state['fiat'].upper()}**")
+            fiat = state['fiat']
+            
+            # Запрашиваем цену и изменение за 24 часа
+            url = f"https://api.coingecko.com/api/v3/simple/price?ids={c_id}&vs_currencies={fiat}&include_24hr_change=true"
+            res_data = requests.get(url, timeout=3).json().get(c_id, {})
+            
+            rate = res_data.get(fiat, 0)
+            change_24h = res_data.get(fiat + "_24h_change", 0)
+            
+            total_sum = rate * amt
+            
+            # Иконка и знак в зависимости от роста или падения
+            trend_icon = "🟢" if change_24h >= 0 else "🔴"
+            change_sign = "+" if change_24h > 0 else ""
+            
+            report_text = (
+                f"💎 **Крипто-конвертер [Zero-Lag]**\n\n"
+                f"🔹 Количество: **{amt} {state['crypto'].upper()}**\n"
+                f"💵 Стоимость: **{total_sum:,.2f} {fiat.upper()}**\n"
+                f"📈 Тренд за 24ч: {trend_icon} **{change_sign}{change_24h:.2f}%**"
+            )
+            
+            send_message_direct(chat_id, report_text, parse_mode="Markdown")
             user_calc_states.pop(chat_id, None)
             return
-        except:
-            send_message_direct(chat_id, "⚠️ Введите корректное число:")
+        except Exception as e:
+            logger.error(f"Ошибка конвертера: {e}")
+            send_message_direct(chat_id, "⚠️ Ошибка получения данных с API. Введите корректное число:")
             return
 
     send_message_direct(chat_id, "⚡ Отклик мгновенный.", reply_markup=get_main_keyboard())
