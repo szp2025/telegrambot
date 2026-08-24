@@ -41,6 +41,9 @@ class AdvancedSecurityGuard:
         # 6. Анти-Брутфорс
         self.brute_storage = {}
         
+        # 9. Анти-Дубликат (хранилище последних сообщений: {chat_id: (text, timestamp)})
+        self.last_messages = {}
+        
         # Черный список мошеннических паттернов
         self.scam_patterns = [
             r"seed[-_\s]*phrase", r"сид[-_\s]*фраз", r"private[-_\s]*key", 
@@ -117,7 +120,43 @@ class AdvancedSecurityGuard:
             return True
         return False
 
-# Инициализируем защитный модуль единожды
+    # 9. Триггер «Анти-Дубликат / Защита от повторной отправки»
+    def check_duplicate(self, chat_id: int, text: str) -> bool:
+        now = time.time()
+        if chat_id in self.last_messages:
+            last_text, last_time = self.last_messages[chat_id]
+            # Если текст идентичен и прошло меньше 1.5 секунд
+            if last_text == text and (now - last_time) < 1.5:
+                return True
+        self.last_messages[chat_id] = (text, now)
+        return False
+
+    # 10. Триггер «Детектор тяжелого спама / Лимит размера текста»
+    def check_payload_size(self, text: str, max_length: int = 1000) -> bool:
+        if len(text) > max_length:
+            return True
+        return False
+
+    # 11. Триггер «Проверка на пустые сообщения и Null-байты»
+    def check_null_bytes_and_empty(self, text: str) -> bool:
+        if "\x00" in text:
+            return True
+        if not text.strip():
+            return True
+        return False
+
+    # 12. Триггер «Контроль языковых аномалий (Смешивание кириллицы и латиницы в словах)»
+    def detect_mixed_charset(self, text: str) -> bool:
+        # Ищем слова, где вперемешку идут русские и английские буквы (омоглиф-атака)
+        words = text.split()
+        for word in words:
+            has_cyrillic = bool(re.search(r'[а-яА-ЯёЁ]', word))
+            has_latin = bool(re.search(r'[a-zA-Z]', word))
+            if has_cyrillic and has_latin:
+                return True
+        return False
+
+# Инициализируем защитный модуль
 sec_guard = AdvancedSecurityGuard()
 
 # --- ЦВЕТНОЕ И ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ДЛЯ TERMUX ---
