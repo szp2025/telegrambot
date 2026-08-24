@@ -27,12 +27,19 @@ from config import (
     TOKEN,
 )
 
+
+
+logger = logging.getLogger(__name__)
+
 class AdvancedSecurityGuard:
     def __init__(self):
-        # Словарь для отслеживания частоты запросов пользователей (Анти-флуд): {chat_id: [timestamps]}
+        # 1. Анти-Флуд (Rate Limiting)
         self.flood_storage = {}
-        self.flood_limit_count = 5  # Максимум сообщений
-        self.flood_time_window = 3.0  # За сколько секунд (секунды)
+        self.flood_limit_count = 5
+        self.flood_time_window = 3.0
+        
+        # 6. Анти-Брутфорс
+        self.brute_storage = {}
         
         # Черный список мошеннических паттернов
         self.scam_patterns = [
@@ -41,7 +48,7 @@ class AdvancedSecurityGuard:
             r"airdrops?", r"бесплатн\w*\s*токен\w*", r"клищ\s*по\sссылк"
         ]
         
-        # Шаблоны фишинговых / подозрительных ссылок
+        # Фишинговые домены
         self.phishing_domains = ["bit.ly", "t.ly", "cutt.ly", "tinyurl.com", "grabify.link"]
 
     # 1. Триггер «Анти-Флуд / Rate Limiting»
@@ -50,12 +57,11 @@ class AdvancedSecurityGuard:
         if chat_id not in self.flood_storage:
             self.flood_storage[chat_id] = []
         
-        # Очищаем старые таймстампы
         self.flood_storage[chat_id] = [t for t in self.flood_storage[chat_id] if now - t < self.flood_time_window]
         self.flood_storage[chat_id].append(now)
         
         if len(self.flood_storage[chat_id]) > self.flood_limit_count:
-            return True  # Флуд обнаружен!
+            return True
         return False
 
     # 2. Триггер обнаружения фишинговых и вредоносных ссылок
@@ -64,12 +70,11 @@ class AdvancedSecurityGuard:
         for domain in self.phishing_domains:
             if domain in text_lower:
                 return True
-        # Проверка на кириллические омоглифы в ссылках (например, tеlegram с русской е)
         if re.search(r"https?://[^\s]*[а-яА-ЯёЁ][^\s]*", text):
             return True
         return False
 
-    # 3. Триггер проверки «Инъекций» (Расширенный санитизатор)
+    # 3. Триггер проверки «Инъекций»
     def sanitize_and_check_injection(self, text: str) -> tuple[bool, str]:
         dangerous_patterns = [r"rm\s*-rf", r";", r"&&", r"\|\s*sh", r"DROP\s+TABLE", r"SELECT\s+.*FROM", r"<script>"]
         for pattern in dangerous_patterns:
@@ -85,7 +90,34 @@ class AdvancedSecurityGuard:
                 return True
         return False
 
-# Инициализируем защитный модуль
+    # 6. Триггер «Анти-Брутфорс / Защита от перебора команд»
+    def check_brute_force(self, chat_id: int) -> bool:
+        now = time.time()
+        if chat_id not in self.brute_storage:
+            self.brute_storage[chat_id] = []
+            
+        self.brute_storage[chat_id] = [t for t in self.brute_storage[chat_id] if now - t < 10.0]
+        self.brute_storage[chat_id].append(now)
+        
+        if len(self.brute_storage[chat_id]) > 8:
+            return True
+        return False
+
+    # 7. Триггер обнаружения скрытых символов и RTL-атак
+    def detect_rtl_spoofing(self, text: str) -> bool:
+        rtl_chars = ["\u202e", "\u202a", "\u202b", "\u202d", "\u200b", "\u200e"]
+        for char in rtl_chars:
+            if char in text:
+                return True
+        return False
+
+    # 8. Ловушка для сканеров / Honeypot Trigger
+    def check_honeypot(self, data_str: str) -> bool:
+        if "honeypot_trap_marker" in data_str:
+            return True
+        return False
+
+# Инициализируем защитный модуль единожды
 sec_guard = AdvancedSecurityGuard()
 
 # --- ЦВЕТНОЕ И ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ДЛЯ TERMUX ---
