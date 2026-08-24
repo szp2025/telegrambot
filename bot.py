@@ -16,6 +16,9 @@ from config import (
     CRYPTO_FAUCETS_DATA,
     INDEPENDENT_FARMS_DATA,
     LOG_COLORS,
+    GHOST_MODE_DOMAINS,  # <-- Импортируем домены призрачного режима
+    NETWORK_CORE_BLACKLIST,  # <-- Импортируем черный список
+    SCAM_USERNAME_MARKERS,  # <-- Импортируем маркеры скам-юзернеймов
     PHONE_MINERS_DATA,
     SAFEPAL_WALLETS,
     TOKEN,
@@ -114,19 +117,9 @@ active_ads_storage = load_active_ads()
 
 class UltimateSecurityCore:
     def __init__(self):
-        self.network_core_blacklist = [
-            "free ton", "doubler", "x2 crypto", "1day profit", "invest 10 get", 
-            "drainer", "connect wallet to claim", "airdrop-connect", "fast-withdraw-bot", 
-            "t.me/fake", "wallet-rectify", "sync-wallet", "verify-metamask", "claim-rewards"
-        ]
-        self.ghost_mode_domains = [
-            ".xyz", ".cc", ".top", ".bi", ".cfd", ".ifo", ".lat", 
-            "free-", "bonus-", "airdrop-", "drain-", "phish", "connect-", "fix-"
-        ]
-        self.scam_username_markers = [
-            "support", "admin", "help", "manager", "security", "tech", 
-            "official_sup", "airdrop_bot", "wallet_fix", "service_bot"
-        ]
+    self.network_core_blacklist = NETWORK_CORE_BLACKLIST
+    self.ghost_mode_domains = GHOST_MODE_DOMAINS
+    self.scam_username_markers = SCAM_USERNAME_MARKERS
 
     @staticmethod
     def sanitize_input(text: str) -> str:
@@ -256,7 +249,7 @@ def get_reviews_keyboard():
 
 def get_ads_keyboard():
     keyboard = types.InlineKeyboardMarkup()
-    keyboard.row(types.InlineKeyboardButton(text="💰 Купить рекламу (SafePal)", callback_data="ads_buy"))
+    keyboard.row(types.InlineKeyboardButton(text="💰 Купить рекламу", callback_data="ads_buy"))
     keyboard.row(types.InlineKeyboardButton(text="📊 Статистика аудитории", callback_data="ads_stats"))
     return keyboard
 
