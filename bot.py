@@ -15,6 +15,7 @@ from config import (
     COMBO_GAMES_DATA,
     CRYPTO_FAUCETS_DATA,
     INDEPENDENT_FARMS_DATA,
+    LOG_COLORS,
     PHONE_MINERS_DATA,
     SAFEPAL_WALLETS,
     TOKEN,
@@ -22,16 +23,9 @@ from config import (
 
 # --- ЦВЕТНОЕ И ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ДЛЯ TERMUX ---
 class TermuxColorFormatter(logging.Formatter):
-    COLORS = {
-        'INFO': '\033[92m',    # Зеленый
-        'WARNING': '\033[93m', # Желтый
-        'ERROR': '\033[91m',   # Красный
-        'RESET': '\033[0m'
-    }
-
     def format(self, record):
         log_message = super().format(record)
-        color = self.COLORS.get(record.levelname, self.COLORS['RESET'])
+       color = LOG_COLORS.get(record.levelname, LOG_COLORS["RESET"])
         return f"{color}[🛡️ ZERO-LAG SECURITY CORE] {log_message}{self.COLORS['RESET']}"
 
 handler = logging.StreamHandler()
