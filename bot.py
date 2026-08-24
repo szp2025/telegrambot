@@ -10,6 +10,7 @@ from bs4 import BeautifulSoup
 from PIL import Image
 import telebot
 from telebot import types
+from datetime import datetime
 from config import (
     ADMIN_CHAT_ID,
     COMBO_GAMES_DATA,
@@ -250,12 +251,28 @@ class MiningComboManager:
             content = soup.find("article") or soup.find("main") or soup
             
             date_text = "Дата не указана"
+
+            
             for p in content.find_all(["p", "span", "div", "time", "strong", "b"]):
                 txt = p.get_text(strip=True)
                 if ("August" in txt or "July" in txt or "September" in txt or "2026" in txt) and len(txt) < 40:
                     date_text = txt
                     break
-                    
+            # Затем получаем текущую реальную дату (день, месяц, год)
+            now = datetime.now()
+            current_day = now.strftime("%d")
+            current_month = now.strftime("%B")
+            current_year = now.strftime("%Y")
+            
+            # Проверяем, совпадает ли дата на сайте с сегодняшней
+            is_today = current_day in date_text and current_month in date_text
+            
+            date_status_icon = "📅"
+            if not is_today:
+                # Если дата отличается, добавляем предупреждение в текст даты
+                date_text = f"{date_text} ⚠️ (Рассинхрон с системной датой: {current_day} {current_month})"
+                logger.warning(f"⚠️ Внимание для {game_key}: дата на сайте ({date_text}) отличается от текущей системной ({current_day} {current_month} {current_year})!")
+                
             is_searching = False
             for p in content.find_all(["p", "div", "span"], limit=5):
                 if "searching for" in p.get_text(strip=True).lower():
