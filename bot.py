@@ -56,26 +56,6 @@ advanced_captchas = {}
 user_reviews_storage = [] 
 pending_ad_orders = {} 
 
-# --- ВАШИ РЕКВИЗИТЫ SAFEPAL (Укажите свои актуальные адреса) ---
-SAFEPAL_WALLETS = {
-    "usdt": {
-        "name": "USDT (TRC20)",
-        "address": "TRON_WALLET_ADDRESS_PLACEHOLDER_HERE"
-    },
-    "gram": {
-        "name": "GRAM / TON",
-        "address": "TON_WALLET_ADDRESS_PLACEHOLDER_HERE"
-    },
-    "btc": {
-        "name": "Bitcoin (BTC)",
-        "address": "BTC_WALLET_ADDRESS_PLACEHOLDER_HERE"
-    },
-    "tron": {
-        "name": "Tron (TRX)",
-        "address": "TRON_WALLET_ADDRESS_PLACEHOLDER_HERE"
-    }
-}
-
 # --- ФАЙЛОВОЕ СОХРАНЕНИЕ ВЕРИФИКАЦИИ И АКТИВНОЙ РЕКЛАМЫ ---
 VERIFIED_FILE = "verified_users.txt"
 ACTIVE_ADS_FILE = "active_ads.txt"
