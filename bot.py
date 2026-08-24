@@ -41,19 +41,27 @@ logger.addHandler(handler)
 
 bot = telebot.TeleBot(TOKEN, threaded=True)
 
-bot.set_my_commands([
-    types.BotCommand("start", "Главное меню и проверка"),
-    types.BotCommand("profile", "👤 Личный профиль и статы игр"),
-    types.BotCommand("all_combo", "Проверить комбо-карты"),
-    types.BotCommand("miners", "📱 Телефонные майнеры"),
-    types.BotCommand("faucets", "🚰 Крипто-краны"),
-    types.BotCommand("calc", "Крипто-конвертер"),
-    types.BotCommand("farm", "Статус защищенной фермы"),
-    types.BotCommand("timers", "⏰ Персональные таймеры сбора"),
-    types.BotCommand("reviews", "💬 Отзывы пользователей"),
-    types.BotCommand("ads", "📢 Реклама и монетизация"),
-    types.BotCommand("proofs", "Скрины выплат")
-])
+# --- БЕЗОПАСНАЯ РЕГИСТРАЦИЯ КОМАНД С ЗАЩИТОЙ ОТ 429 ЛИМИТА ---
+try:
+    bot.set_my_commands([
+        types.BotCommand("start", "Главное меню и проверка"),
+        types.BotCommand("profile", "👤 Личный профиль и статы игр"),
+        types.BotCommand("all_combo", "Проверить комбо-карты"),
+        types.BotCommand("miners", "📱 Телефонные майнеры"),
+        types.BotCommand("faucets", "🚰 Крипто-краны"),
+        types.BotCommand("calc", "Крипто-конвертер"),
+        types.BotCommand("farm", "Статус защищенной фермы"),
+        types.BotCommand("timers", "⏰ Персональные таймеры сбора"),
+        types.BotCommand("reviews", "💬 Отзывы пользователей"),
+        types.BotCommand("ads", "📢 Реклама и монетизация"),
+        types.BotCommand("proofs", "Скрины выплат"),
+    ])
+    print("[🛡️ SECURITY CORE] Команды бота успешно зарегистрированы в Telegram.")
+except Exception as e:
+    print(
+        f"[⚠️ WARNING] Не удалось обновить список команд (лимит Telegram API"
+        f" 429): {e}"
+    )
 
 # Хранилища данных
 user_game_timers = {}
