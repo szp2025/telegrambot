@@ -20,6 +20,8 @@ from config import (
     NETWORK_CORE_BLACKLIST,  # <-- Импортируем черный список
     SCAM_USERNAME_MARKERS,  # <-- Импортируем маркеры скам-юзернеймов
     PHONE_MINERS_DATA,
+    VERIFIED_FILE,
+    ACTIVE_ADS_FILE,  # <-- Импортируем путь к файлу рекламы
     SAFEPAL_WALLETS,
     TOKEN,
 )
@@ -60,10 +62,6 @@ user_calc_states = {}
 advanced_captchas = {} 
 user_reviews_storage = [] 
 pending_ad_orders = {} 
-
-# --- ФАЙЛОВОЕ СОХРАНЕНИЕ ВЕРИФИКАЦИИ И АКТИВНОЙ РЕКЛАМЫ ---
-VERIFIED_FILE = "verified_users.txt"
-ACTIVE_ADS_FILE = "active_ads.txt"
 
 def load_verified_users():
     users = set()
