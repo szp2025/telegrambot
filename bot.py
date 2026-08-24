@@ -237,7 +237,7 @@ class MiningComboManager:
         for key in self.found_today:
             self.found_today[key] = False
 
-    def fetch_combo(self, game_key: str):
+def fetch_combo(self, game_key: str):
         if game_key not in self.combo_games:
             return None, "Игра не найдена"
         try:
@@ -245,14 +245,17 @@ class MiningComboManager:
             res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
             if res.status_code != 200:
                 return None, "Ошибка доступа"
+                
             soup = BeautifulSoup(res.text, "html.parser")
             content = soup.find("article") or soup.find("main") or soup
+            
             date_text = "Дата не указана"
             for p in content.find_all(["p", "span", "div", "time", "strong", "b"]):
                 txt = p.get_text(strip=True)
                 if ("August" in txt or "July" in txt or "September" in txt or "2026" in txt) and len(txt) < 40:
                     date_text = txt
                     break
+                    
             is_searching = False
             for p in content.find_all(["p", "div", "span"], limit=5):
                 if "searching for" in p.get_text(strip=True).lower():
@@ -261,16 +264,15 @@ class MiningComboManager:
                     
             img_url = None
             if not is_searching:
-                images = content.find_all("img")
-                
-                # 1. Сначала пробуем найти строго по классу или alt ежедневного комбо
+                # 1. Ищем строго по классу или alt ежедневного комбо
                 target_img = soup.find("img", {"class": "daily-combo-image"}) or soup.find("img", {"alt": "Countdown Image"})
                 
                 if target_img:
                     img_url = target_img.get("data-lazy-src") or target_img.get("src") or target_img.get("data-src")
                 
-                # 2. Если по классам не нашли, перебираем остальные, но отсеиваем обложки (cover) и иконки
+                # 2. Если по классам не нашли, перебираем остальные, исключая обложки
                 if not img_url:
+                    images = content.find_all("img")
                     valid_images = []
                     for img in images:
                         src = img.get("data-lazy-src") or img.get("src") or img.get("data-src")
@@ -279,38 +281,22 @@ class MiningComboManager:
                                 src = f"{self.base_url}{src}"
                             
                             src_lower = src.lower()
-                            # Исключаем логотипы, иконки И ОБЛОЖКИ (cover)
                             skip_words = ["logo", "icon", "avatar", "cover", "header", "banner"]
                             if "wp-content/uploads" in src_lower and not any(x in src_lower for x in skip_words):
                                 valid_images.append(src)
                                 
                     if valid_images:
                         img_url = valid_images[0]
-
-            
+                        
             if is_searching:
                 return None, date_text
+                
             return img_url, date_text
+            
         except Exception as e:
             logger.error(f"Ошибка при парсинге {game_key}: {e}")
+            
         return None, "Ошибка парсинга"
-
-    def resize_img(self, url: str, game_key: str = ""):
-        try:
-            res = requests.get(url, timeout=5)
-            if res.status_code == 200:
-                img = Image.open(io.BytesIO(res.content))
-                max_width = 200 if game_key == "grow-tea" else 600
-                if img.width > max_width:
-                    w_percent = (max_width / float(img.width))
-                    h_size = int(float(img.height) * float(w_percent))
-                    img = img.resize((max_width, h_size), Image.Resampling.LANCZOS)
-                out = io.BytesIO()
-                img.convert("RGB").save(out, format="JPEG", quality=85)
-                return out.getvalue()
-        except Exception as e:
-            logger.error(f"Ошибка изменения размера: {e}")
-        return None
 
 manager = MiningComboManager()
 
