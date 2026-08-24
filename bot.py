@@ -544,15 +544,55 @@ def show_user_profile(chat_id):
 
 def daily_auto_checker():
     last_reset_day = None
+    # Флаг для принудительного запуска проверки сразу при старте бота
+    run_check_now = True 
+
     while True:
         now_time = time.time()
         now_struct = time.localtime(now_time)
         current_day = now_struct.tm_mday
+        current_hour = now_struct.tm_hour
+
+        # Сброс статусов в новый день
         if last_reset_day != current_day:
             manager.reset_daily_status()
             last_reset_day = current_day
-        
-        # Проверка и обновление игровых таймеров
+            run_check_now = True  # Разрешаем внеплановый запуск при смене дня, если нужно
+
+        # Условия запуска проверки: либо сразу при старте (run_check_now), либо наступило 9:00 или позже
+        # И проверяем, остались ли игры, по которым сегодня еще не нашли картинку
+        has_unfound_games = any(not found for found in manager.found_today.values())
+
+        if (run_check_now or current_hour >= 9) and has_unfound_games:
+            logger.info("🛡️ [AUTO-CHECKER] Запуск проверки комбо-картинок...")
+            
+            for key, info in manager.combo_games.items():
+                # Если на сегодня картинка для этой игры уже найдена, пропускаем её
+                if manager.found_today.get(key, False):
+                    continue
+
+                try:
+                    img_url, date_text = manager.fetch_combo(key)
+                    if img_url:
+                        img_bytes = manager.resize_img(img_url, game_key=key)
+                        if img_bytes:
+                            # Отмечаем, что на сегодня картинка найдена
+                            manager.found_today[key] = True
+                            logger.info(f"✅ [AUTO-CHECKER] Картинка для {key} успешно найдена и зафиксирована!")
+                            
+                            # Отправляем результат администратору (или в чат с админом)
+                            caption = f"🎯 **[Авто-комбо] {info['name']}**\n📅 `{date_text}`"
+                            try:
+                                bot.send_photo(ADMIN_CHAT_ID, photo=img_bytes, caption=caption[:1024], parse_mode="Markdown")
+                            except Exception as e:
+                                logger.error(f"Ошибка отправки авто-фото администратору: {e}")
+                except Exception as e:
+                    logger.error(f"Ошибка авто-проверки игры {key}: {e}")
+
+            # После первой попытки сбрасываем флаг старта, чтобы дальше работать по расписанию
+            run_check_now = False
+
+        # Проверка и обновление игровых таймеров пользователей
         try:
             for chat_id, timers in list(user_game_timers.items()):
                 for game_key, t_data in list(timers.items()):
@@ -589,8 +629,9 @@ def daily_auto_checker():
         except Exception as e:
             logger.error(f"Ошибка проверки рекламных таймеров: {e}")
 
-        time.sleep(60)
-
+        # Пауза 10 минут (600 секунд) перед следующим циклом опроса
+        time.sleep(600)
+        
 def generate_advanced_captcha(chat_id):
     a = random.randint(2, 9)
     b = random.randint(2, 9)
