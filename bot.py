@@ -237,7 +237,7 @@ class MiningComboManager:
         for key in self.found_today:
             self.found_today[key] = False
 
-def fetch_combo(self, game_key: str):
+    def fetch_combo(self, game_key: str):
         if game_key not in self.combo_games:
             return None, "Игра не найдена"
         try:
