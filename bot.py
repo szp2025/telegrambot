@@ -32,9 +32,6 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 logger.addHandler(handler)
 
-TOKEN = "8978887175:AAEz47CxdVBOsOLKu2s4cKxbpfCbf8-5ufU"
-ADMIN_CHAT_ID = 5290309079
-
 bot = telebot.TeleBot(TOKEN, threaded=True)
 
 bot.set_my_commands([
