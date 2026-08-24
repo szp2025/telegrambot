@@ -10,7 +10,15 @@ from bs4 import BeautifulSoup
 from PIL import Image
 import telebot
 from telebot import types
-from config import ADMIN_CHAT_ID, SAFEPAL_WALLETS, TOKEN
+from config import (
+    ADMIN_CHAT_ID,
+    COMBO_GAMES_DATA,
+    CRYPTO_FAUCETS_DATA,
+    INDEPENDENT_FARMS_DATA,
+    PHONE_MINERS_DATA,
+    SAFEPAL_WALLETS,
+    TOKEN,
+)
 
 # --- ЦВЕТНОЕ И ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ДЛЯ TERMUX ---
 class TermuxColorFormatter(logging.Formatter):
@@ -158,25 +166,10 @@ security_core = UltimateSecurityCore()
 class MiningComboManager:
     def __init__(self):
         self.base_url = "https://miningcombo.com"
-        self.combo_games = {
-            "doodle-jump": {"name": "🟡 Doodle Jump", "path": "/doodle-jump/", "ref_link_1": "https://t.me/DoodlePlayBot/app?startapp=DJ2FHPOLZ", "ref_link_2": "https://t.me/DoodlePlayBot/app?startapp=DJ2FHPOLZ", "strategy": "🟡 Стратегия Doodle Jump."},
-            "golden-miner": {"name": "⛏️ Golden Miner", "path": "/golden-miner/", "ref_link_1": "https://t.me/GoldenMinerBot/app?startapp=ref_FD7F4601", "ref_link_2": "https://t.me/GoldenMinerBot/app?startapp=ref_FD7F4601", "strategy": "⛏️ Стратегия Golden Miner."},
-            "grow-tea": {"name": "🌿 Grow Tea", "path": "/grow-tea/", "ref_link_1": "https://t.me/GrowTeaBot/app?startapp=5290309079", "ref_link_2": "https://t.me/GrowTeaBot/app?startapp=5290309079", "strategy": "🌿 Стратегия Grow Tea."},
-            "signal-2193": {"name": "📡 Signal 2193", "path": "/signal-2193/", "ref_link_1": "https://t.me/signal2193bot/app?startapp=ref_FD7F4601", "ref_link_2": "https://t.me/signal2193bot/app?startapp=ref_FD7F4601", "strategy": "📡 Стратегия Signal 2193."},
-            "meme-mining": {"name": "🃏 Meme Mining", "path": "/meme-mining-3/", "ref_link_1": "https://t.me/MiningComboBot", "ref_link_2": "https://t.me/MiningComboBot", "strategy": "🃏 Стратегия Meme Mining."}
-        }
-        self.independent_farms = {
-            "jacks-farm": {"name": "👨‍🌾 Jack's Farm", "ref_link_1": "https://t.me/JacksFarm_bot", "ref_link_2": "https://t.me/JacksFarm_bot", "strategy": "👨‍🌾 Стратегия Jack's Farm."},
-            "honey-farm": {"name": "🍯 Honey Farm", "ref_link_1": "https://t.me/Honey_FarmBot?start=14604", "ref_link_2": "https://t.me/Honey_FarmBot?start=14604", "strategy": "🍯 Стратегия Honey Farm."},
-            "birds-empire": {"name": "🦅 Bird's Empire", "ref_link_1": "https://t.me/BirdsEmpireBot?start=2093638", "ref_link_2": "https://t.me/BirdsEmpireBot?start=2093638", "strategy": "🦅 Стратегия Bird's Empire."}
-        }
-        self.phone_miners = {
-            "cloudmine": {"name": "⚡ Cloud Mine Crypto", "ref_link_1": "https://cloudminecrypto.com/?invite_code=d7OmYqvR4G4q5nz2", "ref_link_2": "https://cloudminecrypto.com/?invite_code=d7OmYqvR4G4q5nz2", "play_market": "https://cloudminecrypto.com/?invite_code=d7OmYqvR4G4q5nz2", "code": "d7OmYqvR4G4q5nz2", "description": "📈 Майнинг."},
-            "hashflow": {"name": "⚡ Hashflow", "ref_link_1": "https://hashflow.cc/?ref=8621", "ref_link_2": "https://hashflow.cc/?ref=8621", "play_market": "https://hashflow.cc/?ref=8621", "code": "8621", "description": "🌐 Децентрализованная платформа."}
-        }
-        self.crypto_faucets = {
-            "firefaucet": {"name": "🔥 Fire Faucet", "ref_link_1": "https://firefaucet.win/ref/661552", "ref_link_2": "https://firefaucet.win/ref/661552", "description": "🎁 Авто-кран."}
-        }
+        self.combo_games = COMBO_GAMES_DATA
+        self.independent_farms = INDEPENDENT_FARMS_DATA
+        self.phone_miners = PHONE_MINERS_DATA
+        self.crypto_faucets = CRYPTO_FAUCETS_DATA
         self.found_today = {key: False for key in self.combo_games}
 
     def reset_daily_status(self):
