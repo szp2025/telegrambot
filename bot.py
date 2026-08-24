@@ -298,6 +298,22 @@ class MiningComboManager:
             
         return None, "Ошибка парсинга"
 
+    def resize_img(self, url: str, game_key: str = ""):
+        try:
+            res = requests.get(url, timeout=5)
+            if res.status_code == 200:
+                img = Image.open(io.BytesIO(res.content))
+                max_width = 200 if game_key == "grow-tea" else 600
+                if img.width > max_width:
+                    w_percent = (max_width / float(img.width))
+                    h_size = int(float(img.height) * float(w_percent))
+                    img = img.resize((max_width, h_size), Image.Resampling.LANCZOS)
+                out = io.BytesIO()
+                img.convert("RGB").save(out, format="JPEG", quality=85)
+                return out.getvalue()
+        except Exception as e:
+            logger.error(f"Ошибка изменения размера: {e}")
+        return None
 manager = MiningComboManager()
 
 def get_main_keyboard():
