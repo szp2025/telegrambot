@@ -31,7 +31,7 @@ class TermuxColorFormatter(logging.Formatter):
     def format(self, record):
         log_message = super().format(record)
         color = LOG_COLORS.get(record.levelname, LOG_COLORS["RESET"])
-        return f"{color}[🛡️ ZERO-LAG SECURITY CORE] {log_message}{self.COLORS['RESET']}"
+        return f"{color}[🛡️ ZERO-LAG SECURITY CORE] {log_message}{LOG_COLORS['RESET']}"
 
 handler = logging.StreamHandler()
 handler.setFormatter(TermuxColorFormatter("%(asctime)s | %(levelname)s | %(message)s", datefmt="%H:%M:%S"))
