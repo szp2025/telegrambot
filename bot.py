@@ -23,6 +23,9 @@ from config import (
     PHONE_MINERS_DATA,
     VERIFIED_FILE,
     ACTIVE_ADS_FILE,  # <-- Импортируем путь к файлу рекламы
+    SCAM_PATTERNS,
+    BOT_COMMANDS,
+    PHISHING_DOMAINS
 )
 
 from private_config import (
@@ -47,14 +50,9 @@ class AdvancedSecurityGuard:
         self.last_messages = {}
         
         # Черный список мошеннических паттернов
-        self.scam_patterns = [
-            r"seed[-_\s]*phrase", r"сид[-_\s]*фраз", r"private[-_\s]*key", 
-            r"приватн[ых|ой]\s*ключ", r"вериф[икация|уйте]\s*кошел", r"wallet[-_\s]*verif",
-            r"airdrops?", r"бесплатн\w*\s*токен\w*", r"клищ\s*по\sссылк"
-        ]
-        
+        self.scam_patterns = SCAM_PATTERNS        
         # Фишинговые домены
-        self.phishing_domains = ["bit.ly", "t.ly", "cutt.ly", "tinyurl.com", "grabify.link"]
+        self.phishing_domains = PHISHING_DOMAINS
 
     # 1. Триггер «Анти-Флуд / Rate Limiting»
     def check_flood(self, chat_id: int) -> bool:
@@ -179,19 +177,11 @@ bot = telebot.TeleBot(TOKEN, threaded=True)
 # --- БЕЗОПАСНАЯ РЕГИСТРАЦИЯ КОМАНД ---
 try:
     print("[🛡️ SECURITY CORE] Регистрация команд в Telegram API...")
-    bot.set_my_commands([
-        types.BotCommand("start", "Главное меню и проверка"),
-        types.BotCommand("profile", "👤 Личный профиль и статы игр"),
-        types.BotCommand("all_combo", "Проверить комбо-карты"),
-        types.BotCommand("miners", "📱 Телефонные майнеры"),
-        types.BotCommand("faucets", "🚰 Крипто-краны"),
-        types.BotCommand("calc", "Крипто-конвертер"),
-        types.BotCommand("farm", "Статус защищенной фермы"),
-        types.BotCommand("timers", "⏰ Персональные таймеры сбора"),
-        types.BotCommand("reviews", "💬 Отзывы пользователей"),
-        types.BotCommand("ads", "📢 Реклама и монетизация"),
-        types.BotCommand("proofs", "Скрины выплат")
-    ])
+    
+    # Динамическая генерация из импортированного списка BOT_COMMANDS
+    commands_list = [types.BotCommand(cmd, desc) for cmd, desc in BOT_COMMANDS]
+    
+    bot.set_my_commands(commands_list)
     print("[🛡️ SECURITY CORE] Команды успешно зарегистрированы.")
 except Exception as e:
     print(f"[⚠️ WARNING] Команды не зарегистрированы (проблема сети/таймаут): {e}")
