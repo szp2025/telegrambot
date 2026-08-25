@@ -777,11 +777,14 @@ LOG_COLORS = {
 # --- НАСТРОЙКИ СИСТЕМЫ БЕЗОПАСНОСТИ ---
 
 NETWORK_CORE_BLACKLIST = [
+    # Финансовые пирамиды, удвоители и сомнительные инвестиции
     "free ton",
     "doubler",
     "x2 crypto",
     "1day profit",
     "invest 10 get",
+    
+    # Дрейнеры, фальшивые клеймы и фишинг кошельков
     "drainer",
     "connect wallet to claim",
     "airdrop-connect",
@@ -791,43 +794,82 @@ NETWORK_CORE_BLACKLIST = [
     "sync-wallet",
     "verify-metamask",
     "claim-rewards",
+
+    # Дополнительные маркеры для полного покрытия (рекомендуется для максимума)
+    "validate-wallet",
+    "migration-portal",
+    "token-distribution",
+    "airdrop-claim",
+    "rectify-account",
+    "fix-wallet-error",
+    "manual-sync"
 ]
+
 
 GHOST_MODE_DOMAINS = [
-    ".xyz",
-    ".cc",
-    ".top",
-    ".bi",
-    ".cfd",
-    ".ifo",
-    ".lat",
-    "free-",
-    "bonus-",
-    "airdrop-",
-    "drain-",
-    "phish",
-    "connect-",
-    "fix-",
+    # Подозрительные и дешевые доменные зоны, традиционно используемые для быстрого фишинга
+    ".xyz", ".cc", ".top", ".bi", ".cfd", ".info", ".lat", ".pw", 
+    ".gq", ".ml", ".tk", ".work", ".click", ".loan", ".date", ".win", ".bid",
+    ".stream", ".trade", ".download", ".review", ".party", ".science", ".men",
+    ".biz", ".pro", ".kim", ".loan", ".racing", ".ube", ".mom", ".quest",
+
+    # Вредоносные префиксы и ключевые слова для маскировки под сервисы и кошельки
+    "free-", "bonus-", "airdrop-", "drain-", "phish", "connect-", "fix-",
+    "secure-", "login-", "verify-", "update-", "account-", "wallet-", "support-",
+    "auth-", "portal-", "service-", "confirm-", "banking-", "help-", "admin-",
+
+    # Дополнительные технические маркеры перехвата и дрейна средств
+    "mint-", "claim-", "drop-", "reward-", "gift-", "auth-fix-", "web3-",
+    "swap-", "bridge-", "validate-", "sec-", "guard-",
+
+    # Расширенный блок Web3-скама и обхода авторизации (добавлено для максимума)
+    "permit-", "setapproval-", "safe-", "claim-reward", "multicall-",
+    "2fa-", "otp-", "recovery-", "reset-", "unban-", "appeal-"
 ]
+
 
 SCAM_USERNAME_MARKERS = [
-    "support",
-    "admin",
-    "help",
-    "manager",
-    "security",
-    "tech",
-    "official_sup",
-    "airdrop_bot",
-    "wallet_fix",
-    "service_bot",
+    # Техподдержка и администрация
+    "support", "admin", "help", "manager", "security", "tech", "official_sup",
+    "helpdesk", "service", "customer_care", "support_desk", "adm", "administrator",
+    "moderator", "mod", "system", "sysadmin", "staff", "help_bot", "service_bot",
+    
+    # Финансовые сервисы, банки и кошельки (актуально для стратегии защиты)
+    "wallet", "wallet_fix", "pay", "payment", "bank", "secure", "verification",
+    "account", "account_fix", "recovery", "restore", "kyc", "aml", "compliance",
+    "caf_support", "caf_aide", "ursa", "finance", "billing", "treasury",
+    
+    # Криптовалюта, аирдропы и раздачи (главные векторы спама)
+    "airdrop", "airdrop_bot", "giveaway", "crypto", "token", "nft", "binance",
+    "telegram", "tg_support", "bonus", "gift", "promo", "p2p", "exchange"
 ]
 
+
 SCAM_PATTERNS = [
+    # Кража сид-фраз и приватных ключей
     r"seed[-_\s]*phrase", r"сид[-_\s]*фраз", r"private[-_\s]*key", 
-    r"приватн[ых|ой]\s*ключ", r"вериф[икация|уйте]\s*кошел", r"wallet[-_\s]*verif",
-    r"airdrops?", r"бесплатн\w*\s*токен\w*", r"клищ\s*по\sссылк"
+    r"приватн[ых|ой]\s*ключ", r"mnemonic", r"мнемоник", r"secret[-_\s]*key",
+    r"секретн\w*\s*ключ", r"backup[-_\s]*phrase", r"резервн\w*\s*фраз",
+
+    # Верификация кошельков, аккаунтов и учетных записей
+    r"wallet[-_\s]*verif", r"вериф[икация|уйте]\s*кошел", r"account[-_\s]*verify",
+    r"подтверд[ите|уй]\s*аккаунт", r"sync[-_\s]*wallet", r"синхрониз[ируйте|ация]",
+    r"connect[-_\s]*wallet", r"подключ[ите|уй]\s*кошел", r"validate[-_\s]*wallet",
+
+    # Аирдропы, токены, бесплатные деньги и скам-раздачи
+    r"airdrops?", r"бесплатн\w*\s*токен\w*", r"free[-_\s]*crypto", r"claim[-_\s]*reward",
+    r"забер[ите|уй]\s*наград", r"giveaway[-_\s]*win", r"выигр\w*\s*приз",
+    r"бонус[-_\s]*от\s*систем", r"раздач\w*\s*фонд",
+
+    # Социальная инженерия, срочность и фишинговые ссылки
+    r"клищ\s*по\sссылк", r"перейди\s*по\sссылк", r"срочн\w*\s*обновлен",
+    r"заблокиров\w*\s*счет", r"block[-_\s]*account", r"suspicious[-_\s]*activity",
+    r"подозрительн\w*\s*активност", r"требуетк\s*вмешательств",
+
+    # Маскировка под государственные выплаты или соцпомощь (под банковский гамбит)
+    r"caf[-_\s]* выплаты", r"компенсац\w*\s*счет", r"посол[ьств|е]\s*помощ"
 ]
+
 
 PHISHING_DOMAINS = [
     # Популярные сокращатели ссылок (часто используются для сокрытия реального адреса)
