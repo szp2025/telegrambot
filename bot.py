@@ -24,6 +24,7 @@ from config import (
     VERIFIED_FILE,
     ACTIVE_ADS_FILE,  # <-- Импортируем путь к файлу рекламы
     SCAM_PATTERNS,
+    DANGEROUS_INJECTION_PATTERNS?
     BOT_COMMANDS,
     PHISHING_DOMAINS
 )
@@ -53,6 +54,7 @@ class AdvancedSecurityGuard:
         self.scam_patterns = SCAM_PATTERNS        
         # Фишинговые домены
         self.phishing_domains = PHISHING_DOMAINS
+        self.injection_patterns = DANGEROUS_INJECTION_PATTERNS
 
     # 1. Триггер «Анти-Флуд / Rate Limiting»
     def check_flood(self, chat_id: int) -> bool:
@@ -79,9 +81,12 @@ class AdvancedSecurityGuard:
 
     # 3. Триггер проверки «Инъекций»
     def sanitize_and_check_injection(self, text: str) -> tuple[bool, str]:
-        dangerous_patterns = [r"rm\s*-rf", r";", r"&&", r"\|\s*sh", r"DROP\s+TABLE", r"SELECT\s+.*FROM", r"<script>"]
-        for pattern in dangerous_patterns:
-            if re.search(pattern, text, re.IGNORECASE):
+        if not text:
+            return False, text
+        text_lower = text.lower()
+        for pattern in self.injection_patterns:
+            # Поддерживаем как обычные подстроки, так и регулярные выражения если нужно
+            if pattern.lower() in text_lower or re.search(pattern, text, re.IGNORECASE):
                 return True, "[BLOCKED_INJECTION_ATTEMPT]"
         return False, text
 
