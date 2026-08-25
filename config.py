@@ -830,8 +830,27 @@ SCAM_PATTERNS = [
 ]
 
 PHISHING_DOMAINS = [
-    "bit.ly", "t.ly", "cutt.ly", "tinyurl.com", "grabify.link"
+    # Популярные сокращатели ссылок (часто используются для сокрытия реального адреса)
+    "bit.ly", "t.ly", "cutt.ly", "tinyurl.com", "goo.gl", "ow.ly", "buff.ly", 
+    "adf.ly", "shorte.st", "bl.ink", "rebrand.ly", "is.gd", "v.gd", "qr.ae", 
+    "lnkd.in", "db.tt", "qr.net", "1url.com", "cli.gs", "yfrog.com", "migre.me", 
+    "ff.im", "su.pr", "twit.ac", "su.pr", "twurl.nl", "snipurl.com", "to.ly", 
+    "bit.do", "coinurl.com", "trib.al", "short.revive-adserver.com", "linktr.ee",
+    "beacons.ai", "hoo.be", "taplink.cc", "campsite.bio",
+
+    # IP-логгеры и трекеры (сервисы скрытого сбора IP-адресов, геолокации и устройств)
+    "grabify.link", "iplogger.org", "iplogger.com", "iplogger.ru", "2ip.ru", 
+    "yip.su", "blasze.com", "psndeals.com", "steamcommunity.com.link", 
+    "imgur.la", "imagetour.ru", "ip-api.com", "ipinfo.io", "anonym.to", 
+    "dereferer.me", "ulx.me", "topster.me", "ezgif.com.link", "blasze.org",
+    "geekprank.com", "free-ip-logger.com", "eert.me", "Is.gd",
+
+    # Дополнительные подозрительные зоны и маскировочные домены
+    "telegra.ph", # Часто используется для анонимного фишинга (хотя легитимен)
+    "web.app", "firebaseapp.com", "github.io", "gitlab.io", # Бесплатные хостинги для фишинговых страниц
+    "1drv.ms", "dropbox.com", "drive.google.com" # Легитимные облака, часто абузимые под фейк-логин формы
 ]
+
 
 BOT_COMMANDS = [
     ("start", "Главное меню и проверка"),
