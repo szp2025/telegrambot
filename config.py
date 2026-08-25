@@ -7,17 +7,7 @@ COMBO_GAMES_DATA = {
         "ref_link_1": "https://t.me/DoodlePlayBot/app?startapp=DJ2FHPOLZ",
         "ref_link_2": "https://t.me/DoodlePlayBot/app?startapp=DJ2FHPOLZ",
         "strategy": 
-"🟡 Стратегия Doodle Jump. 
-Таблица прокачки
-Уровень
-Стоимость
-(общая)
-Монет в час
-(% в сутки)
-1
-99
-(99)
-0.21
+"🟡 Стратегия Doodle Jump.Таблица прокачки Уровень Стоимость(общая) Монет в час(% в сутки) 1 99(99) 0.21
 (5,00%/d)
 2
 108
@@ -833,9 +823,6 @@ SCAM_USERNAME_MARKERS = [
     "service_bot",
 ]
 
-
-# config.py
-
 SCAM_PATTERNS = [
     r"seed[-_\s]*phrase", r"сид[-_\s]*фраз", r"private[-_\s]*key", 
     r"приватн[ых|ой]\s*ключ", r"вериф[икация|уйте]\s*кошел", r"wallet[-_\s]*verif",
@@ -947,8 +934,8 @@ CRYPTO_CURRENCY_DATA = [
 SINGLE_GAME_ACTIONS = {
     "combo": ("🎯 Открыть комбо", "game_"),
     "tactics": ("🧠 Тактика", "strat_"),
-    "play_1": ("🎮 Играть 1",),
-    "play_2": ("🎮 Играть 2",),
+    "play_1": ("🎮 1",),
+    "play_2": ("🎮 2",),
     "back": ("🔙 Назад к списку", "combopage_")
 }
 
