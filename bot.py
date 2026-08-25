@@ -26,6 +26,13 @@ from config import (
     DANGEROUS_INJECTION_PATTERNS,
     BOT_COMMANDS,
     MAIN_MENU_BUTTONS,
+    PROFILE_KEYBOARD_DATA,
+    REVIEWS_KEYBOARD_DATA,
+    ADS_KEYBOARD_DATA,
+    ADS_TARIFFS_DATA,
+    CRYPTO_COINS_DATA,
+    CRYPTO_CURRENCY_DATA,
+    SINGLE_GAME_ACTIONS,
     PHISHING_DOMAINS
 )
 
@@ -414,35 +421,36 @@ def get_main_keyboard():
 
 def get_profile_keyboard():
     keyboard = types.InlineKeyboardMarkup()
-    keyboard.row(types.InlineKeyboardButton(text="➕ Добавить / Обновить игру", callback_data="prof_add"))
-    keyboard.row(types.InlineKeyboardButton(text="📋 Посмотреть мои статы", callback_data="prof_view"))
+    for row in PROFILE_KEYBOARD_DATA:
+        buttons = [types.InlineKeyboardButton(text=text, callback_data=cb) for text, cb in row]
+        keyboard.row(*buttons)
     return keyboard
 
 def get_reviews_keyboard():
     keyboard = types.InlineKeyboardMarkup()
-    keyboard.row(types.InlineKeyboardButton(text="✍️ Оставить отзыв", callback_data="review_add"))
-    keyboard.row(types.InlineKeyboardButton(text="📖 Читать отзывы", callback_data="review_read"))
+    for row in REVIEWS_KEYBOARD_DATA:
+        buttons = [types.InlineKeyboardButton(text=text, callback_data=cb) for text, cb in row]
+        keyboard.row(*buttons)
     return keyboard
 
 def get_ads_keyboard():
     keyboard = types.InlineKeyboardMarkup()
-    keyboard.row(types.InlineKeyboardButton(text="💰 Купить рекламу", callback_data="ads_buy"))
-    keyboard.row(types.InlineKeyboardButton(text="📊 Статистика аудитории", callback_data="ads_stats"))
+    for row in ADS_KEYBOARD_DATA:
+        buttons = [types.InlineKeyboardButton(text=text, callback_data=cb) for text, cb in row]
+        keyboard.row(*buttons)
     return keyboard
 
 def get_ads_tariffs_keyboard():
     keyboard = types.InlineKeyboardMarkup()
-    keyboard.row(types.InlineKeyboardButton(text="⏱ Закреп на 24 часа — $15", callback_data="adtariff_24h"))
-    keyboard.row(types.InlineKeyboardButton(text="📢 Рассылка по всей базе — $30", callback_data="adtariff_broadcast"))
-    keyboard.row(types.InlineKeyboardButton(text="🔙 Назад", callback_data="ads_menu_back"))
+    for row in ADS_TARIFFS_DATA:
+        buttons = [types.InlineKeyboardButton(text=text, callback_data=cb) for text, cb in row]
+        keyboard.row(*buttons)
     return keyboard
 
 def get_safepal_coins_keyboard(tariff_key):
     keyboard = types.InlineKeyboardMarkup()
-    keyboard.row(types.InlineKeyboardButton(text="💵 USDT (TRC20)", callback_data=f"pay_{tariff_key}_usdt"))
-    keyboard.row(types.InlineKeyboardButton(text="💎 GRAM / TON", callback_data=f"pay_{tariff_key}_gram"))
-    keyboard.row(types.InlineKeyboardButton(text="🪙 Bitcoin (BTC)", callback_data=f"pay_{tariff_key}_btc"))
-    keyboard.row(types.InlineKeyboardButton(text="⚡ Tron (TRX)", callback_data=f"pay_{tariff_key}_tron"))
+    for text, coin in CRYPTO_COINS_DATA:
+        keyboard.row(types.InlineKeyboardButton(text=text, callback_data=f"pay_{tariff_key}_{coin}"))
     keyboard.row(types.InlineKeyboardButton(text="🔙 К выбору тарифов", callback_data="ads_buy"))
     return keyboard
 
@@ -468,19 +476,34 @@ def get_combo_list_keyboard(page=0):
     return keyboard, total_games
 
 def get_single_game_keyboard(key, page):
-    data = manager.combo_games[key]
+    data = manager.combo_games.get(key, {})
     keyboard = types.InlineKeyboardMarkup()
+    
+    # 1. Первая строка: Берём данные из конфига (combo и tactics)
+    combo_text, combo_prefix = SINGLE_GAME_ACTIONS["combo"]
+    tactics_text, tactics_prefix = SINGLE_GAME_ACTIONS["tactics"]
+    
     keyboard.row(
-        types.InlineKeyboardButton(text="🎯 Открыть комбо", callback_data=f"game_{key}"),
-        types.InlineKeyboardButton(text="🧠 Тактика", callback_data=f"strat_{key}")
+        types.InlineKeyboardButton(text=combo_text, callback_data=f"{combo_prefix}{key}"),
+        types.InlineKeyboardButton(text=tactics_text, callback_data=f"{tactics_prefix}{key}")
     )
+    
+    # 2. Вторая строка: Ссылки на игру (если они есть в данных)
+    if "ref_link_1" in data and "ref_link_2" in data:
+        play1_text, *_ = SINGLE_GAME_ACTIONS["play_1"]
+        play2_text, *_ = SINGLE_GAME_ACTIONS["play_2"]
+        keyboard.row(
+            types.InlineKeyboardButton(text=play1_text, url=data["ref_link_1"]),
+            types.InlineKeyboardButton(text=play2_text, url=data["ref_link_2"])
+        )
+        
+    # 3. Третья строка: Назад к списку (из конфига)
+    back_text, back_prefix = SINGLE_GAME_ACTIONS["back"]
     keyboard.row(
-        types.InlineKeyboardButton(text="🎮 Играть 1", url=data["ref_link_1"]),
-        types.InlineKeyboardButton(text="🎮 Играть 2", url=data["ref_link_2"])
+        types.InlineKeyboardButton(text=back_text, callback_data=f"{back_prefix}{page}")
     )
-    keyboard.row(types.InlineKeyboardButton(text="🔙 Назад к списку", callback_data=f"combopage_{page}"))
+    
     return keyboard
-
 def get_phone_miners_keyboard():
     keyboard = types.InlineKeyboardMarkup()
     for key, data in manager.phone_miners.items():
@@ -542,12 +565,11 @@ def get_timer_duration_keyboard(key):
 
 def get_crypto_currency_keyboard():
     keyboard = types.InlineKeyboardMarkup(row_width=2)
-    keyboard.add(
-        types.InlineKeyboardButton(text="🪙 BTC", callback_data="cur_btc"),
-        types.InlineKeyboardButton(text="🪙 ETH", callback_data="cur_eth"),
-        types.InlineKeyboardButton(text="🪙 USDT", callback_data="cur_usdt"),
-        types.InlineKeyboardButton(text="🪙 GRAM", callback_data="cur_gram")
-    )
+    buttons = [
+        types.InlineKeyboardButton(text=text, callback_data=cb) 
+        for text, cb in CRYPTO_CURRENCY_DATA
+    ]
+    keyboard.add(*buttons)
     return keyboard
 
 def get_fiat_currency_keyboard(crypto_symbol):
