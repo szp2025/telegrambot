@@ -1,26 +1,3 @@
-# --- РЕКВИЗИТЫ SAFEPAL ---
-SAFEPAL_WALLETS = {
-    "usdt": {
-        "name": "USDT (TRC20)",
-        "address": "TRON_WALLET_ADDRESS_PLACEHOLDER_HERE"
-    },
-    "gram": {
-        "name": "GRAM / TON",
-        "address": "TON_WALLET_ADDRESS_PLACEHOLDER_HERE"
-    },
-    "btc": {
-        "name": "Bitcoin (BTC)",
-        "address": "BTC_WALLET_ADDRESS_PLACEHOLDER_HERE"
-    },
-    "tron": {
-        "name": "Tron (TRX)",
-        "address": "TRON_WALLET_ADDRESS_PLACEHOLDER_HERE"
-    }
-}
-
-
-
-
 # --- ИГРОВЫЕ СЛОВАРИ И ДАННЫЕ ПРОЕКТОВ ---
 
 COMBO_GAMES_DATA = {
