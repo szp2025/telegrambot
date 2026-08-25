@@ -12,7 +12,7 @@ import telebot
 from telebot import types
 from datetime import datetime
 from config import (
-    ADMIN_CHAT_ID,
+ 
     COMBO_GAMES_DATA,
     CRYPTO_FAUCETS_DATA,
     INDEPENDENT_FARMS_DATA,
@@ -23,11 +23,13 @@ from config import (
     PHONE_MINERS_DATA,
     VERIFIED_FILE,
     ACTIVE_ADS_FILE,  # <-- Импортируем путь к файлу рекламы
+)
+
+from private_config import (
+    ADMIN_CHAT_ID,
     SAFEPAL_WALLETS,
     TOKEN,
 )
-
-
 
 logger = logging.getLogger(__name__)
 
