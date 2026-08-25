@@ -12,6 +12,7 @@ import telebot
 from telebot import types
 from datetime import datetime
 import math
+import urllib.parse
 from typing import Tuple, Dict, List, Any
 from config import ( 
     COMBO_GAMES_DATA,
@@ -362,44 +363,160 @@ def save_active_ads_to_file():
 
 active_ads_storage = load_active_ads()
 
-class UltimateSecurityCore:
 
+class UltimateSecurityCore:
+    """
+    /**
+     * @apiEndpoint /Internal/UltimateSecurityCore
+     * @apiMethod INTERNAL
+     * @apiDescription Динамический эвристический модуль комплексной защиты трафика 
+     * с поддержкой скоринга угроз, анализа энтропии, детекции омоглифов и Leetspeak.
+     */
+    """
     def __init__(self):
         self.network_core_blacklist = NETWORK_CORE_BLACKLIST
         self.ghost_mode_domains = GHOST_MODE_DOMAINS
         self.scam_username_markers = SCAM_USERNAME_MARKERS
         self.dangerous_patterns = DANGEROUS_INJECTION_PATTERNS
+        
+        # Порог суммарного скора для принятия решения о блокировке
+        self.threat_threshold = 70.0
+
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        """Интеллектуальная нормализация: декодирование Leetspeak и замена визуально похожих символов."""
+        if not text:
+            return ""
+        replacements = {
+            '0': 'o', '1': 'i', '3': 'e', '@': 'a', '$': 's', 
+            '!': 'i', '5': 's', '7': 't', 'v': 'u', '4': 'a'
+        }
+        res = text.lower()
+        for old, new in replacements.items():
+            res = res.replace(old, new)
+        return res
+
+    @staticmethod
+    def _calculate_entropy(s: str) -> float:
+        """Расчет энтропии Шеннона для обнаружения DGA-доменов (автоматически сгенерированного мусора)."""
+        if not s:
+            return 0.0
+        prob = [float(s.count(c)) / len(s) for c in set(s)]
+        return -sum(p * math.log2(p) for p in prob)
 
     @staticmethod
     def sanitize_input(text: str) -> str:
+        """
+        [95] Sterile Channel: Глубокая динамическая санитизация входящего потока данных.
+        """
         if not text:
             return ""           
-            
 
         text_lower = text.lower()
+        normalized = UltimateSecurityCore._normalize_text(text)
+        
         for pattern in DANGEROUS_INJECTION_PATTERNS:
-            if pattern.lower() in text_lower:
+            if pattern.lower() in text_lower or pattern.lower() in normalized:
                 return "[BLOCKED_INJECTION_ATTEMPT]"
-        return text
+                
+        # Эвристическая очистка от скрытых управляющих символов и нулевых байтов
+        cleaned = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', text)
+        return cleaned
 
     def analyze_traffic(self, text: str) -> tuple[bool, str]:
-        lower_text = text.lower()
-        for keyword in self.network_core_blacklist:
-            if keyword in lower_text:
-                return True, f"🚨 **Network Core [88] Заблокировал угрозу!**\nОбнаружен запрещенный паттерн: `{keyword}`."
-        
-        usernames = re.findall(r'@([a-zA-Z0-9_]{5,32})', text)
-        for uname in usernames:
-            if any(marker in uname.lower() for marker in self.scam_username_markers):
-                return True, f"🚨 **Active City Protection [90]:** Обнаружен фишинговый юзернейм `@ {uname}`."
+        """
+        Динамический эвристический анализ трафика с расчетом совокупного уровня угрозы (Threat Scoring).
+        """
+        if not text:
+            return False, "✅ **Sterile Channel [95]:** Пустой пакет данных."
 
+        threat_score = 0.0
+        triggered_reasons = []
+        
+        lower_text = text.lower()
+        normalized_text = self._normalize_text(text)
+
+        # =====================================================================
+        # 1. NETWORK CORE [88]: Эвристический поиск запрещенных паттернов и мимикрии
+        # =====================================================================
+        for keyword in self.network_core_blacklist:
+            norm_keyword = self._normalize_text(keyword)
+            if keyword in lower_text or norm_keyword in normalized_text:
+                threat_score += 88.0
+                triggered_reasons.append(f"Network Core [88]: Обнаружен запрещенный паттерн `{keyword}`")
+                break
+
+        # =====================================================================
+        # 2. ACTIVE CITY PROTECTION [90]: Интеллектуальный анализ юзернеймов
+        # =====================================================================
+        usernames = re.findall(r'@([a-zA-Z0-9_]{3,32})', text)
+        for uname in usernames:
+            norm_uname = self._normalize_text(uname)
+            for marker in self.scam_username_markers:
+                # Ловит подмены вида @s_upp0rt или измененные буквы через Leetspeak
+                if marker in uname.lower() or marker in norm_uname:
+                    threat_score += 90.0
+                    triggered_reasons.append(f"Active City Protection [90]: Фишинговый юзернейм `@ {uname}` (триггер: `{marker}`)")
+                    break
+
+        # =====================================================================
+        # 3. ACTIVE CITY PROTECTION [90]: Глубокий эвристический анализ ссылок и доменов
+        # =====================================================================
+        # А. Проверка скрытой подмены в Markdown-ссылках: [google.com](http://scam.ru)
+        markdown_links = re.findall(r'\[([^\]]+)\]\((https?://[^\s)]+)\)', text)
+        for anchor, url in markdown_links:
+            parsed_url = urllib.parse.urlparse(url)
+            if anchor.lower() not in parsed_url.netloc.lower() and "http" in anchor.lower():
+                threat_score += 95.0
+                triggered_reasons.append(f"Active City Protection [90]: Скрытая подмена ссылки (`{anchor}` -> `{parsed_url.netloc}`)")
+
+        # Б. Эвристический разбор всех URL-адресов
+        urls = re.findall(r'https?://[^\s]+', text)
+        for url in urls:
+            try:
+                parsed = urllib.parse.urlparse(url)
+                domain = parsed.netloc.lower()
+
+                # Проверка по зонам и префиксам Ghost Mode
+                if any(domain.endswith(g_domain) or g_domain in domain for g_domain in self.ghost_mode_domains):
+                    threat_score += 90.0
+                    triggered_reasons.append(f"Active City Protection [90]: Подозрительный домен/префикс в ссылке: `{domain}`")
+
+                # Детекция прямых IP-адресов
+                if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', domain):
+                    threat_score += 85.0
+                    triggered_reasons.append(f"Active City Protection [90]: Прямой IP-адрес вместо домена: `{domain}`")
+
+                # Анализ энтропии домена (поиск случайно сгенерированных фишинговых сайтов)
+                main_part = domain.split('.')[0]
+                if len(main_part) > 8 and self._calculate_entropy(main_part) > 3.8:
+                    threat_score += 45.0
+                    triggered_reasons.append(f"Active City Protection [90]: Высокая энтропия (DGA-домен): `{main_part}`")
+                    
+                # Дополнительные стоп-слова в URL
+                if any(bad_word in url.lower() for bad_word in ["fake", "scam", "drain", "phish", "hack"]):
+                    threat_score += 80.0
+                    triggered_reasons.append(f"Active City Protection [90]: Вредоносные маркеры в URL")
+            except Exception:
+                continue
+
+        # В. Эвристика ключевых слов в общем тексте при наличии ссылок или упоминаний
         if "http://" in lower_text or "https://" in lower_text or "t.me/" in lower_text or "@" in lower_text:
-            if any(domain in lower_text for domain in self.ghost_mode_domains) or "fake" in lower_text or "scam" in lower_text:
-                return True, "🚨 **Active City Protection [90]:** Ссылка или домен заблокированы."
+            if any(term in lower_text for term in ["fake", "scam", "drainer", "airdrop", "verify", "connect"]):
+                threat_score += 60.0
+                triggered_reasons.append("Active City Protection [90]: Сочетание ссылок/контактов с фишинговым контекстом")
+
+        # =====================================================================
+        # 4. ИТОГОВЫЙ ВЕРДИКТ СИСТЕМЫ СКОРИНГА
+        # =====================================================================
+        if threat_score >= self.threat_threshold:
+            primary_reason = triggered_reasons[0] if triggered_reasons else "Обнаружена комплексная угроза безопасности"
+            return True, f"🚨 **Блокировка [Threat Score: {threat_score:.1f}]**\n{primary_reason}"
 
         return False, "✅ **Sterile Channel [95]:** Канал абсолютно чист."
 
 security_core = UltimateSecurityCore()
+
 
 class MiningComboManager:
     def __init__(self):
