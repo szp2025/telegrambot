@@ -26,6 +26,7 @@ from config import (
     DANGEROUS_INJECTION_PATTERNS,
     BOT_COMMANDS,
     MAIN_MENU_BUTTONS,
+    WELCOME_MESSAGES,
     PROFILE_KEYBOARD_DATA,
     REVIEWS_KEYBOARD_DATA,
     ADS_KEYBOARD_DATA,
@@ -33,6 +34,12 @@ from config import (
     CRYPTO_COINS_DATA,
     CRYPTO_CURRENCY_DATA,
     SINGLE_GAME_ACTIONS,
+    PHONE_MINER_ACTIONS,
+    FAUCETS_ACTIONS,
+    FARMS_ACTIONS,
+    TIMER_DURATIONS,
+    TIMER_ACTIONS,
+    FIAT_CURRENCIES,
     PHISHING_DOMAINS
 )
 
@@ -504,38 +511,58 @@ def get_single_game_keyboard(key, page):
     )
     
     return keyboard
+    
 def get_phone_miners_keyboard():
     keyboard = types.InlineKeyboardMarkup()
+    
+    info_prefix = PHONE_MINER_ACTIONS["info_prefix"]
+    play_text = PHONE_MINER_ACTIONS["play_text"]
+    p1_text = PHONE_MINER_ACTIONS["play_1_text"]
+    p2_text = PHONE_MINER_ACTIONS["play_2_text"]
+    
     for key, data in manager.phone_miners.items():
         keyboard.row(
-            types.InlineKeyboardButton(text=data["name"], callback_data=f"pinfo_{key}"),
-            types.InlineKeyboardButton(text="📥 Play", url=data["play_market"])
+            types.InlineKeyboardButton(text=data["name"], callback_data=f"{info_prefix}{key}"),
+            types.InlineKeyboardButton(text=play_text, url=data["play_market"])
         )
         keyboard.row(
-            types.InlineKeyboardButton(text="🎮 Играть 1", url=data["ref_link_1"]),
-            types.InlineKeyboardButton(text="🎮 Играть 2", url=data["ref_link_2"])
+            types.InlineKeyboardButton(text=p1_text, url=data["ref_link_1"]),
+            types.InlineKeyboardButton(text=p2_text, url=data["ref_link_2"])
         )
     return keyboard
 
 def get_faucets_keyboard():
     keyboard = types.InlineKeyboardMarkup()
+    
+    info_prefix = FAUCETS_ACTIONS["info_prefix"]
+    p1_text = FAUCETS_ACTIONS["play_1_text"]
+    p2_text = FAUCETS_ACTIONS["play_2_text"]
+    
     for key, data in manager.crypto_faucets.items():
-        keyboard.row(types.InlineKeyboardButton(text=data["name"], callback_data=f"finfo_{key}"))
+        keyboard.row(types.InlineKeyboardButton(text=data["name"], callback_data=f"{info_prefix}{key}"))
         keyboard.row(
-            types.InlineKeyboardButton(text="🎮 Играть 1", url=data["ref_link_1"]),
-            types.InlineKeyboardButton(text="🎮 Играть 2", url=data["ref_link_2"])
+            types.InlineKeyboardButton(text=p1_text, url=data["ref_link_1"]),
+            types.InlineKeyboardButton(text=p2_text, url=data["ref_link_2"])
         )
     return keyboard
 
 def get_farms_keyboard():
     keyboard = types.InlineKeyboardMarkup()
+    
+    strat_prefix = FARMS_ACTIONS["strat_prefix"]
+    template = FARMS_ACTIONS["strat_suffix_template"]
+    p1_text = FARMS_ACTIONS["play_1_text"]
+    p2_text = FARMS_ACTIONS["play_2_text"]
+    
     for key, data in manager.independent_farms.items():
-        keyboard.row(types.InlineKeyboardButton(text=f"📋 {data['name']} (Стратегия)", callback_data=f"farm_strat_{key}"))
+        btn_text = template.format(name=data['name'])
+        keyboard.row(types.InlineKeyboardButton(text=btn_text, callback_data=f"{strat_prefix}{key}"))
         keyboard.row(
-            types.InlineKeyboardButton(text="🎮 Играть 1", url=data["ref_link_1"]),
-            types.InlineKeyboardButton(text="🎮 Играть 2", url=data["ref_link_2"])
+            types.InlineKeyboardButton(text=p1_text, url=data["ref_link_1"]),
+            types.InlineKeyboardButton(text=p2_text, url=data["ref_link_2"])
         )
     return keyboard
+    
 
 def get_timers_games_keyboard():
     keyboard = types.InlineKeyboardMarkup()
@@ -548,20 +575,36 @@ def get_timers_games_keyboard():
 
 def get_timer_duration_keyboard(key):
     keyboard = types.InlineKeyboardMarkup()
+    
+    set_prefix = TIMER_ACTIONS["set_prefix"]
+    
+    # Первая строка: 1, 3, 6 часов
+    row1 = [
+        types.InlineKeyboardButton(text=f"⏱ {h} час" if h == 1 else f"⏱ {h} часа" if h in [3, 4] else f"⏱ {h} часов", callback_data=f"{set_prefix}{key}_{h}")
+        for h in TIMER_DURATIONS[:3]
+    ]
+    keyboard.row(*row1)
+    
+    # Вторая строка: 8, 12, 24 часа
+    row2 = [
+        types.InlineKeyboardButton(text=f"⏱ {h} часов", callback_data=f"{set_prefix}{key}_{h}")
+        for h in TIMER_DURATIONS[3:]
+    ]
+    keyboard.row(*row2)
+    
+    # Дополнительные кнопки (Свое время, Отключить, Назад)
     keyboard.row(
-        types.InlineKeyboardButton(text="⏱ 1 час", callback_data=f"settimer_{key}_1"),
-        types.InlineKeyboardButton(text="⏱ 3 часа", callback_data=f"settimer_{key}_3"),
-        types.InlineKeyboardButton(text="⏱ 6 часов", callback_data=f"settimer_{key}_6")
+        types.InlineKeyboardButton(text=TIMER_ACTIONS["custom_text"], callback_data=f"{TIMER_ACTIONS['custom_prefix']}{key}")
     )
     keyboard.row(
-        types.InlineKeyboardButton(text="⏱ 8 часов", callback_data=f"settimer_{key}_8"),
-        types.InlineKeyboardButton(text="⏱ 12 часов", callback_data=f"settimer_{key}_12"),
-        types.InlineKeyboardButton(text="⏱ 24 часа", callback_data=f"settimer_{key}_24")
+        types.InlineKeyboardButton(text=TIMER_ACTIONS["cancel_text"], callback_data=f"{TIMER_ACTIONS['cancel_prefix']}{key}")
     )
-    keyboard.row(types.InlineKeyboardButton(text="✏️ Ввести своё время (ч/м)", callback_data=f"customtimer_{key}"))
-    keyboard.row(types.InlineKeyboardButton(text="❌ Отключить таймер", callback_data=f"canceltimer_{key}"))
-    keyboard.row(types.InlineKeyboardButton(text="🔙 Назад к списку игр", callback_data="timers_menu_back"))
+    keyboard.row(
+        types.InlineKeyboardButton(text=TIMER_ACTIONS["back_text"], callback_data=TIMER_ACTIONS["back_callback"])
+    )
+    
     return keyboard
+    
 
 def get_crypto_currency_keyboard():
     keyboard = types.InlineKeyboardMarkup(row_width=2)
@@ -574,11 +617,11 @@ def get_crypto_currency_keyboard():
 
 def get_fiat_currency_keyboard(crypto_symbol):
     keyboard = types.InlineKeyboardMarkup(row_width=3)
-    keyboard.add(
-        types.InlineKeyboardButton(text="USD ($)", callback_data=f"fiat_{crypto_symbol}_usd"),
-        types.InlineKeyboardButton(text="EUR (€)", callback_data=f"fiat_{crypto_symbol}_eur"),
-        types.InlineKeyboardButton(text="RUB (₽)", callback_data=f"fiat_{crypto_symbol}_rub")
-    )
+    buttons = [
+        types.InlineKeyboardButton(text=text, callback_data=f"fiat_{crypto_symbol}_{code}")
+        for text, code in FIAT_CURRENCIES
+    ]
+    keyboard.add(*buttons)
     return keyboard
 
 def send_message_direct(chat_id, text, reply_markup=None, parse_mode="Markdown"):
@@ -733,15 +776,13 @@ def handle_start(message: types.Message):
         question, markup = generate_advanced_captcha(chat_id)
         bot.send_message(chat_id, f"🛡️ **Проверка на человека**\n\n🧠 *{question}*", reply_markup=markup, parse_mode="Markdown")
         return
-    send_message_direct(chat_id, "⚡ **Бот работает в режиме Zero-Lag!**")
-    send_message_direct(chat_id, "👇 Главное меню:", reply_markup=get_main_keyboard())
+    send_message_direct(chat_id, WELCOME_MESSAGES["zero_lag"])
+    send_message_direct(chat_id, WELCOME_MESSAGES["main_menu"], reply_markup=get_main_keyboard())
 
-@bot.message_handler(commands=['calc', 'farm', 'timers', 'proofs', 'all_combo', 'miners', 'faucets', 'profile', 'reviews', 'ads'])
-@bot.message_handler(func=lambda msg: msg.text in [
-    "🚀 Меню комбо-игр", "👤 Профиль и статы", "📱 Телефонные майнеры", "🚰 Крипто-краны", 
-    "🌾 Авто-фермы (без комбо)", "⚡ Проверить все комбо", "🧮 Крипто-курс", "📊 Защита фермы", 
-    "⏰ Мои таймеры", "💬 Отзывы", "📢 Реклама и монетизация", "💎 Скрины выплат"
-])
+@bot.message_handler(commands=BOT_COMMANDS)
+@bot.message_handler(func=lambda msg: msg.text in MAIN_MENU_BUTTONS)
+
+
 def handle_menu_text(message: types.Message):
     chat_id = message.chat.id
     if chat_id not in verified_users:
