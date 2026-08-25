@@ -256,84 +256,19 @@ class UltimateSecurityCore:
         self.network_core_blacklist = NETWORK_CORE_BLACKLIST
         self.ghost_mode_domains = GHOST_MODE_DOMAINS
         self.scam_username_markers = SCAM_USERNAME_MARKERS
+        self.dangerous_patterns = DANGEROUS_INJECTION_PATTERNS
 
     @staticmethod
     def sanitize_input(text: str) -> str:
         if not text:
-            return ""
+            return ""           
             
-            dangerous_patterns = [
-                # === Выполнение кода и обход песочницы Python (Sandbox Escapes) ===
-                "eval(",
-                "exec(",
-                "compile(",
-                "__import__",
-                "getattr(",
-                "setattr(",
-                "delattr(",
-                "globals(",
-                "locals(",
-                "vars(",
-                "input(",
-                "breakpoint(",
-                
-                # === Магические атрибуты и рефлексия (для доступа к системным модулям через цепочки классов) ===
-                "__subclasses__",
-                "__bases__",
-                "__mro__",
-                "__globals__",
-                "__code__",
-                "__builtins__",
-                "__init__",
-                "__class__",
-                "__dict__",
-                "__closure__",
-                
-                # === Опасные модули и системные вызовы ОС ===
-                "import os",
-                "import sys",
-                "import subprocess",
-                "import pty",
-                "import socket",
-                "import ctypes",
-                "import pickle",
-                "import marshal",
-                "import urllib",
-                "import http",
-                "import requests",
-                "subprocess",
-                "os.system",
-                "os.popen",
-                "os.spawn",
-                "os.exec",
-                "shutil.rmtree",
-                "pty.spawn",
-                "ctypes.CDLL",
-                
-                # === SQL-инъекции (для защиты баз данных) ===
-                ";--",
-                "DROP TABLE",
-                "DROP DATABASE",
-                "UNION SELECT",
-                "UNION ALL SELECT",
-                "OR 1=1",
-                "OR '1'='1",
-                "EXEC xp_",
-                "INFORMATION_SCHEMA",
-                "SLEEP(",
-                "BENCHMARK(",
-                
-                # === Межсайтовый скриптинг (XSS / Web-инъекции на случай веб-вставок) ===
-                "<script>",
-                "javascript:",
-                "onerror=",
-                "onload=",
-        ]
 
-        for pattern in dangerous_patterns:
-            if pattern.lower() in text.lower():
+        text_lower = text.lower()
+        for pattern in DANGEROUS_INJECTION_PATTERNS:
+            if pattern.lower() in text_lower:
                 return "[BLOCKED_INJECTION_ATTEMPT]"
-        return text
+        return textt
 
     def analyze_traffic(self, text: str) -> tuple[bool, str]:
         lower_text = text.lower()
