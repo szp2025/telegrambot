@@ -24,7 +24,7 @@ from config import (
     VERIFIED_FILE,
     ACTIVE_ADS_FILE,  # <-- Импортируем путь к файлу рекламы
     SCAM_PATTERNS,
-    DANGEROUS_INJECTION_PATTERNS?
+    DANGEROUS_INJECTION_PATTERNS,
     BOT_COMMANDS,
     PHISHING_DOMAINS
 )
