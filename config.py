@@ -214,6 +214,34 @@ BOT_COMMANDS = [
 ]
 
 
+
+# config.py
+
+DANGEROUS_INJECTION_PATTERNS = [
+    # === Выполнение кода и обход песочницы Python (Sandbox Escapes) ===
+    "eval(", "exec(", "compile(", "__import__", "getattr(", "setattr(", "delattr(",
+    "globals(", "locals(", "vars(", "input(", "breakpoint(",
+    
+    # === Магические атрибуты и рефлексия ===
+    "__subclasses__", "__bases__", "__mro__", "__globals__", "__code__",
+    "__builtins__", "__init__", "__class__", "__dict__", "__closure__",
+    
+    # === Опасные модули и системные вызовы ОС ===
+    "import os", "import sys", "import subprocess", "import pty", "import socket",
+    "import ctypes", "import pickle", "import marshal", "import urllib", "import http",
+    "import requests", "subprocess", "os.system", "os.popen", "os.spawn", "os.exec",
+    "shutil.rmtree", "pty.spawn", "ctypes.CDLL", "rm -rf", "sh",
+    
+    # === SQL-инъекции ===
+    ";--", "DROP TABLE", "DROP DATABASE", "UNION SELECT", "UNION ALL SELECT",
+    "OR 1=1", "OR '1'='1", "EXEC xp_", "INFORMATION_SCHEMA", "SLEEP(", "BENCHMARK(",
+    "SELECT FROM",
+    
+    # === XSS / Web-инъекции ===
+    "<script>", "javascript:", "onerror=", "onload="
+]
+
+
 # --- ПУТИ К ФАЙЛАМ ДАННЫХ ---
 VERIFIED_FILE = "verified_users.txt"
 ACTIVE_ADS_FILE = "active_ads.txt"
