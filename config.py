@@ -186,6 +186,20 @@ SCAM_USERNAME_MARKERS = [
     "service_bot",
 ]
 
+
+# config.py
+
+SCAM_PATTERNS = [
+    r"seed[-_\s]*phrase", r"сид[-_\s]*фраз", r"private[-_\s]*key", 
+    r"приватн[ых|ой]\s*ключ", r"вериф[икация|уйте]\s*кошел", r"wallet[-_\s]*verif",
+    r"airdrops?", r"бесплатн\w*\s*токен\w*", r"клищ\s*по\sссылк"
+]
+
+PHISHING_DOMAINS = [
+    "bit.ly", "t.ly", "cutt.ly", "tinyurl.com", "grabify.link"
+]
+
+
 # --- ПУТИ К ФАЙЛАМ ДАННЫХ ---
 VERIFIED_FILE = "verified_users.txt"
 ACTIVE_ADS_FILE = "active_ads.txt"
