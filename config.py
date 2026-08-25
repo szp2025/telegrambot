@@ -6,7 +6,7 @@ COMBO_GAMES_DATA = {
         "path": "/doodle-jump/",
         "ref_link_1": "https://t.me/DoodlePlayBot/app?startapp=DJ2FHPOLZ",
         "ref_link_2": "https://t.me/DoodlePlayBot/app?startapp=DJ2FHPOLZ",
-        "strategy": "🟡 Стратегия Doodle Jump.Таблица прокачки Уровень Стоимость (общая) Монет в час",
+        "strategy": "🟡 Стратегия Doodle Jump.Таблица прокачки",
     },
     "golden-miner": {
         "name": "⛏️ Golden Miner",
