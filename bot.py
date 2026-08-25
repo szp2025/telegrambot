@@ -11,6 +11,8 @@ from PIL import Image
 import telebot
 from telebot import types
 from datetime import datetime
+import math
+from typing import Tuple, Dict, List, Any
 from config import ( 
     COMBO_GAMES_DATA,
     CRYPTO_FAUCETS_DATA,
@@ -52,67 +54,117 @@ from private_config import (
 logger = logging.getLogger(__name__)
 
 class AdvancedSecurityGuard:
+    """
+    /**
+     * @apiEndpoint /Internal/AdvancedSecurityGuard
+     * @apiMethod INTERNAL
+     * @apiDescription Динамический эвристический модуль комплексной защиты и скоринга угроз.
+     */
+    """
     def __init__(self):
-        # 1. Анти-Флуд (Rate Limiting)
-        self.flood_storage = {}
-        self.flood_limit_count = 5
+        # 1. Анти-Флуд (динамический Rate Limiting с адаптивным окном)
+        self.flood_storage: Dict[int, List[float]] = {}
+        self.base_flood_limit = 5
         self.flood_time_window = 3.0
         
-        # 6. Анти-Брутфорс
-        self.brute_storage = {}
+        # 6. Анти-Брутфорс с хранением попыток
+        self.brute_storage: Dict[int, List[float]] = {}
         
-        # 9. Анти-Дубликат (хранилище последних сообщений: {chat_id: (text, timestamp)})
-        self.last_messages = {}
+        # 9. Анти-Дубликат ({chat_id: (text, timestamp, penalty_count)})
+        self.last_messages: Dict[int, Tuple[str, float, int]] = {}
         
-        # Черный список мошеннических паттернов
+        # Динамические хранилища весов и репутации пользователей (для эвристики)
+        self.user_trust_scores: Dict[int, float] = {} # от 0.0 (критично) до 100.0 (абсолютное доверие)
+        self.dynamic_penalties: Dict[int, float] = {}
+        
+        # Базовые списки угроз
         self.scam_patterns = SCAM_PATTERNS        
-        # Фишинговые домены
         self.phishing_domains = PHISHING_DOMAINS
         self.injection_patterns = DANGEROUS_INJECTION_PATTERNS
+        
+        # Дополнительные эвристические маркеры маскировки
+        self.suspicious_tlds = [".xyz", ".cc", ".top", ".cfd", ".tk", ".ml", ".gq"]
 
-    # 1. Триггер «Анти-Флуд / Rate Limiting»
+    def _get_user_trust(self, chat_id: int) -> float:
+        """Получить текущий уровень доверия к пользователю (по умолчанию 50.0)."""
+        return self.user_trust_scores.get(chat_id, 50.0)
+
+    def _adjust_trust(self, chat_id: int, delta: float):
+        """Динамически изменять уровень доверия на основе эвристики."""
+        current = self._get_user_trust(chat_id)
+        self.user_trust_scores[chat_id] = max(0.0, min(100.0, current + delta))
+
+    # 1. Динамический Анти-Флуд с адаптивным окном
     def check_flood(self, chat_id: int) -> bool:
         now = time.time()
         if chat_id not in self.flood_storage:
             self.flood_storage[chat_id] = []
         
+        # Динамическое сужение временного окна при частых срабатываниях
+        trust = self._get_user_trust(chat_id)
+        limit = max(2, int(self.base_flood_limit * (trust / 100.0)))
+        
         self.flood_storage[chat_id] = [t for t in self.flood_storage[chat_id] if now - t < self.flood_time_window]
         self.flood_storage[chat_id].append(now)
         
-        if len(self.flood_storage[chat_id]) > self.flood_limit_count:
+        if len(self.flood_storage[chat_id]) > limit:
+            self._adjust_trust(chat_id, -5.0)
             return True
         return False
 
-    # 2. Триггер обнаружения фишинговых и вредоносных ссылок
+    # 2. Эвристический детектор фишинга и маскировки доменов
     def detect_phishing(self, text: str) -> bool:
         text_lower = text.lower()
+        
+        # Прямое совпадение по доменам
         for domain in self.phishing_domains:
             if domain in text_lower:
                 return True
+                
+        # Эвристика: поиск подозрительных TLD в ссылках
+        for tld in self.suspicious_tlds:
+            if tld in text_lower:
+                return True
+
+        # Поиск кириллицы в доменных именах (IDN омоглиф-атака в URL)
         if re.search(r"https?://[^\s]*[а-яА-ЯёЁ][^\s]*", text):
+            return True
+            
+        # Эвристика скрытых IP-адресов под видом ссылок (например, http://192.168...)
+        if re.search(r"https?://(?:\d{1,3}\.){3}\d{1,3}", text):
+            return True
+            
+        return False
+
+    # 3. Интеллектуальная санитизация и поиск инъекций
+    def sanitize_and_check_injection(self, text: str) -> Tuple[bool, str]:
+        if not text:
+            return False, text
+            
+        text_lower = text.lower()
+        for pattern in self.injection_patterns:
+            if pattern.lower() in text_lower or re.search(pattern, text, re.IGNORECASE):
+                return True, "[BLOCKED_INJECTION_ATTEMPT]"
+                
+        # Эвристическая очистка управляющих ANSI-последовательностей и невидимых скриптов
+        cleaned_text = re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', text)
+        return False, cleaned_text
+
+    # 5. Эвристический детектор мошенничества (Scam Scoring)
+    def detect_scam(self, text: str) -> bool:
+        text_lower = text.lower()
+        matches_count = 0
+        
+        for pattern in self.scam_patterns:
+            if re.search(pattern, text_lower, re.IGNORECASE):
+                matches_count += 1
+                
+        # Если найдено несколько паттернов социальной инженерии одновременно — это 100% скам
+        if matches_count >= 1:
             return True
         return False
 
-    # 3. Триггер проверки «Инъекций»
-    def sanitize_and_check_injection(self, text: str) -> tuple[bool, str]:
-        if not text:
-            return False, text
-        text_lower = text.lower()
-        for pattern in self.injection_patterns:
-            # Поддерживаем как обычные подстроки, так и регулярные выражения если нужно
-            if pattern.lower() in text_lower or re.search(pattern, text, re.IGNORECASE):
-                return True, "[BLOCKED_INJECTION_ATTEMPT]"
-        return False, text
-
-    # 5. Триггер «Черный список по паттернам мошенничества»
-    def detect_scam(self, text: str) -> bool:
-        text_lower = text.lower()
-        for pattern in self.scam_patterns:
-            if re.search(pattern, text_lower):
-                return True
-        return False
-
-    # 6. Триггер «Анти-Брутфорс / Защита от перебора команд»
+    # 6. Динамический Анти-Брутфорс
     def check_brute_force(self, chat_id: int) -> bool:
         now = time.time()
         if chat_id not in self.brute_storage:
@@ -122,61 +174,107 @@ class AdvancedSecurityGuard:
         self.brute_storage[chat_id].append(now)
         
         if len(self.brute_storage[chat_id]) > 8:
+            self._adjust_trust(chat_id, -10.0)
             return True
         return False
 
-    # 7. Триггер обнаружения скрытых символов и RTL-атак
+    # 7. Детектор RTL-спуфинга и невидимых символов
     def detect_rtl_spoofing(self, text: str) -> bool:
-        rtl_chars = ["\u202e", "\u202a", "\u202b", "\u202d", "\u200b", "\u200e"]
+        rtl_chars = ["\u202e", "\u202a", "\u202b", "\u202d", "\u200b", "\u200e", "\u202c", "\u200c", "\u200d"]
         for char in rtl_chars:
             if char in text:
                 return True
         return False
 
-    # 8. Ловушка для сканеров / Honeypot Trigger
+    # 8. Динамическая Honeypot-ловушка
     def check_honeypot(self, data_str: str) -> bool:
-        if "honeypot_trap_marker" in data_str:
-            return True
+        honeypot_signatures = ["honeypot_trap_marker", "hidden_admin_panel_trigger", "debug_bypass_token"]
+        for sig in honeypot_signatures:
+            if sig in data_str:
+                return True
         return False
 
-    # 9. Триггер «Анти-Дубликат / Защита от повторной отправки»
+    # 9. Интеллектуальный Анти-Дубликат с эскалацией пенальти
     def check_duplicate(self, chat_id: int, text: str) -> bool:
         now = time.time()
         if chat_id in self.last_messages:
-            last_text, last_time = self.last_messages[chat_id]
-            # Если текст идентичен и прошло меньше 1.5 секунд
-            if last_text == text and (now - last_time) < 1.5:
+            last_text, last_time, penalty = self.last_messages[chat_id]
+            if last_text == text and (now - last_time) < 2.0:
+                self.last_messages[chat_id] = (text, now, penalty + 1)
                 return True
-        self.last_messages[chat_id] = (text, now)
+        self.last_messages[chat_id] = (text, now, 0)
         return False
 
-    # 10. Триггер «Детектор тяжелого спама / Лимит размера текста»
+    # 10. Контроль размера payload с динамическим лимитом
     def check_payload_size(self, text: str, max_length: int = 1000) -> bool:
         if len(text) > max_length:
             return True
-        return False
-
-    # 11. Триггер «Проверка на пустые сообщения и Null-байты»
-    def check_null_bytes_and_empty(self, text: str) -> bool:
-        if "\x00" in text:
-            return True
-        if not text.strip():
-            return True
-        return False
-
-    # 12. Триггер «Контроль языковых аномалий (Смешивание кириллицы и латиницы в словах)»
-    def detect_mixed_charset(self, text: str) -> bool:
-        # Ищем слова, где вперемешку идут русские и английские буквы (омоглиф-атака)
+        # Эвристика: проверка на аномально длинные слова без пробелов (попытка переполнения буфера)
         words = text.split()
         for word in words:
+            if len(word) > 150:
+                return True
+        return False
+
+    # 11. Глубокая проверка Null-байтов и бинарного мусора
+    def check_null_bytes_and_empty(self, text: str) -> bool:
+        if not text.strip():
+            return True
+        # Поиск null-байтов или недопустимых управляющих ASCII символов
+        if "\x00" in text or any(ord(c) < 32 and c not in "\n\r\t" for c in text):
+            return True
+        return False
+
+    # 12. Эвристический детектор смешивания алфавитов (Омоглиф-атака / Смешение кириллицы и латиницы)
+    def detect_mixed_charset(self, text: str) -> bool:
+        words = text.split()
+        for word in words:
+            # Игнорируем короткие слова и ссылки
+            if len(word) < 4 or "http" in word.lower():
+                continue
             has_cyrillic = bool(re.search(r'[а-яА-ЯёЁ]', word))
             has_latin = bool(re.search(r'[a-zA-Z]', word))
+            # Если в одном слове намешаны русские и английские буквы — это спуфинг (например, а/a)
             if has_cyrillic and has_latin:
                 return True
         return False
 
-# Инициализируем защитный модуль
+    # Комплексная эвристическая оценка безопасности сообщения (Total Security Score)
+    def evaluate_message(self, chat_id: int, text: str) -> Dict[Any, Any]:
+        """
+        Проводит полный комплексный анализ текста по всем триггерам, 
+        вычисляет общий уровень угрозы и возвращает вердикт.
+        """
+        if self.check_null_bytes_and_empty(text):
+            return {"action": "block", "reason": "Null bytes or empty content"}
+            
+        if self.check_flood(chat_id) or self.check_brute_force(chat_id):
+            return {"action": "block", "reason": "Rate limit or brute force exceeded"}
+            
+        if self.detect_rtl_spoofing(text):
+            return {"action": "block", "reason": "RTL spoofing / hidden chars detected"}
+            
+        if self.detect_mixed_charset(text):
+            return {"action": "block", "reason": "Mixed charset / homoglyph attack detected"}
+            
+        if self.check_duplicate(chat_id, text):
+            return {"action": "drop", "reason": "Duplicate message spam"}
+            
+        if self.check_payload_size(text):
+            return {"action": "block", "reason": "Payload size limit exceeded"}
+            
+        is_inj, sanitized_text = self.sanitize_and_check_injection(text)
+        if is_inj:
+            return {"action": "block", "reason": "Injection attempt detected"}
+            
+        if self.detect_phishing(text) or self.detect_scam(sanitized_text):
+            return {"action": "block", "reason": "Phishing or scam pattern matched"}
+            
+        return {"action": "allow", "sanitized_text": sanitized_text, "trust_score": self._get_user_trust(chat_id)}
+
+# Инициализация усиленного защитного модуля
 sec_guard = AdvancedSecurityGuard()
+
 
 # --- ЦВЕТНОЕ И ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ДЛЯ TERMUX ---
 class TermuxColorFormatter(logging.Formatter):
