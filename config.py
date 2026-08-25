@@ -248,6 +248,53 @@ DANGEROUS_INJECTION_PATTERNS = [
 ]
 
 
+PROFILE_KEYBOARD_DATA = [
+    [("➕ Добавить / Обновить игру", "prof_add")],
+    [("📋 Посмотреть мои статы", "prof_view")]
+]
+
+REVIEWS_KEYBOARD_DATA = [
+    [("✍️ Оставить отзыв", "review_add")],
+    [("📖 Читать отзывы", "review_read")]
+]
+
+ADS_KEYBOARD_DATA = [
+    [("💰 Купить рекламу", "ads_buy")],
+    [("📊 Статистика аудитории", "ads_stats")]
+]
+
+ADS_TARIFFS_DATA = [
+    [("⏱ Закреп на 24 часа — $15", "adtariff_24h")],
+    [("📢 Рассылка по всей базе — $30", "adtariff_broadcast")],
+    [("🔙 Назад", "ads_menu_back")]
+]
+
+CRYPTO_COINS_DATA = [
+    ("💵 USDT (TRC20)", "usdt"),
+    ("💎 GRAM / TON", "gram"),
+    ("🪙 Bitcoin (BTC)", "btc"),
+    ("⚡ Tron (TRX)", "tron")
+]
+
+CRYPTO_CURRENCY_DATA = [
+    ("🪙 BTC", "cur_btc"),
+    ("🪙 ETH", "cur_eth"),
+    ("🪙 USDT", "cur_usdt"),
+    ("🪙 GRAM", "cur_gram")
+]
+
+
+# config.py
+
+SINGLE_GAME_ACTIONS = {
+    "combo": ("🎯 Открыть комбо", "game_"),
+    "tactics": ("🧠 Тактика", "strat_"),
+    "play_1": ("🎮 Играть 1",),
+    "play_2": ("🎮 Играть 2",),
+    "back": ("🔙 Назад к списку", "combopage_")
+}
+
+
 # --- ПУТИ К ФАЙЛАМ ДАННЫХ ---
 VERIFIED_FILE = "verified_users.txt"
 ACTIVE_ADS_FILE = "active_ads.txt"
