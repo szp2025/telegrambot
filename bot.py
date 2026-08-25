@@ -282,7 +282,7 @@ class UltimateSecurityCore:
         for pattern in DANGEROUS_INJECTION_PATTERNS:
             if pattern.lower() in text_lower:
                 return "[BLOCKED_INJECTION_ATTEMPT]"
-        return textt
+        return text
 
     def analyze_traffic(self, text: str) -> tuple[bool, str]:
         lower_text = text.lower()
