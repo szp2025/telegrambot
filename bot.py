@@ -11,8 +11,7 @@ from PIL import Image
 import telebot
 from telebot import types
 from datetime import datetime
-from config import (
- 
+from config import ( 
     COMBO_GAMES_DATA,
     CRYPTO_FAUCETS_DATA,
     INDEPENDENT_FARMS_DATA,
@@ -26,6 +25,7 @@ from config import (
     SCAM_PATTERNS,
     DANGEROUS_INJECTION_PATTERNS,
     BOT_COMMANDS,
+    MAIN_MENU_BUTTONS,
     PHISHING_DOMAINS
 )
 
@@ -407,14 +407,9 @@ manager = MiningComboManager()
 
 def get_main_keyboard():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(
-        types.KeyboardButton("🚀 Меню комбо-игр"), types.KeyboardButton("👤 Профиль и статы"),
-        types.KeyboardButton("📱 Телефонные майнеры"), types.KeyboardButton("🚰 Крипто-краны"),
-        types.KeyboardButton("🌾 Авто-фермы (без комбо)"), types.KeyboardButton("⚡ Проверить все комбо"),
-        types.KeyboardButton("🧮 Крипто-курс"), types.KeyboardButton("📊 Защита фермы"),
-        types.KeyboardButton("⏰ Мои таймеры"), types.KeyboardButton("💬 Отзывы"),
-        types.KeyboardButton("📢 Реклама и монетизация"), types.KeyboardButton("💎 Скрины выплат")
-    )
+    # Создаем кнопки из списка в конфиге в один подход
+    buttons = [types.KeyboardButton(btn_text) for btn_text in MAIN_MENU_BUTTONS]
+    markup.add(*buttons)
     return markup
 
 def get_profile_keyboard():
