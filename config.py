@@ -38,6 +38,46 @@ COMBO_GAMES_DATA = {
     },
 }
 
+
+PHONE_MINER_ACTIONS = {
+    "info_prefix": "pinfo_",
+    "play_text": "📥 Play",
+    "play_1_text": "🎮 Играть 1",
+    "play_2_text": "🎮 Играть 2"
+}
+
+FAUCETS_ACTIONS = {
+    "info_prefix": "finfo_",
+    "play_1_text": "🎮 Играть 1",
+    "play_2_text": "🎮 Играть 2"
+}
+
+FARMS_ACTIONS = {
+    "strat_prefix": "farm_strat_",
+    "strat_suffix_template": "📋 {name} (Стратегия)",
+    "play_1_text": "🎮 Играть 1",
+    "play_2_text": "🎮 Играть 2"
+}
+
+TIMER_DURATIONS = [1, 3, 6, 8, 12, 24]  # Список часов для кнопок быстрого выбора
+
+TIMER_ACTIONS = {
+    "set_prefix": "settimer_",
+    "custom_prefix": "customtimer_",
+    "cancel_prefix": "canceltimer_",
+    "custom_text": "✏️ Ввести своё время (ч/м)",
+    "cancel_text": "❌ Отключить таймер",
+    "back_text": "🔙 Назад к списку игр",
+    "back_callback": "timers_menu_back"
+}
+
+
+FIAT_CURRENCIES = [
+    ("USD ($)", "usd"),
+    ("EUR (€)", "eur"),
+    ("RUB (₽)", "rub")
+]
+
 INDEPENDENT_FARMS_DATA = {
     "jacks-farm": {
         "name": "👨‍🌾 Jack's Farm",
@@ -222,6 +262,17 @@ MAIN_MENU_BUTTONS = [
     "⏰ Мои таймеры", "💬 Отзывы",
     "📢 Реклама и монетизация", "💎 Скрины выплат"
 ]
+
+BOT_COMMANDS = [
+    'calc', 'farm', 'timers', 'proofs', 
+    'all_combo', 'miners', 'faucets', 
+    'profile', 'reviews', 'ads'
+]
+
+WELCOME_MESSAGES = {
+    "zero_lag": "⚡ **Бот работает в режиме Zero-Lag!**",
+    "main_menu": "👇 Главное меню:"
+}
 
 DANGEROUS_INJECTION_PATTERNS = [
     # === Выполнение кода и обход песочницы Python (Sandbox Escapes) ===
