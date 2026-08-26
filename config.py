@@ -639,21 +639,21 @@ COMBO_GAMES_DATA = {
 PHONE_MINER_ACTIONS = {
     "info_prefix": "pinfo_",
     "play_text": "📥 Play",
-    "play_1_text": "🎮 Играть 1",
-    "play_2_text": "🎮 Играть 2"
+    "play_1_text": "🎮  1",
+    "play_2_text": "🎮  2"
 }
 
 FAUCETS_ACTIONS = {
     "info_prefix": "finfo_",
-    "play_1_text": "🎮 Играть 1",
-    "play_2_text": "🎮 Играть 2"
+    "play_1_text": "🎮  1",
+    "play_2_text": "🎮  2"
 }
 
 FARMS_ACTIONS = {
     "strat_prefix": "farm_strat_",
     "strat_suffix_template": "📋 {name} (Стратегия)",
-    "play_1_text": "🎮 Играть 1",
-    "play_2_text": "🎮 Играть 2"
+    "play_1_text": "🎮  1",
+    "play_2_text": "🎮  2"
 }
 
 TIMER_DURATIONS = [1, 3, 6, 8, 12, 24]  # Список часов для кнопок быстрого выбора
