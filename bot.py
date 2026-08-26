@@ -105,39 +105,6 @@ def get_ai_profile_keyboard() -> types.InlineKeyboardMarkup:
     return keyboard
 
 
-# Обработчик нажатия на кнопку "Задать вопрос Виртуальному Интеллекту"
-@bot.callback_query_handler(func=lambda call: call.data == "start_ai_chat")
-def handle_start_ai_chat(call):
-    # Отправляем сообщение пользователю с предложением задать вопрос
-    bot.answer_callback_query(call.id) # Убираем часики загрузки с кнопки
-    bot.send_message(
-        call.message.chat.id,
-        "🧠 **Виртуальный Интеллект активирован!**\n\n"
-        "Напишите ваш вопрос следующим сообщением, и я проанализирую вашу стратегию или отвечу на любые вопросы по игре.",
-        parse_mode="Markdown"
-    )
-    # Здесь можно также включить состояние ожидания ввода, если у вас используется FSM для telebot
-
-# Обработчик входящих текстовых сообщений для ИИ
-@bot.message_handler(func=lambda message: True, content_types=['text'])
-def handle_all_text_messages(message):
-    # Проверяем, не является ли это обычным текстом команды (если нужно, можно фильтровать)
-    if message.text.startswith('/'):
-        return
-        
-    # Получаем контекст игры пользователя (если он у вас где-то хранится, например, в словаре USER_SELECTED_GAMES)
-    user_id = message.from_user.id
-    # Пример получения контекста (подставьте вашу переменную хранения игр, если она есть)
-    current_game_key = USER_SELECTED_GAMES.get(user_id, [None])[-1] if user_id in USER_SELECTED_GAMES and USER_SELECTED_GAMES[user_id] else None
-    
-    game_context = EXISTING_GAMES.get(current_game_key) if current_game_key else None
-    
-    # Генерация ответа через наш класс ИИ
-    ai_response = ai_assistant.generate_response(message.text, game_context)
-    
-    # Отправка ответа пользователю
-    bot.reply_to(message, ai_response, parse_mode="Markdown")
-
 logger = logging.getLogger(__name__)
 
 class AdvancedSecurityGuard:
@@ -750,6 +717,41 @@ def get_profile_keyboard():
     keyboard.row(ai_button)
     
     return keyboard
+
+
+
+# Обработчик нажатия на кнопку "Задать вопрос Виртуальному Интеллекту"
+@bot.callback_query_handler(func=lambda call: call.data == "start_ai_chat")
+def handle_start_ai_chat(call):
+    # Отправляем сообщение пользователю с предложением задать вопрос
+    bot.answer_callback_query(call.id) # Убираем часики загрузки с кнопки
+    bot.send_message(
+        call.message.chat.id,
+        "🧠 **Виртуальный Интеллект активирован!**\n\n"
+        "Напишите ваш вопрос следующим сообщением, и я проанализирую вашу стратегию или отвечу на любые вопросы по игре.",
+        parse_mode="Markdown"
+    )
+    # Здесь можно также включить состояние ожидания ввода, если у вас используется FSM для telebot
+
+# Обработчик входящих текстовых сообщений для ИИ
+@bot.message_handler(func=lambda message: True, content_types=['text'])
+def handle_all_text_messages(message):
+    # Проверяем, не является ли это обычным текстом команды (если нужно, можно фильтровать)
+    if message.text.startswith('/'):
+        return
+        
+    # Получаем контекст игры пользователя (если он у вас где-то хранится, например, в словаре USER_SELECTED_GAMES)
+    user_id = message.from_user.id
+    # Пример получения контекста (подставьте вашу переменную хранения игр, если она есть)
+    current_game_key = USER_SELECTED_GAMES.get(user_id, [None])[-1] if user_id in USER_SELECTED_GAMES and USER_SELECTED_GAMES[user_id] else None
+    
+    game_context = EXISTING_GAMES.get(current_game_key) if current_game_key else None
+    
+    # Генерация ответа через наш класс ИИ
+    ai_response = ai_assistant.generate_response(message.text, game_context)
+    
+    # Отправка ответа пользователю
+    bot.reply_to(message, ai_response, parse_mode="Markdown")
 
 
 def get_reviews_keyboard():
