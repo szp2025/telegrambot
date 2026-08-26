@@ -735,19 +735,12 @@ def handle_start_ai_chat(call):
 # Обработчик входящих текстовых сообщений для ИИ
 @bot.message_handler(func=lambda message: True, content_types=['text'])
 def handle_all_text_messages(message):
-    # Проверяем, не является ли это обычным текстом команды (если нужно, можно фильтровать)
+    # Пропускаем команды, начинающиеся с косой черты
     if message.text.startswith('/'):
         return
         
-    # Получаем контекст игры пользователя (если он у вас где-то хранится, например, в словаре USER_SELECTED_GAMES)
-    user_id = message.from_user.id
-    # Пример получения контекста (подставьте вашу переменную хранения игр, если она есть)
-    current_game_key = USER_SELECTED_GAMES.get(user_id, [None])[-1] if user_id in USER_SELECTED_GAMES and USER_SELECTED_GAMES[user_id] else None
-    
-    game_context = EXISTING_GAMES.get(current_game_key) if current_game_key else None
-    
-    # Генерация ответа через наш класс ИИ
-    ai_response = ai_assistant.generate_response(message.text, game_context)
+    # Безопасный вызов ИИ без использования несуществующих глобальных переменных
+    ai_response = ai_assistant.generate_response(message.text, gameContext=None)
     
     # Отправка ответа пользователю
     bot.reply_to(message, ai_response, parse_mode="Markdown")
