@@ -732,14 +732,32 @@ def handle_start_ai_chat(call):
     )
     # Здесь можно также включить состояние ожидания ввода, если у вас используется FSM для telebot
 
-# Обработчик входящих текстовых сообщений для ИИ
-@bot.message_handler(func=lambda message: True, content_types=['text'])
-def handle_all_text_messages(message):
-    # Пропускаем команды, начинающиеся с косой черты
+# Активный флаг или словарь для отслеживания режима ИИ у пользователей
+AI_CHAT_ACTIVE = set()
+
+# Обработчик нажатия на инлайн-кнопку "Задать вопрос Виртуальному Интеллекту"
+@bot.callback_query_handler(func=lambda call: call.data == "start_ai_chat")
+def handle_start_ai_chat(call):
+    bot.answer_callback_query(call.id)
+    # Включаем режим ИИ для этого пользователя
+    AI_CHAT_ACTIVE.add(call.from_user.id)
+    bot.send_message(
+        call.message.chat.id,
+        "🧠 **Виртуальный Интеллект активирован!**\n\n"
+        "Напишите ваш вопрос следующим сообщением, и я проанализирую вашу стратегию. "
+        "(Чтобы выйти из режима ИИ, просто отправьте любую команду, например /start)",
+        parse_mode="Markdown"
+    )
+
+# Безопасный обработчик текстовых сообщений для ИИ
+@bot.message_handler(func=lambda message: message.from_user.id in AI_CHAT_ACTIVE, content_types=['text'])
+def handle_ai_text_messages(message):
+    # Если пользователь написал команду, выключаем режим ИИ и пропускаем ее дальше
     if message.text.startswith('/'):
+        AI_CHAT_ACTIVE.discard(message.from_user.id)
         return
         
-    # Безопасный вызов ИИ без использования несуществующих глобальных переменных
+    # Генерация ответа через наш класс ИИ
     ai_response = ai_assistant.generate_response(message.text, gameContext=None)
     
     # Отправка ответа пользователю
