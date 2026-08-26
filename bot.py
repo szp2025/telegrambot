@@ -14,6 +14,10 @@ from datetime import datetime
 import math
 import urllib.parse
 from typing import Tuple, Dict, List, Any
+from aiogram import types
+from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters.state import State, StatesGroup
+
 from config import ( 
     COMBO_GAMES_DATA,
     CRYPTO_FAUCETS_DATA,
