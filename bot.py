@@ -14,11 +14,6 @@ from datetime import datetime
 import math
 import urllib.parse
 from typing import Tuple, Dict, List, Any
-from aiogram import types
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-
 
 
 from config import ( 
