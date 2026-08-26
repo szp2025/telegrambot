@@ -94,16 +94,6 @@ class BotVirtualAssistant:
 # Инициализация виртуального помощника
 ai_assistant = BotVirtualAssistant()
 
-# Функция генерации клавиатуры с кнопкой вызова ИИ для telebot
-def get_ai_profile_keyboard() -> types.InlineKeyboardMarkup:
-    keyboard = types.InlineKeyboardMarkup()
-    ai_button = types.InlineKeyboardButton(
-        text="🧠 Задать вопрос Виртуальному Интеллекту", 
-        callback_data="start_ai_chat"
-    )
-    keyboard.add(ai_button)
-    return keyboard
-
 
 logger = logging.getLogger(__name__)
 
@@ -718,6 +708,15 @@ def get_profile_keyboard():
     
     return keyboard
 
+# Функция генерации клавиатуры с кнопкой вызова ИИ для telebot
+def get_ai_profile_keyboard() -> types.InlineKeyboardMarkup:
+    keyboard = types.InlineKeyboardMarkup()
+    ai_button = types.InlineKeyboardButton(
+        text="🧠 Задать вопрос Виртуальному Интеллекту", 
+        callback_data="start_ai_chat"
+    )
+    keyboard.add(ai_button)
+    return keyboard
 
 
 # Обработчик нажатия на кнопку "Задать вопрос Виртуальному Интеллекту"
