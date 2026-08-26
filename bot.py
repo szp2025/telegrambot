@@ -15,8 +15,11 @@ import math
 import urllib.parse
 from typing import Tuple, Dict, List, Any
 from aiogram import types
-from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+
 
 from config import ( 
     COMBO_GAMES_DATA,
@@ -63,7 +66,7 @@ logging.basicConfig(level=logging.INFO)
 class AIStates(StatesGroup):
     waiting_for_ai_query = State()
 
-#Класс для управления виртуальным интеллектом бота.
+# Класс для управления виртуальным интеллектом бота.
 # Отвечает за генерацию ответов, анализ стратегий и взаимодействие с игроками.
 class BotVirtualAssistant:
     def __init__(self, model_name: str = "Gemini AI Core"):
@@ -73,7 +76,6 @@ class BotVirtualAssistant:
             "Твоя задача — помогать игрокам анализировать стратегии (например, Doodle Jump), "
             "подбирать оптимальные уровни прокачки и давать детальные рекомендации."
         )
-
 
     def generate_response(self, userQuery: str, gameContext: dict = None) -> str:
         # Интеллектуальный анализ контекста запроса
@@ -114,14 +116,14 @@ async def handle_ai_dialogue(message: types.Message, state: FSMContext):
     await message.reply(ai_response, parse_mode="Markdown")
 
 def get_ai_profile_keyboard() -> types.InlineKeyboardMarkup:
-    keyboard = types.InlineKeyboardMarkup(row_width=1)
-    keyboard.add(
+    builder = InlineKeyboardBuilder()
+    builder.row(
         types.InlineKeyboardButton(
             text="🧠 Задать вопрос Виртуальному Интеллекту", 
             callback_data="start_ai_chat"
         )
     )
-    return keyboard
+    return builder.as_markup()
 
 logger = logging.getLogger(__name__)
 
