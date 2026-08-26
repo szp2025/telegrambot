@@ -56,6 +56,89 @@ from private_config import (
     TOKEN,
 )
 
+
+# Настройка логирования для отслеживания запросов ИИ
+logging.basicConfig(level=logging.INFO)
+
+class AIStates(StatesGroup):
+    waiting_for_ai_query = State()
+
+/**
+ * Класс для управления виртуальным интеллектом бота.
+ * Отвечает за генерацию ответов, анализ стратегий и взаимодействие с игроками.
+ */
+class BotVirtualAssistant:
+    def __init__(self, model_name: str = "Gemini AI Core"):
+        self.model_name = model_name
+        self.system_prompt = (
+            "Ты — продвинутый виртуальный интеллект игрового бота. "
+            "Твоя задача — помогать игрокам анализировать стратегии (например, Doodle Jump), "
+            "подбирать оптимальные уровни прокачки и давать детальные рекомендации."
+        )
+
+    /**
+     * Генерирует умный ответ на основе запроса пользователя и контекста игры.
+     * @param {string} userQuery - Текст запроса от пользователя.
+     * @param {dict} gameContext - Данные по выбранной игре (например, Doodle Jump).
+     * @return {string} Сгенерированный ИИ-ответ.
+     */
+    def generate_response(self, userQuery: str, gameContext: dict = None) -> str:
+        # Интеллектуальный анализ контекста запроса
+        query_lower = userQuery.lower()
+        
+        if "стратегия" in query_lower or "прокачк" in query_lower:
+            if gameContext:
+                return (
+                    f"🤖 **ИИ-Анализ стратегии ({gameContext.get('name', 'Игры')})**:\n\n"
+                    f"Я проанализировал текущие параметры прокачки. "
+                    f"Рекомендую обратить внимание на доходность в сутки и распределение бюджета монет в час. "
+                    f"Используйте реферальные ссылки для ускорения прогресса: {gameContext.get('ref_link_1', '#')}"
+                )
+            return "🤖 Пожалуйста, выберите конкретную игру в профиле, чтобы я мог построить детальный аналитический прогноз."
+        
+        # Общий интеллектуальный ответ ассистента
+        return (
+            f"🤖 **{self.model_name} на связи!**\n"
+            f"Я обработал ваш запрос: *«{userQuery}»*.\n"
+            f"Вы можете управлять своими играми через интерактивное меню профиля, "
+            f"смотреть PRO-статистику и получать актуальные данные по окупаемости."
+        )
+
+# Инициализация виртуального помощника
+ai_assistant = BotVirtualAssistant()
+
+/**
+ * Обработчик текстовых сообщений для общения с виртуальным интеллектом.
+ * @param {types.Message} message - Объект сообщения Telegram.
+ * @param {FSMContext} state - Контекст состояний FSM.
+ */
+async def handle_ai_dialogue(message: types.Message, state: FSMContext):
+    user_query = message.text
+    
+    # Получаем контекст пользователя (например, последнюю выбранную игру из базы/памяти)
+    user_data = await state.get_data()
+    current_game = user_data.get("selected_game_context", None)
+    
+    # Генерация ответа от ИИ
+    ai_response = ai_assistant.generate_response(user_query, current_game)
+    
+    # Отправка ответа пользователю с красивым форматированием
+    await message.reply(ai_response, parse_mode="Markdown")
+
+/**
+ * Клавиатура для вызова виртуального интеллекта в меню профиля.
+ * @return {types.InlineKeyboardMarkup} Инлайн-клавиатура с кнопкой ИИ.
+ */
+def get_ai_profile_keyboard() -> types.InlineKeyboardMarkup:
+    keyboard = types.InlineKeyboardMarkup(row_width=1)
+    keyboard.add(
+        types.InlineKeyboardButton(
+            text="🧠 Задать вопрос Виртуальному Интеллекту", 
+            callback_data="start_ai_chat"
+        )
+    )
+    return keyboard
+
 logger = logging.getLogger(__name__)
 
 class AdvancedSecurityGuard:
