@@ -58,9 +58,6 @@ from private_config import (
 # Настройка логирования для отслеживания запросов ИИ
 logging.basicConfig(level=logging.INFO)
 
-class AIStates(StatesGroup):
-    waiting_for_ai_query = State()
-
 # Класс для управления виртуальным интеллектом бота.
 # Отвечает за генерацию ответов, анализ стратегий и взаимодействие с игроками.
 class BotVirtualAssistant:
@@ -97,28 +94,15 @@ class BotVirtualAssistant:
 # Инициализация виртуального помощника
 ai_assistant = BotVirtualAssistant()
 
-async def handle_ai_dialogue(message: types.Message, state: FSMContext):
-    user_query = message.text
-    
-    # Получаем контекст пользователя (например, последнюю выбранную игру из базы/памяти)
-    user_data = await state.get_data()
-    current_game = user_data.get("selected_game_context", None)
-    
-    # Генерация ответа от ИИ
-    ai_response = ai_assistant.generate_response(user_query, current_game)
-    
-    # Отправка ответа пользователю с красивым форматированием
-    await message.reply(ai_response, parse_mode="Markdown")
-
+# Функция генерации клавиатуры с кнопкой вызова ИИ для telebot
 def get_ai_profile_keyboard() -> types.InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        types.InlineKeyboardButton(
-            text="🧠 Задать вопрос Виртуальному Интеллекту", 
-            callback_data="start_ai_chat"
-        )
+    keyboard = types.InlineKeyboardMarkup()
+    ai_button = types.InlineKeyboardButton(
+        text="🧠 Задать вопрос Виртуальному Интеллекту", 
+        callback_data="start_ai_chat"
     )
-    return builder.as_markup()
+    keyboard.add(ai_button)
+    return keyboard
 
 logger = logging.getLogger(__name__)
 
