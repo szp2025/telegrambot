@@ -121,6 +121,14 @@ PHONE_MINERS_DATA = {
         "code": "8621",
         "description": "🌐 Децентрализованная платформа.",
     },
+     "gomining": {
+        "name": "⚡ gomining",
+        "ref_link_1": "https://gomining.com/fr",
+        "ref_link_2": "https://gomining.com/fr",
+        "play_market": "https://gomining.com/fr",
+        "code": "d7OmYqvR4G4q5nz2",
+        "description": "📈 Майнинг.",
+    },
 }
 
 CRYPTO_FAUCETS_DATA = {
