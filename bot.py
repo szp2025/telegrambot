@@ -63,10 +63,8 @@ logging.basicConfig(level=logging.INFO)
 class AIStates(StatesGroup):
     waiting_for_ai_query = State()
 
-/**
- * Класс для управления виртуальным интеллектом бота.
- * Отвечает за генерацию ответов, анализ стратегий и взаимодействие с игроками.
- */
+#Класс для управления виртуальным интеллектом бота.
+# Отвечает за генерацию ответов, анализ стратегий и взаимодействие с игроками.
 class BotVirtualAssistant:
     def __init__(self, model_name: str = "Gemini AI Core"):
         self.model_name = model_name
@@ -76,12 +74,7 @@ class BotVirtualAssistant:
             "подбирать оптимальные уровни прокачки и давать детальные рекомендации."
         )
 
-    /**
-     * Генерирует умный ответ на основе запроса пользователя и контекста игры.
-     * @param {string} userQuery - Текст запроса от пользователя.
-     * @param {dict} gameContext - Данные по выбранной игре (например, Doodle Jump).
-     * @return {string} Сгенерированный ИИ-ответ.
-     */
+
     def generate_response(self, userQuery: str, gameContext: dict = None) -> str:
         # Интеллектуальный анализ контекста запроса
         query_lower = userQuery.lower()
@@ -107,11 +100,6 @@ class BotVirtualAssistant:
 # Инициализация виртуального помощника
 ai_assistant = BotVirtualAssistant()
 
-/**
- * Обработчик текстовых сообщений для общения с виртуальным интеллектом.
- * @param {types.Message} message - Объект сообщения Telegram.
- * @param {FSMContext} state - Контекст состояний FSM.
- */
 async def handle_ai_dialogue(message: types.Message, state: FSMContext):
     user_query = message.text
     
@@ -125,10 +113,6 @@ async def handle_ai_dialogue(message: types.Message, state: FSMContext):
     # Отправка ответа пользователю с красивым форматированием
     await message.reply(ai_response, parse_mode="Markdown")
 
-/**
- * Клавиатура для вызова виртуального интеллекта в меню профиля.
- * @return {types.InlineKeyboardMarkup} Инлайн-клавиатура с кнопкой ИИ.
- */
 def get_ai_profile_keyboard() -> types.InlineKeyboardMarkup:
     keyboard = types.InlineKeyboardMarkup(row_width=1)
     keyboard.add(
