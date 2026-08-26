@@ -1205,256 +1205,248 @@ def handle_text_all(message: types.Message):
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call: types.CallbackQuery):
-    chat_id = call.message.chat.id
-    data = call.data
+    # 1. Мгновенно гасим анимацию загрузки кнопки (защита от таймаута Telegram)
+    try:
+        bot.answer_callback_query(call.id)
+    except Exception:
+        pass
 
-    if data.startswith("advcap_"):
-        if data.replace("advcap_", "") == advanced_captchas.get(chat_id):
-            save_verified_user(chat_id)
-            advanced_captchas.pop(chat_id, None)
-            bot.answer_callback_query(call.id, "✅ Доступ разрешен!")
-            try: bot.edit_message_text("✅ **Доступ открыт!**", chat_id, call.message.message_id, parse_mode="Markdown")
-            except: pass
-            send_message_direct(chat_id, "👇 Главное меню:", reply_markup=get_main_keyboard())
-        else:
-            q, m = generate_advanced_captcha(chat_id)
-            bot.answer_callback_query(call.id, "❌ Неверно!", show_alert=True)
-            try: bot.edit_message_text(f"❌ **Неверно!**\n🧠 *{q}*", chat_id, call.message.message_id, reply_markup=m, parse_mode="Markdown")
-            except: pass
-        return
+    # 2. Глобальный защитный блок от любых непредвиденных падений
+    try:
+        chat_id = call.message.chat.id
+        data = call.data
 
-    if chat_id not in verified_users:
-        bot.answer_callback_query(call.id, "Сначала пройдите верификацию через /start!", show_alert=True)
-        return
-
-    # Админские кнопки подтверждения оплаты рекламы
-    if data.startswith("adm_pay_ok_") or data.startswith("adm_pay_no_"):
-        if chat_id != ADMIN_CHAT_ID:
-            bot.answer_callback_query(call.id, "Только для администратора!", show_alert=True)
-            return
-        
-        parts = data.split("_")
-        action = parts[2] 
-        order_id = f"{parts[3]}_{parts[4]}_{parts[5]}"
-        
-        order = pending_ad_orders.get(order_id)
-        if not order:
-            bot.answer_callback_query(call.id, "Заказ не найден или уже обработан", show_alert=True)
+        if data.startswith("advcap_"):
+            if data.replace("advcap_", "") == advanced_captchas.get(chat_id):
+                save_verified_user(chat_id)
+                advanced_captchas.pop(chat_id, None)
+                try: bot.edit_message_text("✅ **Доступ открыт!**", chat_id, call.message.message_id, parse_mode="Markdown")
+                except: pass
+                send_message_direct(chat_id, "👇 Главное меню:", reply_markup=get_main_keyboard())
+            else:
+                q, m = generate_advanced_captcha(chat_id)
+                try: bot.answer_callback_query(call.id, "❌ Неверно!", show_alert=True)
+                except: pass
+                try: bot.edit_message_text(f"❌ **Неверно!**\n🧠 *{q}*", chat_id, call.message.message_id, reply_markup=m, parse_mode="Markdown")
+                except: pass
             return
 
-        target_user_id = order["user_id"]
-        pending_ad_orders.pop(order_id, None)
-        bot.answer_callback_query(call.id, "Обработано!")
+        if chat_id not in verified_users:
+            try: bot.answer_callback_query(call.id, "Сначала пройдите верификацию через /start!", show_alert=True)
+            except: pass
+            return
 
-        if action == "ok":
-            # Если это закреп на 24 часа — сохраняем таймер окончания в файл (24 часа = 86400 секунд)
-            if "24" in order["tariff"]:
-                expire_timestamp = time.time() + 86400
-                active_ads_storage[order_id] = {"user_id": target_user_id, "expire_time": expire_timestamp}
-                save_active_ads_to_file()
+        # Админские кнопки подтверждения оплаты рекламы
+        if data.startswith("adm_pay_ok_") or data.startswith("adm_pay_no_"):
+            if chat_id != ADMIN_CHAT_ID:
+                try: bot.answer_callback_query(call.id, "Только для администратора!", show_alert=True)
+                except: pass
+                return
+            
+            parts = data.split("_")
+            action = parts[2] 
+            order_id = f"{parts[3]}_{parts[4]}_{parts[5]}"
+            
+            order = pending_ad_orders.get(order_id)
+            if not order:
+                try: bot.answer_callback_query(call.id, "Заказ не найден или уже обработан", show_alert=True)
+                except: pass
+                return
 
+            target_user_id = order["user_id"]
+            pending_ad_orders.pop(order_id, None)
+
+            if action == "ok":
+                if "24" in order["tariff"]:
+                    expire_timestamp = time.time() + 86400
+                    active_ads_storage[order_id] = {"user_id": target_user_id, "expire_time": expire_timestamp}
+                    save_active_ads_to_file()
+
+                send_message_direct(
+                    target_user_id,
+                    "🎉 **Оплата получена! Ваша реклама успешно запущена в боте.**\nБлагодарим за сотрудничество!",
+                    parse_mode="Markdown"
+                )
+                try:
+                    bot.edit_message_text(f"✅ **Заказ успешно подтвержден и запущен!** (Клиент: `{target_user_id}`)", chat_id, call.message.message_id, parse_mode="Markdown")
+                except: pass
+            else:
+                send_message_direct(
+                    target_user_id,
+                    "❌ **Оплата не подтверждена администратором.** Свяжитесь с поддержкой для уточнения деталей.",
+                    parse_mode="Markdown"
+                )
+                try:
+                    bot.edit_message_text(f"❌ **Заказ отклонен.** (Клиент: `{target_user_id}`)", chat_id, call.message.message_id, parse_mode="Markdown")
+                except: pass
+            return
+
+        # Секция отзывов
+        if data == "review_add":
+            user_input_states[chat_id] = {"step": "waiting_review_text"}
+            send_message_direct(chat_id, "✍️ **Напишите ваш отзыв одним сообщением:**", parse_mode="Markdown")
+            return
+
+        if data == "review_read":
+            if not user_reviews_storage:
+                send_message_direct(chat_id, "💬 Пока что отзывов нет.")
+            else:
+                rev_text = "💬 **Последние отзывы:**\n\n" + "\n".join([f"👤 *{r['user']}* (`{r['date']}`):\n{r['text']}\n" for r in user_reviews_storage[-5:]])
+                send_message_direct(chat_id, rev_text, parse_mode="Markdown")
+            return
+
+        # Монетизация и SafePal
+        if data == "ads_buy":
+            try:
+                bot.edit_message_text(
+                    "💰 **Выберите тариф для размещения рекламы:**\nОплата поступает напрямую на ваш кошелек SafePal.",
+                    chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_ads_tariffs_keyboard(), parse_mode="Markdown"
+                )
+            except: pass
+            return
+
+        if data == "ads_stats":
+            send_message_direct(chat_id, f"📊 **Статистика:** Активных пользователей: **~{len(verified_users) + 120}**", parse_mode="Markdown")
+            return
+
+        if data in ["adtariff_24h", "adtariff_broadcast"]:
+            tariff_name = "Закреп на 24 часа ($15)" if data == "adtariff_24h" else "Рассылка по всей базе ($30)"
+            try:
+                bot.edit_message_text(
+                    f"💎 Вы выбрали тариф: *{tariff_name}*.\n\n"
+                    "👇 **Выберите криптовалюту для оплаты через SafePal:**",
+                    chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_safepal_coins_keyboard(data), parse_mode="Markdown"
+                )
+            except: pass
+            return
+
+        if data.startswith("pay_"):
+            parts = data.split("_")
+            tariff_key = parts[1]
+            coin_key = parts[2]
+            
+            tariff_name = "Закреп на 24 часа ($15)" if tariff_key == "adtariff_24h" else "Рассылка по всей базе ($30)"
+            wallet_info = SAFEPAL_WALLETS.get(coin_key, {"name": coin_key.upper(), "address": "ADRESS_NOT_SET"})
+            
+            user_input_states[chat_id] = {"step": "waiting_ad_content", "tariff": tariff_name, "coin": coin_key}
+            
             send_message_direct(
-                target_user_id,
-                "🎉 **Оплата получена! Ваша реклама успешно запущена в боте.**\nБлагодарим за сотрудничество!",
+                chat_id,
+                f"💳 **Реквизиты SafePal для оплаты:**\n\n"
+                f"📋 Тариф: *{tariff_name}*\n"
+                f"🪙 Монета: *{wallet_info['name']}*\n\n"
+                f"📌 **Адрес кошелька SafePal:**\n`{wallet_info['address']}`\n\n"
+                f"⚠️ **Инструкция:** Переведите точную сумму на указанный адрес SafePal, после чего **отправьте текстом креатив вашей рекламы** (и хэш транзакции/скрин), чтобы администратор мог подтвердить платеж.",
                 parse_mode="Markdown"
             )
+            return
+
+        if data == "ads_menu_back":
             try:
-                bot.edit_message_text(f"✅ **Заказ успешно подтвержден и запущен!** (Клиент: `{target_user_id}`)", chat_id, call.message.message_id, parse_mode="Markdown")
+                bot.edit_message_text("📢 **Размещение рекламы через SafePal:**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_ads_keyboard(), parse_mode="Markdown")
             except: pass
-        else:
-            send_message_direct(
-                target_user_id,
-                "❌ **Оплата не подтверждена администратором.** Свяжитесь с поддержкой для уточнения деталей.",
-                parse_mode="Markdown"
-            )
-            try:
-                bot.edit_message_text(f"❌ **Заказ отклонен.** (Клиент: `{target_user_id}`)", chat_id, call.message.message_id, parse_mode="Markdown")
+            return
+
+        if data.startswith("timer_game_"):
+            key = data.replace("timer_game_", "")
+            game_name = manager.combo_games[key]["name"] if key in manager.combo_games else manager.independent_farms[key]["name"]
+            try: bot.edit_message_text(f"⏰ Настройка таймера для: **{game_name}**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_timer_duration_keyboard(key), parse_mode="Markdown")
             except: pass
-        return
+            return
 
-    # Секция отзывов
-    if data == "review_add":
-        user_input_states[chat_id] = {"step": "waiting_review_text"}
-        bot.answer_callback_query(call.id)
-        send_message_direct(chat_id, "✍️ **Напишите ваш отзыв одним сообщением:**", parse_mode="Markdown")
-        return
+        if data.startswith("settimer_"):
+            parts = data.split("_")
+            hours = int(parts[2])
+            if chat_id not in user_game_timers: user_game_timers[chat_id] = {}
+            user_game_timers[chat_id][parts[1]] = {"target": time.time() + (hours * 3600), "duration_hours": float(hours)}
+            try: bot.answer_callback_query(call.id, f"✅ Таймер на {hours}ч установлен!")
+            except: pass
+            try: bot.edit_message_text(f"✅ **Таймер установлен на {hours} ч.!**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_timers_games_keyboard(), parse_mode="Markdown")
+            except: pass
+            return
 
-    if data == "review_read":
-        bot.answer_callback_query(call.id)
-        if not user_reviews_storage:
-            send_message_direct(chat_id, "💬 Пока что отзывов нет.")
-        else:
-            rev_text = "💬 **Последние отзывы:**\n\n" + "\n".join([f"👤 *{r['user']}* (`{r['date']}`):\n{r['text']}\n" for r in user_reviews_storage[-5:]])
-            send_message_direct(chat_id, rev_text, parse_mode="Markdown")
-        return
+        if data.startswith("customtimer_"):
+            user_input_states[chat_id] = {"step": "waiting_custom_timer", "game_key": data.replace("customtimer_", "")}
+            send_message_direct(chat_id, "✏️ **Введите свое время таймера** (например: `2.5` или `90м`):", parse_mode="Markdown")
+            return
 
-    # Монетизация и SafePal
-    if data == "ads_buy":
-        bot.answer_callback_query(call.id)
-        try:
-            bot.edit_message_text(
-                "💰 **Выберите тариф для размещения рекламы:**\nОплата поступает напрямую на ваш кошелек SafePal.",
-                chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_ads_tariffs_keyboard(), parse_mode="Markdown"
-            )
-        except: pass
-        return
+        if data.startswith("canceltimer_"):
+            if chat_id in user_game_timers: user_game_timers[chat_id].pop(data.replace("canceltimer_", ""), None)
+            try: bot.edit_message_text("❌ **Таймер отключен.**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_timers_games_keyboard(), parse_mode="Markdown")
+            except: pass
+            return
 
-    if data == "ads_stats":
-        bot.answer_callback_query(call.id)
-        send_message_direct(chat_id, f"📊 **Статистика:** Активных пользователей: **~{len(verified_users) + 120}**", parse_mode="Markdown")
-        return
+        if data == "timers_menu_back":
+            try: bot.edit_message_text("⏰ **Выберите игру для таймера:**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_timers_games_keyboard(), parse_mode="Markdown")
+            except: pass
+            return
 
-    if data in ["adtariff_24h", "adtariff_broadcast"]:
-        tariff_name = "Закреп на 24 часа ($15)" if data == "adtariff_24h" else "Рассылка по всей базе ($30)"
-        bot.answer_callback_query(call.id)
-        try:
-            bot.edit_message_text(
-                f"💎 Вы выбрали тариф: *{tariff_name}*.\n\n"
-                "👇 **Выберите криптовалюту для оплаты через SafePal:**",
-                chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_safepal_coins_keyboard(data), parse_mode="Markdown"
-            )
-        except: pass
-        return
+        if data == "prof_add":
+            user_input_states[chat_id] = {"step": "waiting_game_info"}
+            send_message_direct(chat_id, "✍️ **Введите данные в формате:**\n`Название игры | Уровень`", parse_mode="Markdown")
+            return
 
-    if data.startswith("pay_"):
-        parts = data.split("_")
-        tariff_key = parts[1]
-        coin_key = parts[2]
+        if data == "prof_view":
+            show_user_profile(chat_id)
+            return
+
+        if data.startswith("combopage_"):
+            page = int(data.replace("combopage_", ""))
+            keyboard, total_count = get_combo_list_keyboard(page=page)
+            try: bot.edit_message_text(f"🎮 **Комбо-проекты ({total_count})**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=keyboard, parse_mode="Markdown")
+            except: pass
+            return
+
+        if data.startswith("gamemenu_"):
+            parts = data.split("_")
+            if parts[1] in manager.combo_games:
+                bot.edit_message_text(f"🕹 **Меню: {manager.combo_games[parts[1]]['name']}**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_single_game_keyboard(parts[1], parts[2]), parse_mode="Markdown")
+            return
+
+        if data == "ignore":
+            return
+
+        if data.startswith("pinfo_"):
+            info = manager.phone_miners[data.replace("pinfo_", "")]
+            send_message_direct(chat_id, f"📱 **{info['name']}**\n\n{info['description']}\n\n🔑 Код: `{info['code']}`", parse_mode="Markdown")
+            return
+
+        if data.startswith("finfo_"):
+            info = manager.crypto_faucets[data.replace("finfo_", "")]
+            send_message_direct(chat_id, f"🚰 **{info['name']}**\n\n{info['description']}", parse_mode="Markdown")
+            return
+
+        if data.startswith("cur_"):
+            crypto = data.replace("cur_", "")
+            bot.edit_message_text(f"🧮 Вы выбрали **{crypto.upper()}**. Выберите валюту:", chat_id, call.message.message_id, reply_markup=get_fiat_currency_keyboard(crypto), parse_mode="Markdown")
+            return
+
+        if data.startswith("fiat_"):
+            parts = data.split("_")
+            user_calc_states[chat_id] = {"crypto": parts[1], "fiat": parts[2]}
+            bot.edit_message_text(f"🧮 Введите количество {parts[1].upper()}:", chat_id, call.message.message_id, parse_mode="Markdown")
+            return
+
+        if data.startswith("strat_"):
+            send_message_direct(chat_id, manager.combo_games[data.replace("strat_", "")]["strategy"])
+            return
+
+        if data.startswith("farm_strat_"):
+            send_message_direct(chat_id, manager.independent_farms[data.replace("farm_strat_", "")]["strategy"])
+            return
+
+        if data.startswith("game_"):
+            key = data.replace("game_", "")
+            if key in manager.combo_games:
+                try: bot.answer_callback_query(call.id, "Загрузка...")
+                except: pass
+                img_url, date_text = manager.fetch_combo(key)
+                send_combo_result(chat_id, manager.combo_games[key], manager.resize_img(img_url, key) if img_url else None, date_text)
+            return
+
+    except Exception as e:
+        print(f"[ERROR] Критическая ошибка в handle_callbacks: {e}")
         
-        tariff_name = "Закреп на 24 часа ($15)" if tariff_key == "adtariff_24h" else "Рассылка по всей базе ($30)"
-        wallet_info = SAFEPAL_WALLETS.get(coin_key, {"name": coin_key.upper(), "address": "ADRESS_NOT_SET"})
-        
-        user_input_states[chat_id] = {"step": "waiting_ad_content", "tariff": tariff_name, "coin": coin_key}
-        bot.answer_callback_query(call.id)
-        
-        send_message_direct(
-            chat_id,
-            f"💳 **Реквизиты SafePal для оплаты:**\n\n"
-            f"📋 Тариф: *{tariff_name}*\n"
-            f"🪙 Монета: *{wallet_info['name']}*\n\n"
-            f"📌 **Адрес кошелька SafePal:**\n`{wallet_info['address']}`\n\n"
-            f"⚠️ **Инструкция:** Переведите точную сумму на указанный адрес SafePal, после чего **отправьте текстом креатив вашей рекламы** (и хэш транзакции/скрин), чтобы администратор мог подтвердить платеж.",
-            parse_mode="Markdown"
-        )
-        return
-
-    if data == "ads_menu_back":
-        bot.answer_callback_query(call.id)
-        try:
-            bot.edit_message_text("📢 **Размещение рекламы через SafePal:**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_ads_keyboard(), parse_mode="Markdown")
-        except: pass
-        return
-
-    if data.startswith("timer_game_"):
-        key = data.replace("timer_game_", "")
-        game_name = manager.combo_games[key]["name"] if key in manager.combo_games else manager.independent_farms[key]["name"]
-        bot.answer_callback_query(call.id)
-        try: bot.edit_message_text(f"⏰ Настройка таймера для: **{game_name}**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_timer_duration_keyboard(key), parse_mode="Markdown")
-        except: pass
-        return
-
-    if data.startswith("settimer_"):
-        parts = data.split("_")
-        hours = int(parts[2])
-        if chat_id not in user_game_timers: user_game_timers[chat_id] = {}
-        user_game_timers[chat_id][parts[1]] = {"target": time.time() + (hours * 3600), "duration_hours": float(hours)}
-        bot.answer_callback_query(call.id, f"✅ Таймер на {hours}ч установлен!")
-        try: bot.edit_message_text(f"✅ **Таймер установлен на {hours} ч.!**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_timers_games_keyboard(), parse_mode="Markdown")
-        except: pass
-        return
-
-    if data.startswith("customtimer_"):
-        user_input_states[chat_id] = {"step": "waiting_custom_timer", "game_key": data.replace("customtimer_", "")}
-        bot.answer_callback_query(call.id)
-        send_message_direct(chat_id, "✏️ **Введите свое время таймера** (например: `2.5` или `90м`):", parse_mode="Markdown")
-        return
-
-    if data.startswith("canceltimer_"):
-        if chat_id in user_game_timers: user_game_timers[chat_id].pop(data.replace("canceltimer_", ""), None)
-        bot.answer_callback_query(call.id, "❌ Таймер отключен")
-        try: bot.edit_message_text("❌ **Таймер отключен.**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_timers_games_keyboard(), parse_mode="Markdown")
-        except: pass
-        return
-
-    if data == "timers_menu_back":
-        bot.answer_callback_query(call.id)
-        try: bot.edit_message_text("⏰ **Выберите игру для таймера:**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_timers_games_keyboard(), parse_mode="Markdown")
-        except: pass
-        return
-
-    if data == "prof_add":
-        user_input_states[chat_id] = {"step": "waiting_game_info"}
-        bot.answer_callback_query(call.id)
-        send_message_direct(chat_id, "✍️ **Введите данные в формате:**\n`Название игры | Уровень`", parse_mode="Markdown")
-        return
-
-    if data == "prof_view":
-        bot.answer_callback_query(call.id)
-        show_user_profile(chat_id)
-        return
-
-    if data.startswith("combopage_"):
-        page = int(data.replace("combopage_", ""))
-        keyboard, total_count = get_combo_list_keyboard(page=page)
-        bot.answer_callback_query(call.id)
-        try: bot.edit_message_text(f"🎮 **Комбо-проекты ({total_count})**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=keyboard, parse_mode="Markdown")
-        except: pass
-        return
-
-    if data.startswith("gamemenu_"):
-        parts = data.split("_")
-        if parts[1] in manager.combo_games:
-            bot.answer_callback_query(call.id)
-            bot.edit_message_text(f"🕹 **Меню: {manager.combo_games[parts[1]]['name']}**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_single_game_keyboard(parts[1], parts[2]), parse_mode="Markdown")
-        return
-
-    if data == "ignore":
-        bot.answer_callback_query(call.id)
-        return
-
-    if data.startswith("pinfo_"):
-        info = manager.phone_miners[data.replace("pinfo_", "")]
-        bot.answer_callback_query(call.id)
-        send_message_direct(chat_id, f"📱 **{info['name']}**\n\n{info['description']}\n\n🔑 Код: `{info['code']}`", parse_mode="Markdown")
-        return
-
-    if data.startswith("finfo_"):
-        info = manager.crypto_faucets[data.replace("finfo_", "")]
-        bot.answer_callback_query(call.id)
-        send_message_direct(chat_id, f"🚰 **{info['name']}**\n\n{info['description']}", parse_mode="Markdown")
-        return
-
-    if data.startswith("cur_"):
-        crypto = data.replace("cur_", "")
-        bot.answer_callback_query(call.id)
-        bot.edit_message_text(f"🧮 Вы выбрали **{crypto.upper()}**. Выберите валюту:", chat_id, call.message.message_id, reply_markup=get_fiat_currency_keyboard(crypto), parse_mode="Markdown")
-        return
-
-    if data.startswith("fiat_"):
-        parts = data.split("_")
-        user_calc_states[chat_id] = {"crypto": parts[1], "fiat": parts[2]}
-        bot.answer_callback_query(call.id)
-        bot.edit_message_text(f"🧮 Введите количество {parts[1].upper()}:", chat_id, call.message.message_id, parse_mode="Markdown")
-        return
-
-    if data.startswith("strat_"):
-        bot.answer_callback_query(call.id)
-        send_message_direct(chat_id, manager.combo_games[data.replace("strat_", "")]["strategy"])
-        return
-
-    if data.startswith("farm_strat_"):
-        bot.answer_callback_query(call.id)
-        send_message_direct(chat_id, manager.independent_farms[data.replace("farm_strat_", "")]["strategy"])
-        return
-
-    if data.startswith("game_"):
-        key = data.replace("game_", "")
-        if key in manager.combo_games:
-            bot.answer_callback_query(call.id, "Загрузка...")
-            img_url, date_text = manager.fetch_combo(key)
-            send_combo_result(chat_id, manager.combo_games[key], manager.resize_img(img_url, key) if img_url else None, date_text)
-        return
-
 if __name__ == "__main__":
     logger.info("=== ZERO-LAG TERMUX NATIVE BOT ЗАПУЩЕН ===")
     threading.Thread(target=daily_auto_checker, daemon=True).start()
