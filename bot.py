@@ -702,10 +702,21 @@ def get_main_keyboard():
 
 def get_profile_keyboard():
     keyboard = types.InlineKeyboardMarkup()
+    
+    # Ваши существующие строки кнопок из PROFILE_KEYBOARD_DATA
     for row in PROFILE_KEYBOARD_DATA:
         buttons = [types.InlineKeyboardButton(text=text, callback_data=cb) for text, cb in row]
         keyboard.row(*buttons)
+        
+    # Добавляем кнопку Виртуального Интеллекта отдельной строкой в самый низ
+    ai_button = types.InlineKeyboardButton(
+        text="🧠 Задать вопрос Виртуальному Интеллекту", 
+        callback_data="start_ai_chat"
+    )
+    keyboard.row(ai_button)
+    
     return keyboard
+
 
 def get_reviews_keyboard():
     keyboard = types.InlineKeyboardMarkup()
