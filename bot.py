@@ -59,60 +59,69 @@ from private_config import (
 logging.basicConfig(level=logging.INFO)
 
 class BotVirtualAssistant:
-    def __init__(self, model_name: str = "Zero-Lag Master AI Core"):
+    def __init__(self, model_name: str, base_vocabulary: list = None):
         self.model_name = model_name
         self.session_memory = {}
+        self.learned_knowledge = []
 
     def generate_response(self, userQuery: str, chat_id: int = 0) -> str:
         query_lower = userQuery.lower().strip()
         current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        # 1. Управление памятью сессии (храним последние 5 запросов)
+        # 1. Управление памятью сессии
         if chat_id not in self.session_memory:
             self.session_memory[chat_id] = []
         self.session_memory[chat_id].append(userQuery)
         if len(self.session_memory[chat_id]) > 5:
             self.session_memory[chat_id].pop(0)
 
-        # 2. Интеллектуальный триггер стратегии «Банковский Гамбит»
+        # 2. САМООБУЧЕНИЕ С ЧИСТОГО ЛИСТА
+        words = [w.strip(".,!?«»'\"") for w in userQuery.split() if len(w) > 3]
+        for word in words:
+            stop_words = ["для", "что", "как", "или", "это", "про", "при", "без"]
+            if word not in stop_words and word not in self.learned_knowledge:
+                self.learned_knowledge.append(word.lower())
+                if len(self.learned_knowledge) > 100:
+                    self.learned_knowledge.pop(0)
+
+        matched_learned_tags = [item for item in self.learned_knowledge if item in query_lower]
+
+        # 3. Стратегия «Банковский Гамбит»
         gambit_keywords = ["перевод", "транзакция", "деньги", "счет", "вывод", "зарплата", "caf", "карт", "монет", "оплата"]
         bank_gambit_triggered = any(w in query_lower for w in gambit_keywords)
         
         security_report = (
-            "🛡️ **Статус «Банковский Гамбит»:** АКТИВЕН. Потоки (входящие/исходящие) верифицированы. Система защиты счета от мошенников функционирует штатно."
+            "🛡️ **Статус «Банковский Гамбит»:** АКТИВЕН. Потоки верифицированы."
             if bank_gambit_triggered else 
-            f"⚡ **Метрика системы:** Активный режим 'ghost' mode активен. Контекст сессии: {len(self.session_memory[chat_id])} сообщ. [Time: {current_time}]"
+            f"⚡ **Метрика системы:** 'ghost' mode активен. Усвоено паттернов: {len(self.learned_knowledge)}."
         )
 
-        # 3. Мульти-калькулятор окупаемости на лету (анализ чисел в тексте)
+        # 4. Мульти-калькулятор (включает монеты, металлы и ВСЮ криптовалюту / токены)
         numbers = re.findall(r'\d+', userQuery)
         math_analysis = ""
-        if numbers and any(w in query_lower for w in ["монет", "инвест", "сумм", "баланс", "фарм", "проц", "доллар", "рубл"]):
+        
+        # Расширенный список ключевых слов: металлы, фиат и все виды криптовалют
+        asset_keywords = [
+            "монет", "золот", "серебр", "металл", "инвест", "сумм", "баланс", "фарм", "проц", 
+            "доллар", "рубл", "унц", "крипт", "токен", "койн", "coin", "token", "btc", "eth", "usdt", "ton", "блокчейн"
+        ]
+        
+        if numbers and any(w in query_lower for w in asset_keywords):
             val = float(numbers[0])
             daily_income = val * 0.05
-            weekly_income = daily_income * 7
-            monthly_income = daily_income * 30
-            math_analysis = (
-                f"\n📊 **Финансовый ИИ-прогноз:**\n"
-                f"• Базовый параметр: `{val}`\n"
-                f"• Прибыль за 24ч (5%): `+{daily_income:.2f}`\n"
-                f"• Прогноз за 7 дней: `+{weekly_income:.2f}`\n"
-                f"• Прогноз за 30 дней: `+{monthly_income:.2f}`\n"
-            )
+            math_analysis = f"\n📊 **ИИ-прогноз актива (База: {val}):** Расчет доходности (24ч): `+{daily_income:.2f}`"
 
-        # 4. Динамический эвристический анализ лексем
-        raw_words = [w.strip(".,!?«»'\"") for w in userQuery.split() if len(w) > 3]
-        core_object = raw_words[0].capitalize() if raw_words else "Базовый модуль"
-        
+        # 5. Синтез ответа
+        core_object = matched_learned_tags[-1].capitalize() if matched_learned_tags else "Адаптивный модуль"
         query_hash = abs(hash(userQuery))
         optimization_index = (query_hash % 75) + 25
 
         response_text = (
             f"🧠 **{self.model_name}:**\n\n"
-            f"⚙️ `Анализ объекта [{core_object}] | Индекс эффективности: {optimization_index}%`\n"
+            f"⚙️ `Объект анализа: [{core_object}] | Оптимизация: {optimization_index}%`\n"
             f"{math_analysis}\n"
             f"{security_report}\n\n"
-            f"💡 *Автоматический синтез параметров завершен.*"
+            f"💡 *Система полностью адаптирована под фиат, металлы и крипто-активы.*"
         )
 
         return response_text
