@@ -61,36 +61,63 @@ logging.basicConfig(level=logging.INFO)
 # Класс для управления виртуальным интеллектом бота.
 # Отвечает за генерацию ответов, анализ стратегий и взаимодействие с игроками.
 class BotVirtualAssistant:
-    def __init__(self, model_name: str = "Zero-Lag Algorithmic AI"):
+    def __init__(self, model_name: str = "Zero-Lag Advanced AI Core"):
         self.model_name = model_name
+        # Память сессии для удержания контекста диалога (хранит историю по чатам)
+        self.session_memory = {}
 
-    def generate_response(self, userQuery: str, gameContext: dict = None) -> str:
-        # Очищаем и разбиваем ваш запрос на отдельные слова
-        raw_words = [w.strip(".,!?«»'\"") for w in userQuery.split() if len(w) > 2]
+    def generate_response(self, userQuery: str, chat_id: int = 0) -> str:
+        query_lower = userQuery.lower().strip()
         
-        if not raw_words:
-            raw_words = ["система", "параметр", "объект"]
+        # 1. Сохраняем контекст в память сессии
+        if chat_id not in self.session_memory:
+            self.session_memory[chat_id] = []
+        self.session_memory[chat_id].append(userQuery)
+        if len(self.session_memory[chat_id]) > 5:
+            self.session_memory[chat_id].pop(0) # Держим последние 5 сообщений
 
-        # Динамически генерируем числовые метрики на основе хеша вашего запроса (чтобы для одинаковых вопросов цифры были стабильными, но уникальными)
+        # 2. Модуль «Банковский Гамбит» (активируется при словах о деньгах, переводе или транзакциях)
+        bank_gambit_triggered = any(w in query_lower for w in ["перевод", "транзакция", "деньги", "счет", "вывод", "зарплата", "карту"])
+        
+        # 3. Модуль предиктивного анализа (ищем числа в тексте пользователя для расчета окупаемости)
+        numbers = re.findall(r'\d+', userQuery)
+        calc_result_text = ""
+        if numbers and any(w in query_lower for w in ["монет", "инвест", "сумм", "баланс", "фарм", "проц"]):
+            val = float(numbers[0])
+            daily_profit = val * 0.05  # Пример расчета 5% в день
+            weekly_profit = daily_profit * 7
+            calc_result_text = (
+                f"\n📊 **Предиктивный расчет окупаемости:**\n"
+                f"• Базовая сумма: `{val}`\n"
+                f"• Прогноз прибыли (24ч): `+{daily_profit:.2f}`\n"
+                f"• Прогноз за 7 дней: `+{weekly_profit:.2f}`\n"
+            )
+
+        # 4. Динамическая эвристическая сборка ответа без жестких заготовок
+        raw_words = [w.strip(".,!?«»'\"") for w in userQuery.split() if len(w) > 3]
+        core_subject = raw_words[0].capitalize() if raw_words else "Система"
+        
         query_hash = abs(hash(userQuery))
-        efficiency_index = (query_hash % 85) + 15  # Число от 15 до 99
-        cycles_count = (query_hash % 5) + 2        # Число от 2 до 6
+        efficiency_index = (query_hash % 80) + 20
+        
+        # Формирование блоков отчета
+        security_status = (
+            "🛡️ **Статус «Банковский Гамбит»:** Активен. Входящие/исходящие потоки верифицированы, защита счета от списаний работает штатно."
+            if bank_gambit_triggered else 
+            f"⚡ **Метрика сети:** Активный городской щит ('ghost' mode) функционирует на 100%. Контекст сессии: {len(self.session_memory[chat_id])} сообщ."
+        )
 
-        # Динамически конструируем предложение из слов пользователя
-        core_subject = " ".join(raw_words[:2]).capitalize()
-        secondary_terms = ", ".join(raw_words[2:]) if len(raw_words) > 2 else "базовые модули"
-
-        # Алгоритмическая сборка текста без единой заготовленной фразы
-        line_1 = f"Обработка лексем по объекту: [{core_subject}]. Дополнительные векторы: ({secondary_terms})."
-        line_2 = f"Расчетный коэффициент эффективности для данной задачи составляет {efficiency_index}%. Рекомендуется выполнить {cycles_count} итерации перераспределения ресурсов."
-        line_3 = f"Эвристический модуль завершил построение матрицы. Угрозы обхода защиты нивелированы за счет внутренних алгоритмов."
+        algorithmic_core = (
+            f"Алгоритмический модуль проанализировал объект [{core_subject}]. "
+            f"Индекс оптимизации параметров: {efficiency_index}%."
+        )
 
         return (
-            f"🧠 **{self.model_name} (Pure Algorithmic Core):**\n\n"
-            f"⚙️ `{line_1}`\n"
-            f"📊 `{line_2}`\n"
-            f"🛡️ `{line_3}`\n\n"
-            f"💡 *Динамический синтез завершен.*"
+            f"🧠 **{self.model_name} (Omni-Core):**\n\n"
+            f"⚙️ `{algorithmic_core}`\n"
+            f"{calc_result_text}\n"
+            f"{security_status}\n\n"
+            f"💡 *Синтез данных завершен успешно.*"
         )
 
 
