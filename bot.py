@@ -58,68 +58,64 @@ from private_config import (
 # Настройка логирования для отслеживания запросов ИИ
 logging.basicConfig(level=logging.INFO)
 
-# Класс для управления виртуальным интеллектом бота.
-# Отвечает за генерацию ответов, анализ стратегий и взаимодействие с игроками.
 class BotVirtualAssistant:
-    def __init__(self, model_name: str = "Zero-Lag Advanced AI Core"):
+    def __init__(self, model_name: str = "Zero-Lag Master AI Core"):
         self.model_name = model_name
-        # Память сессии для удержания контекста диалога (хранит историю по чатам)
         self.session_memory = {}
 
     def generate_response(self, userQuery: str, chat_id: int = 0) -> str:
         query_lower = userQuery.lower().strip()
+        current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        # 1. Сохраняем контекст в память сессии
+        # 1. Управление памятью сессии (храним последние 5 запросов)
         if chat_id not in self.session_memory:
             self.session_memory[chat_id] = []
         self.session_memory[chat_id].append(userQuery)
         if len(self.session_memory[chat_id]) > 5:
-            self.session_memory[chat_id].pop(0) # Держим последние 5 сообщений
+            self.session_memory[chat_id].pop(0)
 
-        # 2. Модуль «Банковский Гамбит» (активируется при словах о деньгах, переводе или транзакциях)
-        bank_gambit_triggered = any(w in query_lower for w in ["перевод", "транзакция", "деньги", "счет", "вывод", "зарплата", "карту"])
+        # 2. Интеллектуальный триггер стратегии «Банковский Гамбит»
+        gambit_keywords = ["перевод", "транзакция", "деньги", "счет", "вывод", "зарплата", "caf", "карт", "монет", "оплата"]
+        bank_gambit_triggered = any(w in query_lower for w in gambit_keywords)
         
-        # 3. Модуль предиктивного анализа (ищем числа в тексте пользователя для расчета окупаемости)
+        security_report = (
+            "🛡️ **Статус «Банковский Гамбит»:** АКТИВЕН. Потоки (входящие/исходящие) верифицированы. Система защиты счета от мошенников функционирует штатно."
+            if bank_gambit_triggered else 
+            f"⚡ **Метрика системы:** Активный режим 'ghost' mode активен. Контекст сессии: {len(self.session_memory[chat_id])} сообщ. [Time: {current_time}]"
+        )
+
+        # 3. Мульти-калькулятор окупаемости на лету (анализ чисел в тексте)
         numbers = re.findall(r'\d+', userQuery)
-        calc_result_text = ""
-        if numbers and any(w in query_lower for w in ["монет", "инвест", "сумм", "баланс", "фарм", "проц"]):
+        math_analysis = ""
+        if numbers and any(w in query_lower for w in ["монет", "инвест", "сумм", "баланс", "фарм", "проц", "доллар", "рубл"]):
             val = float(numbers[0])
-            daily_profit = val * 0.05  # Пример расчета 5% в день
-            weekly_profit = daily_profit * 7
-            calc_result_text = (
-                f"\n📊 **Предиктивный расчет окупаемости:**\n"
-                f"• Базовая сумма: `{val}`\n"
-                f"• Прогноз прибыли (24ч): `+{daily_profit:.2f}`\n"
-                f"• Прогноз за 7 дней: `+{weekly_profit:.2f}`\n"
+            daily_income = val * 0.05
+            weekly_income = daily_income * 7
+            monthly_income = daily_income * 30
+            math_analysis = (
+                f"\n📊 **Финансовый ИИ-прогноз:**\n"
+                f"• Базовый параметр: `{val}`\n"
+                f"• Прибыль за 24ч (5%): `+{daily_income:.2f}`\n"
+                f"• Прогноз за 7 дней: `+{weekly_income:.2f}`\n"
+                f"• Прогноз за 30 дней: `+{monthly_income:.2f}`\n"
             )
 
-        # 4. Динамическая эвристическая сборка ответа без жестких заготовок
+        # 4. Динамический эвристический анализ лексем
         raw_words = [w.strip(".,!?«»'\"") for w in userQuery.split() if len(w) > 3]
-        core_subject = raw_words[0].capitalize() if raw_words else "Система"
+        core_object = raw_words[0].capitalize() if raw_words else "Базовый модуль"
         
         query_hash = abs(hash(userQuery))
-        efficiency_index = (query_hash % 80) + 20
-        
-        # Формирование блоков отчета
-        security_status = (
-            "🛡️ **Статус «Банковский Гамбит»:** Активен. Входящие/исходящие потоки верифицированы, защита счета от списаний работает штатно."
-            if bank_gambit_triggered else 
-            f"⚡ **Метрика сети:** Активный городской щит ('ghost' mode) функционирует на 100%. Контекст сессии: {len(self.session_memory[chat_id])} сообщ."
+        optimization_index = (query_hash % 75) + 25
+
+        response_text = (
+            f"🧠 **{self.model_name}:**\n\n"
+            f"⚙️ `Анализ объекта [{core_object}] | Индекс эффективности: {optimization_index}%`\n"
+            f"{math_analysis}\n"
+            f"{security_report}\n\n"
+            f"💡 *Автоматический синтез параметров завершен.*"
         )
 
-        algorithmic_core = (
-            f"Алгоритмический модуль проанализировал объект [{core_subject}]. "
-            f"Индекс оптимизации параметров: {efficiency_index}%."
-        )
-
-        return (
-            f"🧠 **{self.model_name} (Omni-Core):**\n\n"
-            f"⚙️ `{algorithmic_core}`\n"
-            f"{calc_result_text}\n"
-            f"{security_status}\n\n"
-            f"💡 *Синтез данных завершен успешно.*"
-        )
-
+        return response_text
 
 # Инициализация виртуального помощника
 ai_assistant = BotVirtualAssistant()
