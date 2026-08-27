@@ -66,7 +66,7 @@ class BotVirtualAssistant:
 
     def generate_response(self, userQuery: str, chat_id: int = 0) -> str:
         query_lower = userQuery.lower().strip()
-        current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         # 1. Управление памятью сессии
         if chat_id not in self.session_memory:
