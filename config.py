@@ -166,6 +166,15 @@ INDEPENDENT_FARMS_DATA = {
         "ref_link_2": "https://t.me/BirdsEmpireBot?start=2093853",
         "strategy": "🦅 Стратегия Bird's Empire.",
     },
+
+
+
+"DogsHouseMiner_bot": {
+        "name": "Dogs House Miner",
+        "ref_link_1": "https://t.me/DogsHouseMiner_bot?startapp=ref_5290309079",
+        "ref_link_2": "https://t.me/DogsHouseMiner_bot?startapp=ref_5290309079",
+        "strategy": "🍯 Стратегия DogsHouseMiner.",
+    },
 }
 
 PHONE_MINERS_DATA = {
