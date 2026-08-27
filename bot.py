@@ -787,8 +787,9 @@ def handle_ai_text_messages(message):
         AI_CHAT_ACTIVE.discard(message.from_user.id)
         return
         
-    # Генерация ответа через наш класс ИИ
-    ai_response = ai_assistant.generate_response(message.text, gameContext=None)
+    
+    # Генерация ответа через наш класс ИИ с передачей ID чата для памяти и защиты
+    ai_response = ai_assistant.generate_response(message.text, chat_id=message.chat.id)
     
     # Отправка ответа пользователю
     bot.reply_to(message, ai_response, parse_mode="Markdown")
@@ -1347,8 +1348,8 @@ def handle_text_all(message: types.Message):
             send_message_direct(chat_id, "⚠️ Ошибка получения данных с API. Введите корректное число:")
             return
 
-   # Если пользователь пишет текст, а калькулятор неактивен — передаем запрос нашему ИИ!
-    ai_response = ai_assistant.generate_response(text, gameContext=None)
+   # Если пользователь пишет текст, а калькулятор неактивен — передаем запрос нашему ИИ!    
+    ai_response = ai_assistant.generate_response(text, chat_id=chat_id)
     send_message_direct(chat_id, ai_response, parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 @bot.callback_query_handler(func=lambda call: True)
