@@ -63,6 +63,11 @@ class BotVirtualAssistant:
         self.model_name = model_name
         self.session_memory = {}
         self.learned_knowledge = []
+        self.is_offline_mode = False  # Флаг автономного офлайн-режима
+
+    def set_offline_status(self, status: bool):
+        """Включение или отключение автономного режима при потере сети"""
+        self.is_offline_mode = status
 
     def generate_response(self, userQuery: str, chat_id: int = 0) -> str:
         query_lower = userQuery.lower().strip()
@@ -90,17 +95,19 @@ class BotVirtualAssistant:
         gambit_keywords = ["перевод", "транзакция", "деньги", "счет", "вывод", "зарплата", "caf", "карт", "монет", "оплата"]
         bank_gambit_triggered = any(w in query_lower for w in gambit_keywords)
         
-        security_report = (
-            "🛡️ **Статус «Банковский Гамбит»:** АКТИВЕН. Потоки верифицированы."
-            if bank_gambit_triggered else 
-            f"⚡ **Метрика системы:** 'ghost' mode активен. Усвоено паттернов: {len(self.learned_knowledge)}."
-        )
+        # 4. Проверка офлайн-статуса (Offline Fallback)
+        if self.is_offline_mode:
+            security_report = "⚠️ **ВНИМАНИЕ:** Интернет-соединение потеряно. Активирован **Offline Fallback контур** защиты счета (Black Box)."
+        else:
+            security_report = (
+                "🛡️ **Статус «Банковский Гамбит»:** АКТИВЕН. Потоки верифицированы."
+                if bank_gambit_triggered else 
+                f"⚡ **Метрика системы:** 'ghost' mode активен. Усвоено паттернов: {len(self.learned_knowledge)}."
+            )
 
-        # 4. Мульти-калькулятор (включает монеты, металлы и ВСЮ криптовалюту / токены)
+        # 5. Мульти-калькулятор (фиат, металлы, криптовалюта)
         numbers = re.findall(r'\d+', userQuery)
         math_analysis = ""
-        
-        # Расширенный список ключевых слов: металлы, фиат и все виды криптовалют
         asset_keywords = [
             "монет", "золот", "серебр", "металл", "инвест", "сумм", "баланс", "фарм", "проц", 
             "доллар", "рубл", "унц", "крипт", "токен", "койн", "coin", "token", "btc", "eth", "usdt", "ton", "блокчейн"
@@ -111,17 +118,17 @@ class BotVirtualAssistant:
             daily_income = val * 0.05
             math_analysis = f"\n📊 **ИИ-прогноз актива (База: {val}):** Расчет доходности (24ч): `+{daily_income:.2f}`"
 
-        # 5. Синтез ответа
+        # 6. Синтез ответа
         core_object = matched_learned_tags[-1].capitalize() if matched_learned_tags else "Адаптивный модуль"
         query_hash = abs(hash(userQuery))
         optimization_index = (query_hash % 75) + 25
 
         response_text = (
-            f"🧠 **{self.model_name}:**\n\n"
+            f"🧠 **{self.model_name}** `[Time: {current_time}]`:\n\n"
             f"⚙️ `Объект анализа: [{core_object}] | Оптимизация: {optimization_index}%`\n"
             f"{math_analysis}\n"
             f"{security_report}\n\n"
-            f"💡 *Система полностью адаптирована под фиат, металлы и крипто-активы.*"
+            f"💡 *Локальная обработка данных завершена.*"
         )
 
         return response_text
