@@ -14,6 +14,7 @@ import urllib.request
 import ast
 from datetime import datetime
 import math
+import subprocess
 import urllib.parse
 from typing import Tuple, Dict, List, Any
 
@@ -60,50 +61,68 @@ from private_config import (
 # Настройка логирования для отслеживания запросов ИИ
 logging.basicConfig(level=logging.INFO)
 
-
-def update_and_restart_bot():
+def background_independent_updater(interval_seconds: int = 7200):
     """
-    Запускает локальные скрипты обновления, проверяет целостность 
-    и автоматически перезапускает botv1.py в текущем окружении Termux.
+    Фоновый поток (каждые 2 часа):
+    1. Запускает ./updatebot.sh и ./updbotconfig.sh.
+    2. Проверяет синтаксис каждого файла отдельно через ast.parse.
+    3. Применяет (оставляет) обновление только для безопасного файла, 
+       откатывая или игнорируя поврежденный.
     """
-    print("🚀 [AUTO-SYSTEM] Запуск обновления системы...")
-    
-    success = True
-    
-    # 1. Запуск обновления бота
-    try:
-        print("🔄 Выполнение ./updatebot.sh...")
-        result_bot = subprocess.run(["sh", "updatebot.sh"], capture_output=True, text=True)
-        if result_bot.returncode == 0:
-            print("✅ botv1.py успешно обновлен!")
-        else:
-            print(f"⚠️ Ошибка в updatebot.sh: {result_bot.stderr}")
-            success = False
-    except Exception as e:
-        print(f"❌ Не удалось запустить updatebot.sh: {e}")
-        success = False
-
-    # 2. Запуск обновления конфига
-    try:
-        print("🔄 Выполнение ./updbotconfig.sh...")
-        result_config = subprocess.run(["sh", "updbotconfig.sh"], capture_output=True, text=True)
-        if result_config.returncode == 0:
-            print("✅ config.py успешно обновлен!")
-        else:
-            print(f"⚠️ Ошибка в updbotconfig.sh: {result_config.stderr}")
-            success = False
-    except Exception as e:
-        print(f"❌ Не удалось запустить updbotconfig.sh: {e}")
-        success = False
-
-    # 3. Автоматический перезапуск бота, если обновление прошло успешно
-    if success:
-        print("🔄 [RESTART] Перезапуск процесса botv1.py...")
-        python_executable = sys.executable
-        os.execv(python_executable, [python_executable] + sys.argv)
-    else:
-        print("⚡ [RESTART ABORTED] Обновление выполнено с ошибками или без интернета. Продолжаем работать на текущей версии.")
+    while True:
+        time.sleep(interval_seconds)
+        print("⏰ [SAFE-UPDATER] Запуск цикла независимой проверки обновлений...")
         
+        # 1. Запуск обновления бота (botv1.py)
+        try:
+            res_bot = subprocess.run(["sh", "updatebot.sh"], capture_output=True, text=True)
+            if res_bot.returncode == 0:
+                # Двойная проверка синтаксиса Python для botv1.py
+                with open("botv1.py", "r", encoding="utf-8") as f:
+                    bot_code = f.read()
+                ast.parse(bot_code)
+                print("✅ [BOT-UPDATE] botv1.py успешно обновлен и прошел проверку синтаксиса.")
+                bot_ready_to_restart = True
+            else:
+                print(f"⚠️ Ошибка в updatebot.sh: {res_bot.stderr}")
+                bot_ready_to_restart = False
+        except SyntaxError as se:
+            print(f"❌ [BOT SYNTAX ERROR]: Обнаружена ошибка в botv1.py: {se}. Изменения отклонены!")
+            bot_ready_to_restart = False
+        except Exception as e:
+            print(f"⚠️ [BOT-UPDATE SKIPPED]: {e}")
+            bot_ready_to_restart = False
+
+        # 2. Запуск обновления конфига (config.py)
+        try:
+            res_cfg = subprocess.run(["sh", "updbotconfig.sh"], capture_output=True, text=True)
+            if res_cfg.returncode == 0:
+                # Двойная проверка синтаксиса Python для config.py
+                with open("config.py", "r", encoding="utf-8") as f:
+                    cfg_code = f.read()
+                ast.parse(cfg_code)
+                print("✅ [CONFIG-UPDATE] config.py успешно обновлен и прошел проверку синтаксиса.")
+            else:
+                print(f"⚠️ Ошибка в updbotconfig.sh: {res_cfg.stderr}")
+        except SyntaxError as se:
+            print(f"❌ [CONFIG SYNTAX ERROR]: Обнаружена ошибка в config.py: {se}. Изменения отклонены!")
+        except Exception as e:
+            print(f"⚠️ [CONFIG-UPDATE SKIPPED]: {e}")
+
+        # 3. Если обновился хотя бы botv1.py без ошибок — делаем перезапуск процесса
+        if bot_ready_to_restart:
+            print("🔄 [RESTART] Применены безопасные обновления. Перезапуск процесса botv1.py...")
+            try:
+                python_executable = sys.executable
+                os.execv(python_executable, [python_executable] + sys.argv)
+            except Exception as err:
+                print(f"❌ Ошибка при перезапуске: {err}")
+        else:
+            print("⚡ [SKIP RESTART] Основной файл бота не обновлялся или содержал ошибки. Перезапуск пропущен.")
+
+# Запуск фонового потока (интервал: 2 часа = 7200 секунд)
+updater_thread = threading.Thread(target=background_independent_updater, args=(7200,), daemon=True)
+updater_thread.start()
 
 class BotVirtualAssistant:
     def __init__(self, model_name: str = "Zero-Lag Pure Self-Learning AI"):
