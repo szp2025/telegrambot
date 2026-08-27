@@ -69,6 +69,7 @@ class BotVirtualAssistant:
             "подбирать оптимальные уровни прокачки и давать детальные рекомендации."
         )
 
+
    def generate_response(self, userQuery: str, gameContext: dict = None) -> str:
         query_lower = userQuery.lower().strip()
         
