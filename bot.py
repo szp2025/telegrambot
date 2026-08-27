@@ -1329,7 +1329,9 @@ def handle_text_all(message: types.Message):
             send_message_direct(chat_id, "⚠️ Ошибка получения данных с API. Введите корректное число:")
             return
 
-    send_message_direct(chat_id, "⚡ Отклик мгновенный.", reply_markup=get_main_keyboard())
+   # Если пользователь пишет текст, а калькулятор неактивен — передаем запрос нашему ИИ!
+    ai_response = ai_assistant.generate_response(text, gameContext=None)
+    send_message_direct(chat_id, ai_response, parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call: types.CallbackQuery):
