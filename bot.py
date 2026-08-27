@@ -60,41 +60,50 @@ from private_config import (
 # Настройка логирования для отслеживания запросов ИИ
 logging.basicConfig(level=logging.INFO)
 
-def check_and_update_bot(update_url: str, target_file: str = "botv1.py") -> bool:
+
+def update_and_restart_bot():
     """
-    Автоматически скачивает обновление, проверяет синтаксис 
-    и обновляет файл бота без риска сломать систему.
+    Запускает локальные скрипты обновления, проверяет целостность 
+    и автоматически перезапускает botv1.py в текущем окружении Termux.
     """
-    temp_file = "bot_new_update.py"
+    print("🚀 [AUTO-SYSTEM] Запуск обновления системы...")
+    
+    success = True
+    
+    # 1. Запуск обновления бота
     try:
-        print("🔄 [AUTO-UPDATER] Проверка обновлений модулей и кнопок...")
-        urllib.request.urlretrieve(update_url, temp_file)
-        
-        with open(temp_file, "r", encoding="utf-8") as f:
-            new_code = f.read()
-            
-        # Проверяем синтаксис Python (защита от ошибок вроде 429)
-        ast.parse(new_code)
-        
-        with open(target_file, "w", encoding="utf-8") as f:
-            f.write(new_code)
-            
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
-            
-        print("✅ [AUTO-UPDATER] Обновление успешно применено!")
-        return True
-        
-    except SyntaxError as e:
-        print(f"❌ [ОШИБКА СИНТАКСИСА]: {e}. Обновление отменено, старый файл сохранен.")
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
-        return False
+        print("🔄 Выполнение ./updatebot.sh...")
+        result_bot = subprocess.run(["sh", "updatebot.sh"], capture_output=True, text=True)
+        if result_bot.returncode == 0:
+            print("✅ botv1.py успешно обновлен!")
+        else:
+            print(f"⚠️ Ошибка в updatebot.sh: {result_bot.stderr}")
+            success = False
     except Exception as e:
-        print(f"⚠️ [СЕТЕВАЯ ОШИБКА / СБОЙ]: {e}. Работаем на текущей версии.")
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
-        return False
+        print(f"❌ Не удалось запустить updatebot.sh: {e}")
+        success = False
+
+    # 2. Запуск обновления конфига
+    try:
+        print("🔄 Выполнение ./updbotconfig.sh...")
+        result_config = subprocess.run(["sh", "updbotconfig.sh"], capture_output=True, text=True)
+        if result_config.returncode == 0:
+            print("✅ config.py успешно обновлен!")
+        else:
+            print(f"⚠️ Ошибка в updbotconfig.sh: {result_config.stderr}")
+            success = False
+    except Exception as e:
+        print(f"❌ Не удалось запустить updbotconfig.sh: {e}")
+        success = False
+
+    # 3. Автоматический перезапуск бота, если обновление прошло успешно
+    if success:
+        print("🔄 [RESTART] Перезапуск процесса botv1.py...")
+        python_executable = sys.executable
+        os.execv(python_executable, [python_executable] + sys.argv)
+    else:
+        print("⚡ [RESTART ABORTED] Обновление выполнено с ошибками или без интернета. Продолжаем работать на текущей версии.")
+        
 
 class BotVirtualAssistant:
     def __init__(self, model_name: str = "Zero-Lag Pure Self-Learning AI"):
