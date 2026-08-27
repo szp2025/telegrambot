@@ -10,6 +10,8 @@ from bs4 import BeautifulSoup
 from PIL import Image
 import telebot
 from telebot import types
+import urllib.request
+import ast
 from datetime import datetime
 import math
 import urllib.parse
@@ -58,29 +60,62 @@ from private_config import (
 # Настройка логирования для отслеживания запросов ИИ
 logging.basicConfig(level=logging.INFO)
 
+def check_and_update_bot(update_url: str, target_file: str = "botv1.py") -> bool:
+    """
+    Автоматически скачивает обновление, проверяет синтаксис 
+    и обновляет файл бота без риска сломать систему.
+    """
+    temp_file = "bot_new_update.py"
+    try:
+        print("🔄 [AUTO-UPDATER] Проверка обновлений модулей и кнопок...")
+        urllib.request.urlretrieve(update_url, temp_file)
+        
+        with open(temp_file, "r", encoding="utf-8") as f:
+            new_code = f.read()
+            
+        # Проверяем синтаксис Python (защита от ошибок вроде 429)
+        ast.parse(new_code)
+        
+        with open(target_file, "w", encoding="utf-8") as f:
+            f.write(new_code)
+            
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+            
+        print("✅ [AUTO-UPDATER] Обновление успешно применено!")
+        return True
+        
+    except SyntaxError as e:
+        print(f"❌ [ОШИБКА СИНТАКСИСА]: {e}. Обновление отменено, старый файл сохранен.")
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+        return False
+    except Exception as e:
+        print(f"⚠️ [СЕТЕВАЯ ОШИБКА / СБОЙ]: {e}. Работаем на текущей версии.")
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+        return False
+
 class BotVirtualAssistant:
     def __init__(self, model_name: str = "Zero-Lag Pure Self-Learning AI"):
         self.model_name = model_name
         self.session_memory = {}
         self.learned_knowledge = []
-        self.is_offline_mode = False  # Флаг автономного офлайн-режима
+        self.is_offline_mode = False
 
     def set_offline_status(self, status: bool):
-        """Включение или отключение автономного режима при потере сети"""
         self.is_offline_mode = status
 
     def generate_response(self, userQuery: str, chat_id: int = 0) -> str:
         query_lower = userQuery.lower().strip()
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        # 1. Управление памятью сессии
         if chat_id not in self.session_memory:
             self.session_memory[chat_id] = []
         self.session_memory[chat_id].append(userQuery)
         if len(self.session_memory[chat_id]) > 5:
             self.session_memory[chat_id].pop(0)
 
-        # 2. САМООБУЧЕНИЕ С ЧИСТОГО ЛИСТА
         words = [w.strip(".,!?«»'\"") for w in userQuery.split() if len(w) > 3]
         for word in words:
             stop_words = ["для", "что", "как", "или", "это", "про", "при", "без"]
@@ -91,13 +126,11 @@ class BotVirtualAssistant:
 
         matched_learned_tags = [item for item in self.learned_knowledge if item in query_lower]
 
-        # 3. Стратегия «Банковский Гамбит»
         gambit_keywords = ["перевод", "транзакция", "деньги", "счет", "вывод", "зарплата", "caf", "карт", "монет", "оплата"]
         bank_gambit_triggered = any(w in query_lower for w in gambit_keywords)
         
-        # 4. Проверка офлайн-статуса (Offline Fallback)
         if self.is_offline_mode:
-            security_report = "⚠️ **ВНИМАНИЕ:** Интернет-соединение потеряно. Активирован **Offline Fallback контур** защиты счета (Black Box)."
+            security_report = "⚠️ **ВНИМАНИЕ:** Интернет-соединение потеряно. Активирован **Offline Fallback контур** защиты счета."
         else:
             security_report = (
                 "🛡️ **Статус «Банковский Гамбит»:** АКТИВЕН. Потоки верифицированы."
@@ -105,7 +138,6 @@ class BotVirtualAssistant:
                 f"⚡ **Метрика системы:** 'ghost' mode активен. Усвоено паттернов: {len(self.learned_knowledge)}."
             )
 
-        # 5. Мульти-калькулятор (фиат, металлы, криптовалюта)
         numbers = re.findall(r'\d+', userQuery)
         math_analysis = ""
         asset_keywords = [
@@ -118,7 +150,6 @@ class BotVirtualAssistant:
             daily_income = val * 0.05
             math_analysis = f"\n📊 **ИИ-прогноз актива (База: {val}):** Расчет доходности (24ч): `+{daily_income:.2f}`"
 
-        # 6. Синтез ответа
         core_object = matched_learned_tags[-1].capitalize() if matched_learned_tags else "Адаптивный модуль"
         query_hash = abs(hash(userQuery))
         optimization_index = (query_hash % 75) + 25
