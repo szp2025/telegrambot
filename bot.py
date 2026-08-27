@@ -1267,7 +1267,7 @@ def handle_menu_text(message: types.Message):
     elif text in ["💬 Отзывы", "/reviews"]:
         send_message_direct(chat_id, "💬 **Секция отзывов и предложений (Laysi🐾):**", reply_markup=get_reviews_keyboard(), parse_mode="Markdown")
     elif text in ["📢 Реклама и монетизация", "/ads"]:
-        send_message_direct(chat_id, "📢 **Размещение рекламы через SafePal:**\n\nВыкупите рекламное место в закрепе или рассылке, оплатив его напрямую через кошелек SafePal.", reply_markup=get_ads_keyboard(), parse_mode="Markdown")
+        send_message_direct(chat_id, "📢 **Размещение рекламы :**\n\nВыкупите рекламное место в закрепе или рассылке, оплатив его напрямую через кошелек SafePal.", reply_markup=get_ads_keyboard(), parse_mode="Markdown")
     elif text in ["💎 Скрины выплат", "/proofs"]:
         if not cloud_proofs:
             send_message_direct(chat_id, "💎 Скринов пока нет.")
