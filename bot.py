@@ -924,25 +924,28 @@ def get_single_game_keyboard(key, page):
     data = manager.combo_games.get(key, {})
     keyboard = types.InlineKeyboardMarkup()
     
-    # 1. Первая строка: Берём данные из конфига (combo и tactics)
+    # 1. Первый ряд: Основные действия (Комбо и Тактика)
     combo_text, combo_prefix = SINGLE_GAME_ACTIONS["combo"]
     tactics_text, tactics_prefix = SINGLE_GAME_ACTIONS["tactics"]
     
-    keyboard.row(
+    row_buttons = [
         types.InlineKeyboardButton(text=combo_text, callback_data=f"{combo_prefix}{key}"),
         types.InlineKeyboardButton(text=tactics_text, callback_data=f"{tactics_prefix}{key}")
-    )
+    ]
     
-    # 2. Вторая строка: Ссылки на игру (если они есть в данных)
-    if "ref_link_1" in data and "ref_link_2" in data:
+    # 2. Добавляем ссылки прямо в этот же ряд, если они есть в данных
+    if data.get("ref_link_1"):
         play1_text, *_ = SINGLE_GAME_ACTIONS["play_1"]
-        play2_text, *_ = SINGLE_GAME_ACTIONS["play_2"]
-        keyboard.row(
-            types.InlineKeyboardButton(text=play1_text, url=data["ref_link_1"]),
-            types.InlineKeyboardButton(text=play2_text, url=data["ref_link_2"])
-        )
+        row_buttons.append(types.InlineKeyboardButton(text=play1_text, url=data["ref_link_1"]))
         
-    # 3. Третья строка: Назад к списку (из конфига)
+    if data.get("ref_link_2"):
+        play2_text, *_ = SINGLE_GAME_ACTIONS["play_2"]
+        row_buttons.append(types.InlineKeyboardButton(text=play2_text, url=data["ref_link_2"]))
+    
+    # Складываем все активные кнопки в первую строку
+    keyboard.row(*row_buttons)
+    
+    # 3. Второй ряд: Кнопка возврата назад (на отдельной строке внизу)
     back_text, back_prefix = SINGLE_GAME_ACTIONS["back"]
     keyboard.row(
         types.InlineKeyboardButton(text=back_text, callback_data=f"{back_prefix}{page}")
