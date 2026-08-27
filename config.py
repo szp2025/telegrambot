@@ -435,18 +435,15 @@ DANGEROUS_INJECTION_PATTERNS = [
 
 
 PROFILE_KEYBOARD_DATA = [
-    [("➕ Добавить / Обновить игру", "prof_add")],
-    [("📋 Посмотреть мои статы", "prof_view")]
+    [("➕", "prof_add"), ("📋", "prof_view")]
 ]
 
 REVIEWS_KEYBOARD_DATA = [
-    [("✍️ Оставить отзыв", "review_add")],
-    [("📖 Читать отзывы", "review_read")]
+    [("✍️", "review_add"), ("📖", "review_read")]
 ]
 
 ADS_KEYBOARD_DATA = [
-    [("💰 Купить рекламу", "ads_buy")],
-    [("📊 Статистика аудитории", "ads_stats")]
+    [("💰", "ads_buy"), ("📊", "ads_stats")]
 ]
 
 ADS_TARIFFS_DATA = [
@@ -456,28 +453,24 @@ ADS_TARIFFS_DATA = [
 ]
 
 CRYPTO_COINS_DATA = [
-    ("💵 USDT (TRC20)", "usdt"),
-    ("💎 GRAM / TON", "gram"),
-    ("🪙 Bitcoin (BTC)", "btc"),
-    ("⚡ Tron (TRX)", "tron")
+    [("₮ USDT", "usdt"), ("💎 GRAM", "gram")],
+    [("₿ BTC", "btc"), ("⚡ TRX", "tron")]
 ]
 
 CRYPTO_CURRENCY_DATA = [
-    ("🪙 BTC", "cur_btc"),
-    ("🪙 ETH", "cur_eth"),
-    ("🪙 USDT", "cur_usdt"),
-    ("🪙 GRAM", "cur_gram")
+    [("₿ BTC", "cur_btc"), ("Ξ ETH", "cur_eth")],
+    [("₮ USDT", "cur_usdt"), ("💎 GRAM", "cur_gram")]
 ]
 
 
 # config.py
 
 SINGLE_GAME_ACTIONS = {
-    "combo": ("🎯 Открыть комбо", "game_"),
-    "tactics": ("🧠 Тактика", "strat_"),
+    "combo": ("🎯", "game_"),
+    "tactics": ("🧠", "strat_"),
     "play_1": ("🎮 1",),
     "play_2": ("🎮 2",),
-    "back": ("🔙 Назад к списку", "combopage_")
+    "back": ("🔙", "combopage_")
 }
 
 
