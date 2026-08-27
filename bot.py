@@ -440,9 +440,14 @@ bot = telebot.TeleBot(TOKEN, threaded=True)
 try:
     print("[🛡️ SECURITY CORE] Регистрация команд в Telegram API...")
     
-    # Динамическая генерация из импортированного списка BOT_COMMANDS
-    commands_list = [types.BotCommand(cmd, desc) for cmd, desc in BOT_COMMANDS]
-    
+    # Безопасная динамическая генерация: берем первые два элемента (команда и описание), 
+    # даже если в структуре BOT_COMMANDS больше полей (например, категория или права)
+    commands_list = []
+    for item in BOT_COMMANDS:
+        if len(item) >= 2:
+            cmd, desc = item[0], item[1]
+            commands_list.append(types.BotCommand(cmd, desc))
+            
     bot.set_my_commands(commands_list)
     print("[🛡️ SECURITY CORE] Команды успешно зарегистрированы.")
 except Exception as e:
