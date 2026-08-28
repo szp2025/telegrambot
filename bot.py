@@ -1426,7 +1426,7 @@ def handle_start(message: types.Message):
     send_message_direct(chat_id, WELCOME_MESSAGES["zero_lag"])
     send_message_direct(chat_id, WELCOME_MESSAGES["main_menu"], reply_markup=get_main_keyboard())
 
-@bot.message_handler(commands=BOT_COMMANDS)
+@bot.message_handler(commands=BOT_COMMANDS_LIST)
 @bot.message_handler(func=lambda msg: msg.text in MAIN_MENU_BUTTONS)
 
 
