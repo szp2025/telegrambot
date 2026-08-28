@@ -667,7 +667,8 @@ cloud_proofs = []
 user_calc_states = {}
 advanced_captchas = {} 
 user_reviews_storage = [] 
-pending_ad_orders = {} 
+pending_ad_orders = {}
+active_farm_threads = {}  # {chat_id: thread_object}
 
 def load_verified_users():
     users = set()
@@ -1915,15 +1916,24 @@ def handle_callbacks(call: types.CallbackQuery):
             return
 
         # Управление Doodle Jump (динамическое переключение)
+        # Управление Doodle Jump (динамическое переключение)
         if data in ["toggle_doodle_start", "toggle_doodle_stop"]:
             if chat_id not in active_farms_state:
                 active_farms_state[chat_id] = {"doodle": False, "all": False}
             
-            # Меняем состояние на противоположное
             is_running = (data == "toggle_doodle_start")
             active_farms_state[chat_id]["doodle"] = is_running
             
-            # Обновляем клавиатуру в том же сообщении, чтобы текст сменился на лету
+            if is_running:
+                logger.info(Fore.GREEN + f"[User {chat_id}] Пользователь запустил Signal Doodle Jump!")
+                # thread = threading.Thread(target=run_doodle_loop, args=(chat_id,))
+                # thread.daemon = True
+                # thread.start()
+                # active_farm_threads[chat_id] = thread
+            else:
+                logger.info(Fore.RED + f"[User {chat_id}] Пользователь остановил Signal Doodle Jump.")
+            
+            # Обязательно обновляем клавиатуру, чтобы текст кнопки поменялся
             try:
                 bot.edit_message_reply_markup(
                     chat_id=chat_id,
@@ -1939,7 +1949,7 @@ def handle_callbacks(call: types.CallbackQuery):
             except:
                 pass
             return
-
+        
         # Управление «Запустить всё» / «Остановить всё»
         if data in ["toggle_all_start", "toggle_all_stop"]:
             if chat_id not in active_farms_state:
