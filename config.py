@@ -394,7 +394,7 @@ BOT_COMMANDS = [
     ("timers", "⏰ Персональные таймеры сбора"),
     ("reviews", "💬 Отзывы пользователей"),
     ("ads", "📢 Реклама и монетизация"),
-    ("proofs", "Скрины выплат")
+    ("proofs", "Скрины выплат"),
 ]
 
 
@@ -408,7 +408,7 @@ MAIN_MENU_BUTTONS = [
     "🤖 Авто-ферма игр",
 ]
 
-BOT_COMMANDS = [
+BOT_COMMANDS_LIST = [
     'calc', 'farm', 'timers', 'proofs', 
     'all_combo', 'miners', 'faucets', 
     'profile', 'reviews', 'ads'
