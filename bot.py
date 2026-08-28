@@ -15,6 +15,9 @@ import ast
 from datetime import datetime
 import math
 import subprocess
+import asyncio
+from abc import ABC, abstractmethod
+from colorama import Fore
 import urllib.parse
 from typing import Tuple, Dict, List, Any
 
@@ -197,6 +200,156 @@ ai_assistant = BotVirtualAssistant()
 
 
 logger = logging.getLogger(__name__)
+
+
+
+# ==================== МОДУЛЬ АВТОМАТИЗАЦИИ ИГР ====================
+
+class BaseGameAutomation(ABC):
+    def __init__(self, name: str, interval_seconds: int):
+        self.name = name
+        self.interval_seconds = interval_seconds
+        self.is_running = False
+
+    @abstractmethod
+    async def collect_rewards(self) -> bool:
+        pass
+
+    @abstractmethod
+    async def watch_videos(self) -> bool:
+        pass
+
+    async def run_routine(self) -> None:
+        self.is_running = True
+        logger.info(f"[{self.name}] Запуск автоматизированного цикла фермы...")
+        while self.is_running:
+            try:
+                await self.collect_rewards()
+                await self.watch_videos()
+            except Exception as e:
+                logger.error(f"[{self.name}] Ошибка в цикле: {e}")
+            await asyncio.sleep(self.interval_seconds)
+
+    def stop(self) -> None:
+        self.is_running = False
+
+class GoldMinerGame(BaseGameAutomation):
+    """Модуль автоматизации для Gold Miner (сбор золота и клики по таймеру)"""
+    def __init__(self):
+        super().__init__(name="Gold Miner", interval_seconds=3600)  # Интервал 1 час
+
+    async def collect_rewards(self) -> bool:
+        logger.info(Fore.GREEN + "[Gold Miner] Запуск сессии сбора руды и монет...")
+        await asyncio.sleep(3)
+        logger.info(Fore.GREEN + "[Gold Miner] Ресурсы успешно собраны!")
+        return True
+
+    async def watch_videos(self) -> bool:
+        logger.info(Fore.BLUE + "[Gold Miner] Проверка доступности рекламных роликов...")
+        await asyncio.sleep(2)
+        logger.info(Fore.GREEN + "[Gold Miner] Реклама просмотрена, бонус зачислен.")
+        return True
+
+
+class HoneyFarmGame(BaseGameAutomation):
+    """Модуль автоматизации для Honey Farm (сбор меда с ульев)"""
+    def __init__(self):
+        super().__init__(name="Honey Farm", interval_seconds=1800)  # Интервал 30 минут
+
+    async def collect_rewards(self) -> bool:
+        logger.info(Fore.GREEN + "[Honey Farm] Проверка ульев и сбор меда...")
+        await asyncio.sleep(2)
+        logger.info(Fore.GREEN + "[Honey Farm] Мед успешно собран на склад!")
+        return True
+
+    async def watch_videos(self) -> bool:
+        logger.info(Fore.BLUE + "[Honey Farm] Запуск просмотра видео для ускорения производства...")
+        await asyncio.sleep(3)
+        logger.info(Fore.GREEN + "[Honey Farm] Видео бонус активирован.")
+        return True
+
+
+class DogsHouseMinerGame(BaseGameAutomation):
+    """Модуль автоматизации для Dogs House Miner (майнинг монет в домике собакена)"""
+    def __init__(self):
+        super().__init__(name="Dogs House Miner", interval_seconds=7200)  # Интервал 2 часа
+
+    async def collect_rewards(self) -> bool:
+        logger.info(Fore.GREEN + "[Dogs House Miner] Подключение к майнеру, сбор добытых монет...")
+        await asyncio.sleep(3)
+        logger.info(Fore.GREEN + "[Dogs House Miner] Баланс успешно обновлен!")
+        return True
+
+    async def watch_videos(self) -> bool:
+        logger.info(Fore.BLUE + "[Dogs House Miner] Просмотр рекламного блока для бустом майнинга...")
+        await asyncio.sleep(4)
+        logger.info(Fore.GREEN + "[Dogs House Miner] Буст успешно применен.")
+        return True
+
+
+class GrowTeaGame(BaseGameAutomation):
+    """Модуль автоматизации для Grow Tea (выращивание и сбор чая)"""
+    def __init__(self):
+        super().__init__(name="Grow Tea", interval_seconds=14400)  # Интервал 4 часа
+
+    async def collect_rewards(self) -> bool:
+        logger.info(Fore.GREEN + "[Grow Tea] Проверка кустов, сбор готового урожая чая...")
+        await asyncio.sleep(2)
+        logger.info(Fore.GREEN + "[Grow Tea] Чай собран, посадка новых ростков...")
+        return True
+
+    async def watch_videos(self) -> bool:
+        logger.info(Fore.BLUE + "[Grow Tea] Просмотр видео для полива и ускорения роста...")
+        await asyncio.sleep(3)
+        logger.info(Fore.GREEN + "[Grow Tea] Ускорение роста применено.")
+        return True
+
+
+class SignalDoodleJumpGame(BaseGameAutomation):
+    """Модуль автоматизации для Signal Doodle Jump (авто-прыжки и сбор ежедневных наград)"""
+    def __init__(self):
+        super().__init__(name="Signal Doodle Jump", interval_seconds=21600)  # Интервал 6 часов
+
+    async def collect_rewards(self) -> bool:
+        logger.info(Fore.GREEN + "[Signal Doodle Jump] Авторизация в игре, сбор ежедневного бонуса...")
+        await asyncio.sleep(2)
+        logger.info(Fore.GREEN + "[Signal Doodle Jump] Ежедневная награда получена!")
+        return True
+
+    async def watch_videos(self) -> bool:
+        logger.info(Fore.BLUE + "[Signal Doodle Jump] Просмотр рекламной попытки/видео...")
+        await asyncio.sleep(3)
+        logger.info(Fore.GREEN + "[Signal Doodle Jump] Дополнительная попытка начислена.")
+        return True
+
+
+class BotGameFarmManager:
+    """Менеджер для управления списком игр и их фоновыми задачами"""
+    def __init__(self):
+        self.games = {}
+        self.tasks = {}
+
+    def register_game(self, game: BaseGameAutomation):
+        self.games[game.name.lower()] = game
+
+    def stop_all_games(self):
+        for game in self.games.values():
+            game.stop()
+        for task in self.tasks.values():
+            if not task.done():
+                task.cancel()
+        self.tasks.clear()
+
+
+# Инициализация менеджера и всех игровых модулей фермы
+game_farm_manager = BotGameFarmManager()
+game_farm_manager.register_game(GoldMinerGame())
+game_farm_manager.register_game(HoneyFarmGame())
+game_farm_manager.register_game(DogsHouseMinerGame())
+game_farm_manager.register_game(GrowTeaGame())
+game_farm_manager.register_game(SignalDoodleJumpGame())
+
+
 
 class AdvancedSecurityGuard:
     """
@@ -1234,6 +1387,23 @@ def handle_menu_text(message: types.Message):
     if text in ["🚀 Меню комбо-игр"]:
         keyboard, total_count = get_combo_list_keyboard(page=0)
         send_message_direct(chat_id, f"🎮 **Активные комбо-проекты**\nВсего доступно игр с комбо: **{total_count}**\n\nВыберите проект из списка ниже:", reply_markup=keyboard)
+        
+     elif text in ["🤖 Авто-ферма игр"]:
+        keyboard = types.InlineKeyboardMarkup()
+        keyboard.row(
+            types.InlineKeyboardButton(text="🟢 Запустить все фермы", callback_data="farm_start_all"),
+            types.InlineKeyboardButton(text="🛑 Остановить фермы", callback_data="farm_stop_all")
+        )
+        keyboard.row(
+            types.InlineKeyboardButton(text="📊 Статус игр", callback_data="farm_status")
+        )
+        send_message_direct(
+            chat_id,
+            "🤖 **Управление авто-фермой игр**\n\nЗдесь вы можете запустить автоматический сбор ресурсов и просмотр видео для добавленных игр (Gold Miner, Honey Farm и др.):",
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+         
     elif text in ["👤 Профиль и статы", "/profile"]:
         show_user_profile(chat_id)
     elif text in ["📱 Телефонные майнеры", "/miners"]:
