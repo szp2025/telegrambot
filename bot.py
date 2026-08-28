@@ -24,6 +24,7 @@ from typing import Tuple, Dict, List, Any
 
 from config import ( 
     COMBO_GAMES_DATA,
+    BOT_COMMANDS_LIST,
     CRYPTO_FAUCETS_DATA,
     INDEPENDENT_FARMS_DATA,
     LOG_COLORS,
