@@ -1439,7 +1439,7 @@ def handle_menu_text(message: types.Message):
         keyboard, total_count = get_combo_list_keyboard(page=0)
         send_message_direct(chat_id, f"🎮 **Активные комбо-проекты**\nВсего доступно игр с комбо: **{total_count}**\n\nВыберите проект из списка ниже:", reply_markup=keyboard)
         
-     elif text in ["🤖 Авто-ферма игр"]:
+    elif text in ["🤖 Авто-ферма игр"]:
         keyboard = types.InlineKeyboardMarkup()
         keyboard.row(
             types.InlineKeyboardButton(text="🟢 Запустить все фермы", callback_data="farm_start_all"),
