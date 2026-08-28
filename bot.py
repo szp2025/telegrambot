@@ -306,74 +306,69 @@ class GrowTeaGame(BaseGameAutomation):
 
 
 class SignalDoodleJumpGame(BaseGameAutomation):
-    """Модуль автоматизации для Doodle Jump с контролем лимитов видео и заданий"""
+    """Модуль автоматизации для Doodle Jump (сбор, авто-прокачка за 150 монет и просмотр рекламы с паузой 4 мин)"""
     def __init__(self):
-        super().__init__(name="Signal Doodle Jump", interval_seconds=3600)  # Общий цикл проверки раз в час
-        
-        # Лимиты и состояние
-        self.hourly_watched = 0
+        super().__init__(name="Signal Doodle Jump", interval_seconds=1800)  # Общий цикл проверки каждые 30 минут
         self.max_hourly_videos = 5
-        self.daily_watched = 0
         self.max_daily_videos = 25
-        
-        # Таймстемпы для контроля кулдаунов
-        self.last_video_time = 0
-        self.video_cooldown_seconds = 300  гр. пауза между видео (5 минут)
+        self.video_cooldown_seconds = 240  # Пауза между видео 4 минуты
 
     async def collect_rewards(self) -> bool:
-        logger.info(Fore.GREEN + f"[{self.name}] Запуск сессии: проверка ежедневных наград...")
+        logger.info(Fore.GREEN + f"[{self.name}] Переход на главную страницу...")
         
-        # Здесь будет код Playwright для перехода в игру и сбора дейлика:
-        # await page.click('#daily-reward-btn')
+        # 1. Клик по кнопке «Собрать» пассивный доход
+        # await page.click('text=Собрать')
         await asyncio.sleep(2)
+        logger.info(Fore.GREEN + f"[{self.name}] Пассивные монеты собраны.")
+
+        # 2. Проверка баланса для «Тройной прокачки» (нужно >= 150 монет)
+        # current_coins = float(await page.locator('.coin-balance-selector').inner_text())
+        current_coins = 160  # Пример получения значения со страницы
         
-        logger.info(Fore.GREEN + f"[{self.name}] Ежедневная награда успешно забрана!")
+        if current_coins >= 150:
+            logger.info(Fore.MAGENTA + f"[{self.name}] Баланс ({current_coins}) >= 150. Нажимаем 'Тройная прокачка'...")
+            # await page.click('text=150')  # Клик по кнопке прокачки
+            await asyncio.sleep(2)
+            logger.info(Fore.GREEN + f"[{self.name}] Тройная прокачка успешно куплена!")
+        else:
+            logger.info(Fore.YELLOW + f"[{self.name}] Баланс ({current_coins}) меньше 150 монет. Прокачку пропускаем.")
+
         return True
 
     async def watch_videos(self) -> bool:
-        logger.info(Fore.BLUE + f"[{self.name}] Проверка доступности рекламных роликов в заданиях...")
+        logger.info(Fore.BLUE + f"[{self.name}] Переход во вкладку «Задания»...")
+        
+        # Клик на вкладку «Задания» внизу
+        # await page.click('text=Задания')
+        await asyncio.sleep(2)
 
-        # 1. Проверяем суточный лимит
-        if self.daily_watched >= self.max_daily_videos:
-            logger.info(Fore.YELLOW + f"[{self.name}] Суточный лимит исчерпан ({self.daily_watched}/{self.max_daily_videos}). Пропускаем.")
-            return False
+        # Проверяем состояние на странице: есть ли текст/кнопка "смотреть видео" или активен таймер
+        # if await page.is_visible('text=Следующая через'):
+        #     logger.info(Fore.YELLOW + f"[{self.name}] Активен таймер ожидания (36 минут). Пропускаем.")
+        #     return False
 
-        # 2. Проверяем часовой лимит
-        if self.hourly_watched >= self.max_hourly_videos:
-            logger.info(Fore.YELLOW + f"[{self.name}] Часовой лимит исчерпан ({self.hourly_watched}/{self.max_hourly_videos}). Ждем следующего часа.")
-            return False
+        current_hourly_watched = 0
+        
+        while current_hourly_watched < self.max_hourly_videos:
+            logger.info(Fore.BLUE + f"[{self.name}] Кликаем «смотреть видео» ({current_hourly_watched + 1}/{self.max_hourly_videos})...")
+            
+            # Клик по кнопке просмотра рекламы
+            # await page.click('.task-item button')
+            
+            # Длительность самого ролика
+            await asyncio.sleep(5)
+            
+            current_hourly_watched += 1
+            logger.info(Fore.GREEN + f"[{self.name}] Видео просмотрено и засчитано.")
 
-        # 3. Переход во вкладку «Задания»
-        # await page.click('.tab-tasks-selector')
-        await asyncio.sleep(1)
-
-        # Цикл просмотра доступных видео в рамках текущей сессии
-        while self.hourly_watched < self.max_hourly_videos and self.daily_watched < self.max_daily_videos:
-            
-            logger.info(Fore.BLUE + f"[{self.name}] Кликаем на просмотр видео ({self.hourly_watched + 1}/{self.max_hourly_videos})...")
-            
-            # Эмуляция клика по кнопке видео в заданиях
-            # await page.click('#watch-ad-btn')
-            
-            # Ждем условное время проигрывания ролика (например, 15-30 секунд)
-            await asyncio.sleep(5) 
-            
-            self.hourly_watched += 1
-            self.daily_watched += 1
-            
-            logger.info(Fore.GREEN + f"[{self.name}] Видео просмотрено! Сумма за день: {self.daily_watched}/{self.max_daily_videos}")
-
-            # Пауза между просмотрами ролика, если остались попытки
-            if self.hourly_watched < self.max_hourly_videos:
-                logger.info(Fore.CYAN + f"[{self.name}] Пауза {self.video_cooldown_seconds} сек. перед следующим видео...")
-                await asyncio.sleep(2)  # Здесь будет self.video_cooldown_seconds
+            # Если посмотрели меньше 5 видео, выдерживаем паузу между ними
+            if current_hourly_watched < self.max_hourly_videos:
+                logger.info(Fore.CYAN + f"[{self.name}] Пауза 4 минуты перед следующим видео...")
+                await asyncio.sleep(self.video_cooldown_seconds)
+            else:
+                logger.info(Fore.MAGENTA + f"[{self.name}] Лимит 5 видео исчерпан. Включается таймер (~36 минут).")
 
         return True
-
-    def reset_hourly_counter(self):
-        """Сброс часового лимита (можно вызывать по таймеру раз в час)"""
-        self.hourly_watched = 0
-        logger.info(f"[{self.name}] Часовой счетчик видео сброшен (0/{self.max_hourly_videos}).")
 
 
 
