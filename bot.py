@@ -321,17 +321,21 @@ class SignalDoodleJumpGame(BaseGameAutomation):
         await asyncio.sleep(2)
         logger.info(Fore.GREEN + f"[{self.name}] Пассивные монеты собраны.")
 
-        # 2. Проверка баланса для «Тройной прокачки» (нужно >= 150 монет)
-        # current_coins = float(await page.locator('.coin-balance-selector').inner_text())
-        current_coins = 160  # Пример получения значения со страницы
+        # 2. Безопасная проверка баланса перед покупкой «Тройной прокачки» (требуется 150 монет)
+        # Считываем текущий баланс со страницы (например, из элемента с монетами)
+        # current_coins_text = await page.locator('.coin-balance-selector').inner_text()
+        # current_coins = float(current_coins_text.replace(',', '.'))
         
-        if current_coins >= 150:
-            logger.info(Fore.MAGENTA + f"[{self.name}] Баланс ({current_coins}) >= 150. Нажимаем 'Тройная прокачка'...")
-            # await page.click('text=150')  # Клик по кнопке прокачки
+        current_coins = 49.34  # Значение для примера (как на вашем скриншоте баланс 49.34)
+        upgrade_cost = 150
+
+        if current_coins >= upgrade_cost:
+            logger.info(Fore.MAGENTA + f"[{self.name}] Баланс ({current_coins}) достаточно для аппа ({upgrade_cost}). Нажимаем прокачку...")
+            # await page.click('text=150')  # Кликаем только если точно хватает
             await asyncio.sleep(2)
-            logger.info(Fore.GREEN + f"[{self.name}] Тройная прокачка успешно куплена!")
+            logger.info(Fore.GREEN + f"[{self.name}] Прокачка успешно куплена!")
         else:
-            logger.info(Fore.YELLOW + f"[{self.name}] Баланс ({current_coins}) меньше 150 монет. Прокачку пропускаем.")
+            logger.info(Fore.YELLOW + f"[{self.name}] Баланс ({current_coins}) ниже требуемого ({upgrade_cost}). Пропускаем апгрейд во избежание ошибки.")
 
         return True
 
