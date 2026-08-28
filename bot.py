@@ -346,13 +346,10 @@ class SignalDoodleJumpGame(BaseGameAutomation):
         # await page.click('text=Задания')
         await asyncio.sleep(2)
 
-        # Проверяем состояние на странице: есть ли текст/кнопка "смотреть видео" или активен таймер
-        # if await page.is_visible('text=Следующая через'):
-        #     logger.info(Fore.YELLOW + f"[{self.name}] Активен таймер ожидания (36 минут). Пропускаем.")
-        #     return False
-
         current_hourly_watched = 0
-        
+        # Пауза между видео: ваши 4 минуты + 5 минут запаса = 9 минут (540 секунд)
+        safe_video_cooldown = 540  
+
         while current_hourly_watched < self.max_hourly_videos:
             logger.info(Fore.BLUE + f"[{self.name}] Кликаем «смотреть видео» ({current_hourly_watched + 1}/{self.max_hourly_videos})...")
             
@@ -365,10 +362,10 @@ class SignalDoodleJumpGame(BaseGameAutomation):
             current_hourly_watched += 1
             logger.info(Fore.GREEN + f"[{self.name}] Видео просмотрено и засчитано.")
 
-            # Если посмотрели меньше 5 видео, выдерживаем паузу между ними
+            # Если посмотрели меньше 5 видео, выдерживаем паузу с запасом
             if current_hourly_watched < self.max_hourly_videos:
-                logger.info(Fore.CYAN + f"[{self.name}] Пауза 4 минуты перед следующим видео...")
-                await asyncio.sleep(self.video_cooldown_seconds)
+                logger.info(Fore.CYAN + f"[{self.name}] Пауза 9 минут (с учетом запаса) перед следующим видео...")
+                await asyncio.sleep(safe_video_cooldown)
             else:
                 logger.info(Fore.MAGENTA + f"[{self.name}] Лимит 5 видео исчерпан. Включается таймер (~36 минут).")
 
