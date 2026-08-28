@@ -652,8 +652,10 @@ try:
             cmd, desc = item[0], item[1]
             commands_list.append(types.BotCommand(cmd, desc))
             
+    # Вызываем set_my_commands ОДИН раз, когда список уже полностью сформирован
     bot.set_my_commands(commands_list)
     print("[🛡️ SECURITY CORE] Команды успешно зарегистрированы.")
+
 except Exception as e:
     print(f"[⚠️ WARNING] Команды не зарегистрированы (проблема сети/таймаут): {e}")
     print("[🛡️ SECURITY CORE] Бот продолжает запуск в автономном режиме обхода...")
