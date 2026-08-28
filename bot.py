@@ -61,7 +61,8 @@ from private_config import (
     TOKEN,
 )
 
-
+# Целевой бот для авто-фермы Doodle Jump
+TARGET_GAME_BOT = "@DoodlePlayBot"
 # Настройка логирования для отслеживания запросов ИИ
 logging.basicConfig(level=logging.INFO)
 
@@ -1925,14 +1926,15 @@ def handle_callbacks(call: types.CallbackQuery):
             active_farms_state[chat_id]["doodle"] = is_running
             
             if is_running:
-                logger.info(Fore.GREEN + f"[User {chat_id}] Пользователь запустил Signal Doodle Jump!")
-                # thread = threading.Thread(target=run_doodle_loop, args=(chat_id,))
-                # thread.daemon = True
-                # thread.start()
-                # active_farm_threads[chat_id] = thread
-            else:
-                logger.info(Fore.RED + f"[User {chat_id}] Пользователь остановил Signal Doodle Jump.")
-            
+            logger.info(Fore.GREEN + f"[User {chat_id}] Пользователь запустил Signal Doodle Jump!")
+            # Подставьте имя вашей существующей функции вместо run_doodle_loop
+            thread = threading.Thread(target=run_doodle_loop, args=(chat_id, TARGET_GAME_BOT))
+            thread.daemon = True
+            thread.start()
+            active_farm_threads[chat_id] = thread
+        else:
+            logger.info(Fore.RED + f"[User {chat_id}] Пользователь остановил Signal Doodle Jump.")
+                
             # Обязательно обновляем клавиатуру, чтобы текст кнопки поменялся
             try:
                 bot.edit_message_reply_markup(
