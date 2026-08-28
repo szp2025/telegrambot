@@ -720,6 +720,31 @@ def save_active_ads_to_file():
 active_ads_storage = load_active_ads()
 
 
+# Словарь для отслеживания состояния запусков (ключ - ID пользователя или общая ферма)
+active_farms_state = {}  # Например: {chat_id: {"doodle": True/False, "all": True/False}}
+
+def get_farms_menu_keyboard(chat_id):
+    # Получаем текущие состояния для пользователя (по умолчанию все выключено)
+    user_state = active_farms_state.get(chat_id, {"doodle": False, "all": False})
+    
+    keyboard = types.InlineKeyboardMarkup()
+    
+    # Динамический текст для Doodle Jump
+    doodle_text = "🛑 Остановить Doodle Jump" if user_state["doodle"] else "🕹 Запустить Doodle Jump"
+    doodle_callback = "toggle_doodle_stop" if user_state["doodle"] else "toggle_doodle_start"
+    keyboard.row(types.InlineKeyboardButton(text=doodle_text, callback_data=doodle_callback))
+    
+    # Динамический текст для кнопки «Запустить всё» / «Остановить всё»
+    all_text = "🛑 Остановить всё" if user_state["all"] else "🟢 Запустить всё"
+    all_callback = "toggle_all_stop" if user_state["all"] else "toggle_all_start"
+    keyboard.row(types.InlineKeyboardButton(text=all_text, callback_data=all_callback))
+    
+    # Кнопка статуса
+    keyboard.row(types.InlineKeyboardButton(text="📊 Статус игр", callback_data="farm_status"))
+    
+    return keyboard
+
+
 class UltimateSecurityCore:
     """
     /**
@@ -1443,14 +1468,7 @@ def handle_menu_text(message: types.Message):
         send_message_direct(chat_id, f"🎮 **Активные комбо-проекты**\nВсего доступно игр с комбо: **{total_count}**\n\nВыберите проект из списка ниже:", reply_markup=keyboard)
         
     elif text in ["🤖 Авто-ферма игр"]:
-        keyboard = types.InlineKeyboardMarkup()
-        # Кнопка для конкретной игры Doodle Jump
-        keyboard.row(types.InlineKeyboardButton(text="🕹 Запустить Doodle Jump", callback_data="start_doodle"))
-        # Кнопка для остановки Doodle Jump
-        keyboard.row(types.InlineKeyboardButton(text="🛑 Остановить Doodle Jump", callback_data="stop_doodle"))
-        # Общий статус
-        keyboard.row(types.InlineKeyboardButton(text="📊 Статус игр", callback_data="farm_status"))
-        
+        keyboard = get_farms_menu_keyboard(chat_id)  # Вызываем нашу динамическую клавиатуру
         send_message_direct(
             chat_id,
             "🤖 **Управление авто-фермой игр**\n\nВыберите нужную игру из списка для управления:",
@@ -1784,7 +1802,7 @@ def handle_callbacks(call: types.CallbackQuery):
             
             send_message_direct(
                 chat_id,
-                f"💳 **Реквизиты SafePal для оплаты:**\n\n"
+                f"💳 **Реквизиты для оплаты:**\n\n"
                 f"📋 Тариф: *{tariff_name}*\n"
                 f"🪙 Монета: *{wallet_info['name']}*\n\n"
                 f"📌 **Адрес кошелька SafePal:**\n`{wallet_info['address']}`\n\n"
@@ -1894,6 +1912,58 @@ def handle_callbacks(call: types.CallbackQuery):
                 except: pass
                 img_url, date_text = manager.fetch_combo(key)
                 send_combo_result(chat_id, manager.combo_games[key], manager.resize_img(img_url, key) if img_url else None, date_text)
+            return
+
+        # Управление Doodle Jump (динамическое переключение)
+        if data in ["toggle_doodle_start", "toggle_doodle_stop"]:
+            if chat_id not in active_farms_state:
+                active_farms_state[chat_id] = {"doodle": False, "all": False}
+            
+            # Меняем состояние на противоположное
+            is_running = (data == "toggle_doodle_start")
+            active_farms_state[chat_id]["doodle"] = is_running
+            
+            # Обновляем клавиатуру в том же сообщении, чтобы текст сменился на лету
+            try:
+                bot.edit_message_reply_markup(
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
+                    reply_markup=get_farms_menu_keyboard(chat_id)
+                )
+            except Exception:
+                pass
+            
+            status_msg = "🟢 Doodle Jump успешно запущен в фоновом режиме!" if is_running else "🛑 Doodle Jump остановлен."
+            try:
+                bot.answer_callback_query(call.id, status_msg)
+            except:
+                pass
+            return
+
+        # Управление «Запустить всё» / «Остановить всё»
+        if data in ["toggle_all_start", "toggle_all_stop"]:
+            if chat_id not in active_farms_state:
+                active_farms_state[chat_id] = {"doodle": False, "all": False}
+            
+            is_running = (data == "toggle_all_start")
+            active_farms_state[chat_id]["all"] = is_running
+            # Также синхронизируем отдельную игру для наглядности
+            active_farms_state[chat_id]["doodle"] = is_running
+            
+            try:
+                bot.edit_message_reply_markup(
+                    chat_id=chat_id,
+                    message_id=call.message.message_id,
+                    reply_markup=get_farms_menu_keyboard(chat_id)
+                )
+            except Exception:
+                pass
+            
+            status_msg = "🚀 Все фермы запущены!" if is_running else "🛑 Все фермы остановлены."
+            try:
+                bot.answer_callback_query(call.id, status_msg)
+            except:
+                pass
             return
 
         # Управление авто-фермами игр
