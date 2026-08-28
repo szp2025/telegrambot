@@ -306,21 +306,76 @@ class GrowTeaGame(BaseGameAutomation):
 
 
 class SignalDoodleJumpGame(BaseGameAutomation):
-    """Модуль автоматизации для Signal Doodle Jump (авто-прыжки и сбор ежедневных наград)"""
+    """Модуль автоматизации для Doodle Jump с контролем лимитов видео и заданий"""
     def __init__(self):
-        super().__init__(name="Signal Doodle Jump", interval_seconds=21600)  # Интервал 6 часов
+        super().__init__(name="Signal Doodle Jump", interval_seconds=3600)  # Общий цикл проверки раз в час
+        
+        # Лимиты и состояние
+        self.hourly_watched = 0
+        self.max_hourly_videos = 5
+        self.daily_watched = 0
+        self.max_daily_videos = 25
+        
+        # Таймстемпы для контроля кулдаунов
+        self.last_video_time = 0
+        self.video_cooldown_seconds = 300  гр. пауза между видео (5 минут)
 
     async def collect_rewards(self) -> bool:
-        logger.info(Fore.GREEN + "[Signal Doodle Jump] Авторизация в игре, сбор ежедневного бонуса...")
+        logger.info(Fore.GREEN + f"[{self.name}] Запуск сессии: проверка ежедневных наград...")
+        
+        # Здесь будет код Playwright для перехода в игру и сбора дейлика:
+        # await page.click('#daily-reward-btn')
         await asyncio.sleep(2)
-        logger.info(Fore.GREEN + "[Signal Doodle Jump] Ежедневная награда получена!")
+        
+        logger.info(Fore.GREEN + f"[{self.name}] Ежедневная награда успешно забрана!")
         return True
 
     async def watch_videos(self) -> bool:
-        logger.info(Fore.BLUE + "[Signal Doodle Jump] Просмотр рекламной попытки/видео...")
-        await asyncio.sleep(3)
-        logger.info(Fore.GREEN + "[Signal Doodle Jump] Дополнительная попытка начислена.")
+        logger.info(Fore.BLUE + f"[{self.name}] Проверка доступности рекламных роликов в заданиях...")
+
+        # 1. Проверяем суточный лимит
+        if self.daily_watched >= self.max_daily_videos:
+            logger.info(Fore.YELLOW + f"[{self.name}] Суточный лимит исчерпан ({self.daily_watched}/{self.max_daily_videos}). Пропускаем.")
+            return False
+
+        # 2. Проверяем часовой лимит
+        if self.hourly_watched >= self.max_hourly_videos:
+            logger.info(Fore.YELLOW + f"[{self.name}] Часовой лимит исчерпан ({self.hourly_watched}/{self.max_hourly_videos}). Ждем следующего часа.")
+            return False
+
+        # 3. Переход во вкладку «Задания»
+        # await page.click('.tab-tasks-selector')
+        await asyncio.sleep(1)
+
+        # Цикл просмотра доступных видео в рамках текущей сессии
+        while self.hourly_watched < self.max_hourly_videos and self.daily_watched < self.max_daily_videos:
+            
+            logger.info(Fore.BLUE + f"[{self.name}] Кликаем на просмотр видео ({self.hourly_watched + 1}/{self.max_hourly_videos})...")
+            
+            # Эмуляция клика по кнопке видео в заданиях
+            # await page.click('#watch-ad-btn')
+            
+            # Ждем условное время проигрывания ролика (например, 15-30 секунд)
+            await asyncio.sleep(5) 
+            
+            self.hourly_watched += 1
+            self.daily_watched += 1
+            
+            logger.info(Fore.GREEN + f"[{self.name}] Видео просмотрено! Сумма за день: {self.daily_watched}/{self.max_daily_videos}")
+
+            # Пауза между просмотрами ролика, если остались попытки
+            if self.hourly_watched < self.max_hourly_videos:
+                logger.info(Fore.CYAN + f"[{self.name}] Пауза {self.video_cooldown_seconds} сек. перед следующим видео...")
+                await asyncio.sleep(2)  # Здесь будет self.video_cooldown_seconds
+
         return True
+
+    def reset_hourly_counter(self):
+        """Сброс часового лимита (можно вызывать по таймеру раз в час)"""
+        self.hourly_watched = 0
+        logger.info(f"[{self.name}] Часовой счетчик видео сброшен (0/{self.max_hourly_videos}).")
+
+
 
 
 class BotGameFarmManager:
