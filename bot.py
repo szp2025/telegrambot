@@ -1449,7 +1449,7 @@ class BackgroundSchedulerManager:
                 last_reset_day = current_day
                 run_check_now = True
 
-            # 2. Проверка и сбор комбо-картинок
+    # 2. Проверка и сбор комбо-картинок
             has_unfound_games = any(not found for found in self.manager.found_today.values())
             if (run_check_now or current_hour >= 9) and has_unfound_games:
                 self.logger.info("🛡️ [AUTO-CHECKER] Запуск проверки комбо-картинок...")
@@ -1458,28 +1458,27 @@ class BackgroundSchedulerManager:
                     if self.manager.found_today.get(key, False):
                         continue
 
-            try:
-                img_url, date_text = self.manager.fetch_combo(key)
-                if img_url:
-                    # Вызываем resize_img у нашего отдельного класса image_handler
-                    img_bytes = image_handler.resize_img(img_url)
-                    if img_bytes:
-                        self.manager.found_today[key] = True
-                        self.logger.info(f"✅ [AUTO-CHECKER] Картинка для {key} успешно найдена и зафиксирована!")
-                        
-                        caption = f"🎯 **[Авто-комбо] {info.get('name', key)}**\n📅 `{date_text}`"
-                        try:
-                            self.bot.send_photo(self.admin_chat_id, photo=img_bytes, caption=caption[:1024], parse_mode="Markdown")
-                        except Exception as e:
-                            self.logger.error(f"Ошибка отправки авто-фото администратору: {e}")
-            except Exception as e:
-                self.logger.error(f"Ошибка авто-проверки игры {key}: {e}")
+                    try:
+                        img_url, date_text = self.manager.fetch_combo(key)
+                        if img_url:
+                            # Вызываем resize_img у нашего отдельного класса image_handler
+                            img_bytes = image_handler.resize_img(img_url)
+                            if img_bytes:
+                                self.manager.found_today[key] = True
+                                self.logger.info(f"✅ [AUTO-CHECKER] Картинка для {key} успешно найдена и зафиксирована!")
+                                
+                                caption = f"🎯 **[Авто-комбо] {info.get('name', key)}**\n📅 `{date_text}`"
+                                try:
+                                    self.bot.send_photo(self.admin_chat_id, photo=img_bytes, caption=caption[:1024], parse_mode="Markdown")
+                                except Exception as e:
+                                    self.logger.error(f"Ошибка отправки авто-фото администратору: {e}")
+                    except Exception as e:
+                        self.logger.error(f"Ошибка авто-проверки игры {key}: {e}")
 
                 run_check_now = False
 
             # 3. Проверка и обновление игровых таймеров пользователей
-            try:
-                for chat_id, timers in list(user_game_timers.items()):
+            try:                for chat_id, timers in list(user_game_timers.items()):
                     for game_key, t_data in list(timers.items()):
                         if t_data and isinstance(t_data, dict):
                             target_time = t_data.get("target")
