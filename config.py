@@ -101,11 +101,10 @@ COMBO_GAMES_DATA = {
     "meme-mining": {
         "name": "🃏 Meme Mining",
         "path": "/meme-mining-3/",
-        "ref_link_1": "https://t.me/MemeMiningBot/app?startapp=ref_EDA545A9",
-        "ref_link_2": "https://t.me/MemeMiningBot/app?startapp=ref_EDA545A9",
+        "ref_link_1": "https://t.me/MiningComboBot",
+        "ref_link_2": "https://t.me/MiningComboBot",
         "strategy": "🃏 Стратегия Meme Mining.",
     },
-
 }
 
 
@@ -167,28 +166,6 @@ INDEPENDENT_FARMS_DATA = {
         "ref_link_2": "https://t.me/BirdsEmpireBot?start=2093853",
         "strategy": "🦅 Стратегия Bird's Empire.",
     },
-   "DogsHouseMiner_bot": {
-        "name": "Dogs House Miner",
-        "ref_link_1": "https://t.me/DogsHouseMiner_bot?startapp=ref_5290309079",
-        "ref_link_2": "https://t.me/DogsHouseMiner_bot?startapp=ref_5290309079",
-        "strategy": "🍯 Стратегия DogsHouseMiner.",
-    },
-
-   "happy-farm": {
-        "name": "happy farm",
-        "path": "/happyfarm/",
-        "ref_link_1": "https://t.me/HappyFarmGramBot?start=ref_5290309079",
-        "ref_link_2": "https://t.me/HappyFarmGramBot?start=ref_5290309079",
-        "strategy": "🃏 Стратегия Happy Farm.",
-    },
-    "prism": {
-        "name": "prism",
-        "path": "/prism/",
-        "ref_link_1": "https://t.me/PrismHashBot?startapp=zagehSo5",
-        "ref_link_2": "https://t.me/PrismHashBot?startapp=zagehSo5",
-        "strategy": "🃏 Стратегия Prism.",
-    },
-
 }
 
 PHONE_MINERS_DATA = {
@@ -408,7 +385,7 @@ BOT_COMMANDS = [
     ("timers", "⏰ Персональные таймеры сбора"),
     ("reviews", "💬 Отзывы пользователей"),
     ("ads", "📢 Реклама и монетизация"),
-    ("proofs", "Скрины выплат"),
+    ("proofs", "Скрины выплат")
 ]
 
 
@@ -418,13 +395,15 @@ MAIN_MENU_BUTTONS = [
     "🌾 Авто-фермы (без комбо)", "⚡ Проверить все комбо",
     "🧮 Крипто-курс", "📊 Защита фермы",
     "⏰ Мои таймеры", "💬 Отзывы",
-    "📢 Реклама и монетизация", "💎 Скрины выплат",
-    "🤖 Авто-ферма игр",
+    "📢 Реклама и монетизация", "💎 Скрины выплат"
 ]
 
+# Список команд (строк) для фильтра message_handler(commands=...).
+# ВНИМАНИЕ: раньше называлось BOT_COMMANDS и перезаписывало кортежи выше —
+# теперь это отдельное имя BOT_COMMANDS_LIST (его импортирует bot.py).
 BOT_COMMANDS_LIST = [
-    'calc', 'farm', 'timers', 'proofs', 
-    'all_combo', 'miners', 'faucets', 
+    'calc', 'farm', 'timers', 'proofs',
+    'all_combo', 'miners', 'faucets',
     'profile', 'reviews', 'ads'
 ]
 
@@ -459,42 +438,61 @@ DANGEROUS_INJECTION_PATTERNS = [
 
 
 PROFILE_KEYBOARD_DATA = [
-    [("➕", "prof_add"), ("📋", "prof_view")]
+    [("➕ Добавить / Обновить игру", "prof_add")],
+    [("📋 Посмотреть мои статы", "prof_view")]
 ]
 
 REVIEWS_KEYBOARD_DATA = [
-    [("✍️", "review_add"), ("📖", "review_read")]
+    [("✍️ Оставить отзыв", "review_add")],
+    [("📖 Читать отзывы", "review_read")]
 ]
 
 ADS_KEYBOARD_DATA = [
-    [("💰", "ads_buy"), ("📊", "ads_stats")]
+    [("💰 Купить рекламу", "ads_buy")],
+    [("📊 Статистика аудитории", "ads_stats")]
 ]
 
+# Реестр тарифов рекламы. Чтобы добавить/изменить тариф — просто
+# отредактируйте этот словарь (клавиатура ниже строится автоматически).
+# duration_hours: срок закрепа в часах; 0 = разовая рассылка без закрепа.
+ADS_TARIFFS = {
+    "adtariff_24h":       {"icon": "⏱",  "name": "Закреп на 24 часа",            "price": "$15", "duration_hours": 24},
+    "adtariff_7d":        {"icon": "📌",  "name": "Закреп на 7 дней",             "price": "$70", "duration_hours": 168},
+    "adtariff_broadcast": {"icon": "📢",  "name": "Рассылка по всей базе",        "price": "$30", "duration_hours": 0},
+    "adtariff_combo":     {"icon": "🔥",  "name": "Комбо: Закреп 24ч + Рассылка", "price": "$40", "duration_hours": 24},
+}
+
+# Клавиатура тарифов генерируется автоматически из ADS_TARIFFS + кнопка «Назад».
 ADS_TARIFFS_DATA = [
-    [("⏱ Закреп на 24 часа — $15", "adtariff_24h")],
-    [("📢 Рассылка по всей базе — $30", "adtariff_broadcast")],
+    [(f"{d['icon']} {d['name']} — {d['price']}", key)]
+    for key, d in ADS_TARIFFS.items()
+] + [
     [("🔙 Назад", "ads_menu_back")]
 ]
 
 CRYPTO_COINS_DATA = [
-    [("₮ USDT", "usdt"), ("💎 GRAM", "gram")],
-    [("₿ BTC", "btc"), ("⚡ TRX", "tron")]
+    ("💵 USDT (TRC20)", "usdt"),
+    ("💎 GRAM / TON", "gram"),
+    ("🪙 Bitcoin (BTC)", "btc"),
+    ("⚡ Tron (TRX)", "tron")
 ]
 
 CRYPTO_CURRENCY_DATA = [
-    [("₿ BTC", "cur_btc"), ("Ξ ETH", "cur_eth")],
-    [("₮ USDT", "cur_usdt"), ("💎 GRAM", "cur_gram")]
+    ("🪙 BTC", "cur_btc"),
+    ("🪙 ETH", "cur_eth"),
+    ("🪙 USDT", "cur_usdt"),
+    ("🪙 GRAM", "cur_gram")
 ]
 
 
 # config.py
 
 SINGLE_GAME_ACTIONS = {
-    "combo": ("🎯", "game_"),
-    "tactics": ("🧠", "strat_"),
+    "combo": ("🎯 Открыть комбо", "game_"),
+    "tactics": ("🧠 Тактика", "strat_"),
     "play_1": ("🎮 1",),
     "play_2": ("🎮 2",),
-    "back": ("🔙", "combopage_")
+    "back": ("🔙 Назад к списку", "combopage_")
 }
 
 
