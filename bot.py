@@ -2416,13 +2416,13 @@ ai_chat_handler = AIChatHandler(bot, logger, ai_assistant, AI_CHAT_ACTIVE)
 profile_manager = ProfileManager(bot, logger, sender)
 
 if __name__ == "__main__":
+    print("DEBUG: Мы зашли в блок __main__")
     while True:
         try:
-            print("DEBUG: Перед вызовом infinity_polling")
-            bot.infinity_polling(skip_pending=True)
-            print("DEBUG: После вызова infinity_polling")
             print("🤖 Запуск бота...")
+            print("DEBUG: Перед вызовом infinity_polling")
             bot.infinity_polling(skip_pending=True, timeout=20, long_polling_timeout=15)
+            print("DEBUG: После вызова infinity_polling")
         except Exception as e:
             print(f"⚠️ Ошибка соединения: {e}. Переподключение через 5 секунд...")
             time.sleep(5)
