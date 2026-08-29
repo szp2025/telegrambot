@@ -2415,14 +2415,13 @@ def handle_text_all(message: types.Message):
 callback_query_handler = CallbackQueryHandler(
     bot, logger, sender, manager,
     verified_users, user_input_states, user_game_timers, user_calc_states,
-    pending_ad_orders, active_ads_storage, user_reviews_storage, advanced_captchas,
+    pending_ad_orders, ads_manager, user_reviews_storage, advanced_captchas, # Заменено active_ads_storage на ads_manager
     active_farms_state, active_farm_threads, ADMIN_CHAT_ID, TARGET_GAME_BOT, MAIN_MENU_BUTTONS
 )
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call: types.CallbackQuery):
     callback_query_handler.handle_callbacks(call)
-
 
 if __name__ == "__main__":
     logger.info("=== ZERO-LAG TERMUX NATIVE BOT ЗАПУЩЕН ===")
