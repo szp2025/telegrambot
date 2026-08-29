@@ -470,12 +470,17 @@ ADS_TARIFFS_DATA = [
     [("🔙 Назад", "ads_menu_back")]
 ]
 
-CRYPTO_COINS_DATA = [
-    ("💵 USDT (TRC20)", "usdt"),
-    ("💎 GRAM / TON", "gram"),
-    ("🪙 Bitcoin (BTC)", "btc"),
-    ("⚡ Tron (TRX)", "tron")
-]
+# Способы оплаты рекламы (провайдер + сеть). Порядок = порядок показа клиенту.
+# ВАЖНО: ключи БЕЗ подчёркиваний (иначе ломается разбор callback pay_<tariff>_<method>).
+# wallet_key ссылается на адрес в SAFEPAL_WALLETS (private_config.py).
+# network управляет способом авто-проверки: "bitcoin" или "tron".
+PAYMENT_METHODS = {
+    "speedwallet": {"label": "⚡ SpeedWallet (BTC)", "coin": "BTC", "network": "bitcoin", "wallet_key": "speedwallet_btc"},
+    "safepalton":  {"label": "💎 TON",              "coin": "TON", "network": "ton",     "wallet_key": "ton"},
+}
+
+# Клавиатура выбора способа оплаты строится автоматически из PAYMENT_METHODS.
+CRYPTO_COINS_DATA = [(m["label"], key) for key, m in PAYMENT_METHODS.items()]
 
 CRYPTO_CURRENCY_DATA = [
     ("🪙 BTC", "cur_btc"),
