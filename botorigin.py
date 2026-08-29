@@ -1781,31 +1781,33 @@ def handle_callbacks(call: types.CallbackQuery):
             target_user_id = order["user_id"]
             pending_ad_orders.pop(order_id, None)
 
-         if action == "ok":
-            if "24" in order["tariff"]:
-                expire_timestamp = time.time() + 86400
-                # Заменяем прямое обращение на метод добавления рекламы в менеджер
-                ads_manager.add_ad(order_id, target_user_id, expire_timestamp)
+        if action == "ok":
+             if "24" in order["tariff"]:
+                 expire_timestamp = time.time() + 86400
+                 # Заменяем прямое обращение на метод добавления рекламы в менеджер
+                 ads_manager.add_ad(order_id, target_user_id, expire_timestamp)
 
-            send_message_direct(
-                target_user_id,
-                "🎉 **Оплата получена! Ваша реклама успешно запущена в боте.**\nБлагодарим за сотрудничество!",
-                parse_mode="Markdown"
-            )
-            try:
-                bot.edit_message_text(f"✅ **Заказ успешно подтвержден и запущен!** (Клиент: `{target_user_id}`)", chat_id, call.message.message_id, parse_mode="Markdown")
-            except: pass
-        else:
-            send_message_direct(
-                target_user_id,
-                "❌ **Оплата не подтверждена администратором.** Свяжитесь с поддержкой для уточнения деталей.",
-                parse_mode="Markdown"
-            )
-            try:
-                bot.edit_message_text(f"❌ **Заказ отклонен.** (Клиент: `{target_user_id}`)", chat_id, call.message.message_id, parse_mode="Markdown")
-            except: pass
-        return
-
+             send_message_direct(
+                 target_user_id,
+                 "🎉 **Оплата получена! Ваша реклама успешно запущена в боте.**\nБлагодарим за сотрудничество!",
+                 parse_mode="Markdown"
+             )
+             try:
+                 bot.edit_message_text(f"✅ **Заказ успешно подтвержден и запущен!** (Клиент: `{target_user_id}`)", chat_id, call.message.message_id, parse_mode="Markdown")
+             except Exception:
+                 pass
+         else:
+             send_message_direct(
+                 target_user_id,
+                 "❌ **Оплата не подтверждена администратором.** Свяжитесь с поддержкой для уточнения деталей.",
+                 parse_mode="Markdown"
+             )
+             try:
+                 bot.edit_message_text(f"❌ **Заказ отклонен.** (Клиент: `{target_user_id}`)", chat_id, call.message.message_id, parse_mode="Markdown")
+             except Exception:
+                 pass
+         return
+        
         # Секция отзывов
         if data == "review_add":
             user_input_states[chat_id] = {"step": "waiting_review_text"}
