@@ -101,17 +101,9 @@ COMBO_GAMES_DATA = {
     "meme-mining": {
         "name": "🃏 Meme Mining",
         "path": "/meme-mining-3/",
-        "ref_link_1": "https://t.me/MiningComboBot",
-        "ref_link_2": "https://t.me/MiningComboBot",
+        "ref_link_1": "https://t.me/MemeMiningBot/app?startapp=ref_EDA545A9",
+        "ref_link_2": "https://t.me/MemeMiningBot/app?startapp=ref_EDA545A9",
         "strategy": "🃏 Стратегия Meme Mining.",
-    },
-
-   "happy-farm": {
-        "name": "happy farm",
-        "path": "/happyfarm/",
-        "ref_link_1": "https://t.me/HappyFarmGramBot?start=ref_5290309079",
-        "ref_link_2": "https://t.me/HappyFarmGramBot?start=ref_5290309079",
-        "strategy": "🃏 Стратегия Happy Farm.",
     },
 
 }
@@ -175,15 +167,21 @@ INDEPENDENT_FARMS_DATA = {
         "ref_link_2": "https://t.me/BirdsEmpireBot?start=2093853",
         "strategy": "🦅 Стратегия Bird's Empire.",
     },
-
-
-
-"DogsHouseMiner_bot": {
+   "DogsHouseMiner_bot": {
         "name": "Dogs House Miner",
         "ref_link_1": "https://t.me/DogsHouseMiner_bot?startapp=ref_5290309079",
         "ref_link_2": "https://t.me/DogsHouseMiner_bot?startapp=ref_5290309079",
         "strategy": "🍯 Стратегия DogsHouseMiner.",
     },
+
+   "happy-farm": {
+        "name": "happy farm",
+        "path": "/happyfarm/",
+        "ref_link_1": "https://t.me/HappyFarmGramBot?start=ref_5290309079",
+        "ref_link_2": "https://t.me/HappyFarmGramBot?start=ref_5290309079",
+        "strategy": "🃏 Стратегия Happy Farm.",
+    },
+
 }
 
 PHONE_MINERS_DATA = {
