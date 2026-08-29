@@ -1,4 +1,3 @@
-
 import sys
 import logging
 import io
@@ -2345,17 +2344,9 @@ def handle_menu_text(message: types.Message):
     menu_text_processor.handle_menu_text(message)
 
 
-@bot.message_handler(content_types=['photo'])
-def handle_photo(message: types.Message):
-    message_input_handler.handle_photo(message)
-
-@bot.message_handler(func=lambda m: True)
-def handle_text_all(message: types.Message):
-    message_input_handler.handle_text_all(message)
-
-@bot.callback_query_handler(func=lambda call: True)
-def handle_callbacks(call: types.CallbackQuery):
-    callback_query_handler.handle_callbacks(call)
+# ПРИМЕЧАНИЕ: catch-all обработчики (photo / любой текст / любой callback)
+# регистрируются НИЖЕ — после bot_controller — чтобы /start, команды и
+# кнопки меню имели приоритет над "ловушкой" func=lambda: True.
 
 
 # --- ВСЕ ИНИЦИАЛИЗАЦИИ И ССЫЛКИ НА ОБЪЕКТЫ ---
@@ -2412,6 +2403,22 @@ ai_chat_handler = AIChatHandler(bot, logger, ai_assistant, AI_CHAT_ACTIVE)
 # Инициализируем менеджер профиля (используя уже созданные bot, logger и sender)
 profile_manager = ProfileManager(bot, logger, sender)
 
+# ============================================================
+# CATCH-ALL обработчики регистрируются ПОСЛЕДНИМИ,
+# чтобы /start, команды и кнопки меню (bot_controller) имели приоритет.
+# ============================================================
+@bot.message_handler(content_types=['photo'])
+def handle_photo(message: types.Message):
+    message_input_handler.handle_photo(message)
+
+@bot.message_handler(func=lambda m: True)
+def handle_text_all(message: types.Message):
+    message_input_handler.handle_text_all(message)
+
+@bot.callback_query_handler(func=lambda call: True)
+def handle_callbacks(call: types.CallbackQuery):
+    callback_query_handler.handle_callbacks(call)
+
 updater_thread.start()
 
 if __name__ == "__main__":
@@ -2434,6 +2441,13 @@ if __name__ == "__main__":
             f"Бот: @{me.username} | ID: {me.id}",
             flush=True
         )
+
+        # ----------------------------------------------------
+        # Удаляем возможный вебхук — иначе getUpdates (polling)
+        # не получает апдейты и бот "молчит".
+        # ----------------------------------------------------
+        bot.remove_webhook()
+        print("🧹 Webhook удалён (polling-режим).", flush=True)
 
         # ----------------------------------------------------
         # Запускаем штатный long polling.
