@@ -2417,18 +2417,20 @@ ai_chat_handler = AIChatHandler(bot, logger, ai_assistant, AI_CHAT_ACTIVE)
 profile_manager = ProfileManager(bot, logger, sender)
 
 if __name__ == "__main__":
-    print("DEBUG: Мы зашли в блок __main__")
+    print("🤖 Запуск Telegram-бота...")
+
     while True:
         try:
-            print("🤖 Запуск бота (ручной цикл)...")
-            offset = 0
-            while True:
-                # Запрашиваем обновления вручную с жестким таймаутом в 5 секунд
-                updates = bot.get_updates(offset=offset, timeout=5, allowed_updates=["message", "callback_query"])
-                for update in updates:
-                    offset = update.update_id + 1
-                    # Передаем обновление боту на обработку
-                    bot.process_new_updates([update])
+            bot.infinity_polling(
+                timeout=20,
+                long_polling_timeout=20,
+                allowed_updates=["message", "callback_query"],
+                skip_pending=True
+            )
+
         except Exception as e:
-            print(f"⚠️ Ошибка в цикле опроса: {e}. Переподключение через 5 секунд...")
+            logger.exception(
+                "❌ Критическая ошибка polling. "
+                "Перезапуск через 5 секунд."
+            )
             time.sleep(5)
