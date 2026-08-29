@@ -388,16 +388,8 @@ class BotGameFarmManager:
 
 
 
-
-
 class AdvancedSecurityGuard:
-    """
-    /**
-     * @apiEndpoint /Internal/AdvancedSecurityGuard
-     * @apiMethod INTERNAL
-     * @apiDescription Динамический эвристический модуль комплексной защиты и скоринга угроз.
-     */
-    """
+   
     def __init__(self):
         # 1. Анти-Флуд (динамический Rate Limiting с адаптивным окном)
         self.flood_storage: Dict[int, List[float]] = {}
