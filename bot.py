@@ -2239,10 +2239,10 @@ class CallbackQueryHandler:
 class AIChatHandler:
     """Менеджер для управления интерактивным чатом с Виртуальным Интеллектом."""
 
-    def __init__(self, bot_instance, logger_instance, sender_instance, ai_assistant_instance, ai_chat_active_storage: set):
+    def __init__(self, bot_instance, logger_instance, send_func, ai_assistant_instance, ai_chat_active_storage: set):
         self.bot = bot_instance
         self.logger = logger_instance
-        self.sender = sender_instance
+        self.send_func = send_func  # Функция отправки сообщений (например, send_message_direct)
         self.ai = ai_assistant_instance
         self.ai_chat_active = ai_chat_active_storage
 
@@ -2284,12 +2284,12 @@ class AIChatHandler:
             self.bot.reply_to(message, ai_response, parse_mode="Markdown")
         except Exception as e:
             self.logger.error(f"Ошибка генерации ответа ИИ в чате: {e}")
-            self.sender.send_message_direct(chat_id, "⚠️ Произошла ошибка при обращении к Виртуальному Интеллекту.")
+            self.send_func(chat_id, "⚠️ Произошла ошибка при обращении к Виртуальному Интеллекту.")
 
 
-# Инициализация хранилища и обработчика чата с ИИ
+# Инициализация хранилища и обработчика чата с ИИ (передаем вашу функцию send_message_direct)
 AI_CHAT_ACTIVE = set()
-ai_chat_handler = AIChatHandler(bot, logger, sender, ai_assistant, AI_CHAT_ACTIVE)
+ai_chat_handler = AIChatHandler(bot, logger, send_message_direct, ai_assistant, AI_CHAT_ACTIVE)
 
 @bot.callback_query_handler(func=lambda call: call.data == "start_ai_chat")
 def handle_start_ai_chat(call: types.CallbackQuery):
