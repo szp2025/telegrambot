@@ -1024,6 +1024,116 @@ class MiningComboManager:
         
 manager = MiningComboManager()
 
+
+class ContentKeyboardManager:
+    """Менеджер клавиатур для каталогов и детальных страниц с динамической проверкой и генерацией реферальных ссылок."""
+
+    @staticmethod
+    def _get_dynamic_ref_buttons(data: dict, actions_config: dict) -> list:
+        """Автоматически находит все ref_link_X, проверяет их на наличие и создает кнопки."""
+        buttons = []
+        # Находим все ключи, начинающиеся с ref_link_, и сортируем их по индексу (1, 2, 3...)
+        ref_keys = sorted(
+            [k for k in data.keys() if k.startswith("ref_link_")],
+            key=lambda x: int(x.split("_")[-1]) if x.split("_")[-1].isdigit() else 0
+        )
+        
+        for key in ref_keys:
+            link = data.get(key)
+            if link:  # Проверяем, что ссылка существует и не пустая строка/None
+                index = key.split("_")[-1]
+                action_key = f"play_{index}"
+                action_text_key = f"play_{index}_text"
+                
+                # Ищем подходящий текст для кнопки в конфигурации
+                text = f"Ссылка {index}"
+                if action_key in actions_config:
+                    text, *_ = actions_config[action_key]
+                elif action_text_key in actions_config:
+                    text = actions_config[action_text_key]
+                
+                buttons.append(types.InlineKeyboardButton(text=text, url=link))
+                
+        return buttons
+
+    @classmethod
+    def get_single_game_keyboard(cls, key: str, page: int, data: dict, actions_config: dict) -> types.InlineKeyboardMarkup:
+        """Генерация клавиатуры для детальной страницы игры с динамическими ссылками."""
+        keyboard = types.InlineKeyboardMarkup()
+        row_buttons = []
+        
+        if "combo" in actions_config:
+            combo_text, combo_prefix = actions_config["combo"]
+            row_buttons.append(types.InlineKeyboardButton(text=combo_text, callback_data=f"{combo_prefix}{key}"))
+            
+        if "tactics" in actions_config:
+            tactics_text, tactics_prefix = actions_config["tactics"]
+            row_buttons.append(types.InlineKeyboardButton(text=tactics_text, callback_data=f"{tactics_prefix}{key}"))
+            
+        # Добавляем только те реф-ссылки, которые реально заполнены
+        row_buttons.extend(cls._get_dynamic_ref_buttons(data, actions_config))
+        
+        if row_buttons:
+            keyboard.row(*row_buttons)
+            
+        if "back" in actions_config:
+            back_text, back_prefix = actions_config["back"]
+            keyboard.row(types.InlineKeyboardButton(text=back_text, callback_data=f"{back_prefix}{page}"))
+            
+        return keyboard
+
+    @classmethod
+    def get_catalog_keyboard(
+        cls, 
+        items_dict: dict, 
+        info_prefix: str, 
+        actions_config: dict, 
+        name_template: str = None, 
+        extra_url_key: str = None
+    ) -> types.InlineKeyboardMarkup:
+        """Универсальный метод для генерации списков (майнеры, краны, фармы) с динамическими ссылками."""
+        keyboard = types.InlineKeyboardMarkup()
+        
+        for key, data in items_dict.items():
+            item_name = data.get("name", "")
+            btn_text = name_template.format(name=item_name) if name_template else item_name
+            
+            main_row = [types.InlineKeyboardButton(text=btn_text, callback_data=f"{info_prefix}{key}")]
+            
+            # Если передана дополнительная внешняя ссылка (например, play_market)
+            if extra_url_key and data.get(extra_url_key):
+                play_text = actions_config.get("play_text", "Играть")
+                main_row.append(types.InlineKeyboardButton(text=play_text, url=data[extra_url_key]))
+                
+            keyboard.row(*main_row)
+            
+            # Динамические реф-ссылки (если есть хотя бы одна заполненная)
+            ref_buttons = cls._get_dynamic_ref_buttons(data, actions_config)
+            if ref_buttons:
+                keyboard.row(*ref_buttons)
+                
+        return keyboard
+
+
+class MessageProcessor:
+    """Класс для обработки входящих сообщений и команд бота."""
+
+    @staticmethod
+    def handle_start(message: types.Message):
+        chat_id = message.chat.id
+        if chat_id not in verified_users:
+            question, markup = generate_advanced_captcha(chat_id)
+            bot.send_message(chat_id, f"🛡️ **Проверка на человека**\n\n🧠 *{question}*", reply_markup=markup, parse_mode="Markdown")
+            return
+        send_message_direct(chat_id, WELCOME_MESSAGES["zero_lag"])
+        send_message_direct(chat_id, WELCOME_MESSAGES["main_menu"], reply_markup=MenuManager.get_reply_keyboard(MAIN_MENU_BUTTONS))
+
+    @staticmethod
+    def handle_menu_or_commands(message: types.Message):
+        # Здесь будет логика для обработки команд из BOT_COMMANDS_LIST или кнопок главного меню
+        pass
+
+
 class MenuManager:
     """Универсальный менеджер клавиатур для генерации Reply и Inline интерфейсов."""
 
@@ -1162,88 +1272,30 @@ def get_combo_list_keyboard(page=0):
 
 def get_single_game_keyboard(key, page):
     data = manager.combo_games.get(key, {})
-    keyboard = types.InlineKeyboardMarkup()
-    
-    # 1. Первый ряд: Основные действия (Комбо и Тактика)
-    combo_text, combo_prefix = SINGLE_GAME_ACTIONS["combo"]
-    tactics_text, tactics_prefix = SINGLE_GAME_ACTIONS["tactics"]
-    
-    row_buttons = [
-        types.InlineKeyboardButton(text=combo_text, callback_data=f"{combo_prefix}{key}"),
-        types.InlineKeyboardButton(text=tactics_text, callback_data=f"{tactics_prefix}{key}")
-    ]
-    
-    # 2. Добавляем ссылки прямо в этот же ряд, если они есть в данных
-    if data.get("ref_link_1"):
-        play1_text, *_ = SINGLE_GAME_ACTIONS["play_1"]
-        row_buttons.append(types.InlineKeyboardButton(text=play1_text, url=data["ref_link_1"]))
-        
-    if data.get("ref_link_2"):
-        play2_text, *_ = SINGLE_GAME_ACTIONS["play_2"]
-        row_buttons.append(types.InlineKeyboardButton(text=play2_text, url=data["ref_link_2"]))
-    
-    # Складываем все активные кнопки в первую строку
-    keyboard.row(*row_buttons)
-    
-    # 3. Второй ряд: Кнопка возврата назад (на отдельной строке внизу)
-    back_text, back_prefix = SINGLE_GAME_ACTIONS["back"]
-    keyboard.row(
-        types.InlineKeyboardButton(text=back_text, callback_data=f"{back_prefix}{page}")
-    )
-    
-    return keyboard
+    return ContentKeyboardManager.get_single_game_keyboard(key, page, data, SINGLE_GAME_ACTIONS)
     
 def get_phone_miners_keyboard():
-    keyboard = types.InlineKeyboardMarkup()
+    return ContentKeyboardManager.get_catalog_keyboard(
+        manager.phone_miners, 
+        PHONE_MINER_ACTIONS["info_prefix"], 
+        PHONE_MINER_ACTIONS, 
+        extra_url_key="play_market"
+    )
     
-    info_prefix = PHONE_MINER_ACTIONS["info_prefix"]
-    play_text = PHONE_MINER_ACTIONS["play_text"]
-    p1_text = PHONE_MINER_ACTIONS["play_1_text"]
-    p2_text = PHONE_MINER_ACTIONS["play_2_text"]
-    
-    for key, data in manager.phone_miners.items():
-        keyboard.row(
-            types.InlineKeyboardButton(text=data["name"], callback_data=f"{info_prefix}{key}"),
-            types.InlineKeyboardButton(text=play_text, url=data["play_market"])
-        )
-        keyboard.row(
-            types.InlineKeyboardButton(text=p1_text, url=data["ref_link_1"]),
-            types.InlineKeyboardButton(text=p2_text, url=data["ref_link_2"])
-        )
-    return keyboard
-
 def get_faucets_keyboard():
-    keyboard = types.InlineKeyboardMarkup()
+    return ContentKeyboardManager.get_catalog_keyboard(
+        manager.crypto_faucets, 
+        FAUCETS_ACTIONS["info_prefix"], 
+        FAUCETS_ACTIONS
+    )
     
-    info_prefix = FAUCETS_ACTIONS["info_prefix"]
-    p1_text = FAUCETS_ACTIONS["play_1_text"]
-    p2_text = FAUCETS_ACTIONS["play_2_text"]
-    
-    for key, data in manager.crypto_faucets.items():
-        keyboard.row(types.InlineKeyboardButton(text=data["name"], callback_data=f"{info_prefix}{key}"))
-        keyboard.row(
-            types.InlineKeyboardButton(text=p1_text, url=data["ref_link_1"]),
-            types.InlineKeyboardButton(text=p2_text, url=data["ref_link_2"])
-        )
-    return keyboard
-
 def get_farms_keyboard():
-    keyboard = types.InlineKeyboardMarkup()
-    
-    strat_prefix = FARMS_ACTIONS["strat_prefix"]
-    template = FARMS_ACTIONS["strat_suffix_template"]
-    p1_text = FARMS_ACTIONS["play_1_text"]
-    p2_text = FARMS_ACTIONS["play_2_text"]
-    
-    for key, data in manager.independent_farms.items():
-        btn_text = template.format(name=data['name'])
-        keyboard.row(types.InlineKeyboardButton(text=btn_text, callback_data=f"{strat_prefix}{key}"))
-        keyboard.row(
-            types.InlineKeyboardButton(text=p1_text, url=data["ref_link_1"]),
-            types.InlineKeyboardButton(text=p2_text, url=data["ref_link_2"])
-        )
-    return keyboard
-    
+    return ContentKeyboardManager.get_catalog_keyboard(
+        manager.independent_farms, 
+        FARMS_ACTIONS["strat_prefix"], 
+        FARMS_ACTIONS, 
+        name_template=FARMS_ACTIONS["strat_suffix_template"]
+    )    
 
 def get_timers_games_keyboard():
     keyboard = types.InlineKeyboardMarkup()
@@ -1460,18 +1512,12 @@ def generate_advanced_captcha(chat_id):
     return f"Сколько будет {a} + {b}?", markup
 
 @bot.message_handler(commands=['start'])
-def handle_start(message: types.Message):
-    chat_id = message.chat.id
-    if chat_id not in verified_users:
-        question, markup = generate_advanced_captcha(chat_id)
-        bot.send_message(chat_id, f"🛡️ **Проверка на человека**\n\n🧠 *{question}*", reply_markup=markup, parse_mode="Markdown")
-        return
-    send_message_direct(chat_id, WELCOME_MESSAGES["zero_lag"])
-    send_message_direct(chat_id, WELCOME_MESSAGES["main_menu"], reply_markup=MenuManager.get_reply_keyboard(MAIN_MENU_BUTTONS))
-
+def command_start(message: types.Message):
+    MessageProcessor.handle_start(message)
 @bot.message_handler(commands=BOT_COMMANDS_LIST)
 @bot.message_handler(func=lambda msg: msg.text in MAIN_MENU_BUTTONS)
-
+def menu_and_commands_handler(message: types.Message):
+    MessageProcessor.handle_menu_or_commands(message)
 
 def handle_menu_text(message: types.Message):
     chat_id = message.chat.id
