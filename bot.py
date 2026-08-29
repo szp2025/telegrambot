@@ -2465,4 +2465,11 @@ def handle_callbacks(call: types.CallbackQuery):
 if __name__ == "__main__":
     logger.info("=== ZERO-LAG TERMUX NATIVE BOT ЗАПУЩЕН ===")
     threading.Thread(target=daily_auto_checker, daemon=True).start()
-    bot.infinity_polling(skip_pending=True, timeout=5, long_polling_timeout=3)
+    
+    # Безопасный цикл polling с автовосстановлением при обрывах связи
+    while True:
+        try:
+            bot.infinity_polling(skip_pending=True, timeout=10, long_polling_timeout=5)
+        except Exception as e:
+            logger.error(f"⚠️ Ошибка соединения с Telegram: {e}. Переподключение через 5 секунд...")
+            time.sleep(5)
