@@ -2249,7 +2249,6 @@ class AIChatHandler:
                 pass
 
 # 6. Передача запроса ИИ-ассистенту
-ai_response = self.ai.generate_response(text, chat_id=chat_id)
 self.sender.send_message_direct(chat_id, ai_response, parse_mode="Markdown", reply_markup=MenuManager.get_reply_keyboard(self.main_menu_buttons))
 
 # --- Конец классов ---
