@@ -15,6 +15,7 @@ from telebot import types, apihelper
 from PIL import Image
 import urllib.request
 import ast
+import base64
 from datetime import datetime
 import math
 import subprocess
@@ -46,7 +47,9 @@ from config import (
     REVIEWS_KEYBOARD_DATA,
     ADS_KEYBOARD_DATA,
     ADS_TARIFFS_DATA,
+    ADS_TARIFFS,
     CRYPTO_COINS_DATA,
+    PAYMENT_METHODS,
     CRYPTO_CURRENCY_DATA,
     SINGLE_GAME_ACTIONS,
     PHONE_MINER_ACTIONS,
@@ -1471,6 +1474,25 @@ class BackgroundSchedulerManager:
             except Exception as e:
                 self.logger.error(f"Ошибка проверки рекламных таймеров: {e}")
 
+            # 4b. Автоотмена НЕОПЛАЧЕННЫХ заявок старше 24 часов
+            # (заявка отправлена админу, но оплата так и не подтверждена).
+            try:
+                stale_orders = [
+                    oid for oid, o in list(pending_ad_orders.items())
+                    if now_time - o.get("created_at", now_time) > 86400
+                ]
+                for oid in stale_orders:
+                    o = pending_ad_orders.pop(oid, None)
+                    if o:
+                        self.sender.send_message_direct(
+                            o["user_id"],
+                            "⌛ **Ваша заявка на рекламу истекла** — оплата не была подтверждена в течение 24 часов. "
+                            "При необходимости оформите заявку заново.",
+                            parse_mode="Markdown"
+                        )
+            except Exception as e:
+                self.logger.error(f"Ошибка автоотмены неоплаченных заявок: {e}")
+
             # Пауза 10 минут перед следующим циклом
             time.sleep(600)
 
@@ -1594,7 +1616,7 @@ class MenuTextProcessor:
         elif text in ["💬 Отзывы", "/reviews"]:
             self.sender.send_message_direct(chat_id, "💬 **Секция отзывов и предложений (Laysi🐾):**", reply_markup=get_reviews_keyboard(), parse_mode="Markdown")
         elif text in ["📢 Реклама и монетизация", "/ads"]:
-            self.sender.send_message_direct(chat_id, "📢 **Размещение рекламы :**\n\nВыкупите рекламное место в закрепе или рассылке, оплатив его напрямую через кошелек SafePal.", reply_markup=get_ads_keyboard(), parse_mode="Markdown")
+            self.sender.send_message_direct(chat_id, "📢 **Размещение рекламы :**\n\nВыкупите рекламное место в закрепе или рассылке, оплатив его напрямую в криптовалюте.", reply_markup=get_ads_keyboard(), parse_mode="Markdown")
         elif text in ["💎 Скрины выплат", "/proofs"]:
             if not self.cloud_proofs:
                 self.sender.send_message_direct(chat_id, "💎 Скринов пока нет.")
@@ -1694,14 +1716,79 @@ class MessageInputHandler:
         if chat_id in self.user_input_states and self.user_input_states[chat_id].get("step") == "waiting_ad_content":
             order_data = self.user_input_states.pop(chat_id, None)
             tariff = order_data["tariff"]
-            coin = order_data["coin"]
-            
+            tariff_key = order_data.get("tariff_key", "")
+            coin = order_data.get("coin", "")
+            network = order_data.get("network", "")
+            wallet_key = order_data.get("wallet_key", "")
+
+            # --- АВТО-ПОДТВЕРЖДЕНИЕ ОПЛАТЫ ПО ХЭШУ (BTC / USDT-TRC20) ---
+            auto_note = ""
+            tinfo = ADS_TARIFFS.get(tariff_key, {})
+            expected_usd = parse_price_usd(tinfo.get("price", "0"))
+            our_addr = SAFEPAL_WALLETS.get(wallet_key, {}).get("address", "")
+            # Хэш ищем по-разному: TON использует base64, остальные — hex.
+            if network == "ton":
+                tx_hash = extract_ton_hash(raw_text)
+            else:
+                tx_hash = extract_tx_hash(raw_text)
+
+            verify_fn = None
+            if network == "bitcoin":
+                verify_fn = verify_btc
+            elif network == "ton":
+                verify_fn = verify_ton
+            elif network == "tron":
+                verify_fn = verify_usdt_trc20
+
+            if verify_fn:
+                if not tx_hash:
+                    auto_note = "\n⚠️ Авто-проверка: хэш транзакции не найден в сообщении."
+                elif not our_addr:
+                    auto_note = "\n⚠️ Авто-проверка: адрес получателя не настроен."
+                else:
+                    ok, reason = verify_fn(tx_hash, expected_usd, our_addr)
+                    if ok:
+                        # Для TON помечаем канонический hex-хэш (как в проверке).
+                        canon_hash = _ton_hash_to_hex(tx_hash) if network == "ton" else tx_hash
+                        mark_tx_used(canon_hash or tx_hash)
+                        order_id = f"ord_{chat_id}_{int(time.time())}"
+                        dur_h = tinfo.get("duration_hours", 0)
+                        if dur_h > 0:
+                            try:
+                                ads_manager.add_ad(order_id, chat_id, time.time() + dur_h * 3600)
+                            except Exception as e:
+                                self.logger.error(f"Ошибка запуска рекламы: {e}")
+
+                        self.sender.send_message_direct(
+                            chat_id,
+                            f"🎉 **Оплата подтверждена автоматически!**\n{reason}\n\n"
+                            "🚀 Ваша реклама запущена. Спасибо за сотрудничество!",
+                            reply_markup=get_ads_keyboard(),
+                            parse_mode="Markdown"
+                        )
+                        self.sender.send_message_direct(
+                            self.admin_chat_id,
+                            f"🤖 **Авто-подтверждение оплаты**\n"
+                            f"👤 Клиент: `{chat_id}`\n"
+                            f"📋 Тариф: `{tariff}`\n"
+                            f"💰 {reason}\n"
+                            f"🧾 Hash: `{tx_hash}`\n\n"
+                            f"📝 **Креатив:**\n{raw_text}",
+                            parse_mode="Markdown"
+                        )
+                        return
+                    else:
+                        auto_note = f"\n⚠️ Авто-проверка не пройдена: {reason}"
+
+            # --- РЕЗЕРВ: ручное подтверждение администратором ---
             order_id = f"ord_{chat_id}_{int(time.time())}"
             self.pending_ad_orders[order_id] = {
                 "user_id": chat_id,
                 "tariff": tariff,
+                "tariff_key": tariff_key,
                 "coin": coin,
-                "content": raw_text
+                "content": raw_text,
+                "created_at": time.time()
             }
 
             admin_markup = types.InlineKeyboardMarkup()
@@ -1713,14 +1800,14 @@ class MessageInputHandler:
                 f"📢 **Заявка на рекламу ожидает подтверждения оплаты!**\n"
                 f"👤 Заказчик: `{chat_id}`\n"
                 f"📋 Тариф: `{tariff}`\n"
-                f"💰 Оплата через: `{coin.upper()}`\n\n"
+                f"💰 Оплата через: `{coin.upper()}`{auto_note}\n\n"
                 f"📝 **Креатив:**\n{raw_text}",
                 reply_markup=admin_markup,
                 parse_mode="Markdown"
             )
             self.sender.send_message_direct(
                 chat_id,
-                "✅ **Ваш рекламный креатив и чек приняты!**\nЗаявка отправлена администратору на проверку поступления средств на SafePal.",
+                "✅ **Ваш рекламный креатив принят!**\nЗаявка отправлена на проверку поступления оплаты.",
                 reply_markup=get_ads_keyboard(),
                 parse_mode="Markdown"
             )
@@ -1902,9 +1989,11 @@ class CallbackQueryHandler:
                 self.pending_ad_orders.pop(order_id, None)
 
                 if action == "ok":
-                    if "24" in order["tariff"]:
-                        expire_timestamp = time.time() + 86400
-                        # Исправлено: используем метод класса ads_manager вместо глобальной функции
+                    # Срок закрепа берём из тарифа (24ч / 7 дней / комбо…).
+                    tinfo = ADS_TARIFFS.get(order.get("tariff_key"), {})
+                    dur_h = tinfo.get("duration_hours", 0)
+                    if dur_h > 0:
+                        expire_timestamp = time.time() + dur_h * 3600
                         self.ads_manager.add_ad(order_id, target_user_id, expire_timestamp)
 
                     self.sender.send_message_direct(
@@ -1946,7 +2035,7 @@ class CallbackQueryHandler:
             if data == "ads_buy":
                 try:
                     self.bot.edit_message_text(
-                        "💰 **Выберите тариф для размещения рекламы:**\nОплата поступает напрямую на ваш кошелек SafePal.",
+                        "💰 **Выберите тариф для размещения рекламы:**\nОплата производится напрямую в криптовалюте.",
                         chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_ads_tariffs_keyboard(), parse_mode="Markdown"
                     )
                 except:
@@ -1957,12 +2046,13 @@ class CallbackQueryHandler:
                 self.sender.send_message_direct(chat_id, f"📊 **Статистика:** Активных пользователей: **~{len(self.verified_users) + 120}**", parse_mode="Markdown")
                 return
 
-            if data in ["adtariff_24h", "adtariff_broadcast"]:
-                tariff_name = "Закреп на 24 часа ($15)" if data == "adtariff_24h" else "Рассылка по всей базе ($30)"
+            if data in ADS_TARIFFS:
+                t = ADS_TARIFFS[data]
+                tariff_name = f"{t['name']} ({t['price']})"
                 try:
                     self.bot.edit_message_text(
                         f"💎 Вы выбрали тариф: *{tariff_name}*.\n\n"
-                        "👇 **Выберите криптовалюту для оплаты через SafePal:**",
+                        "👇 **Выберите криптовалюту для оплаты:**",
                         chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_safepal_coins_keyboard(data), parse_mode="Markdown"
                     )
                 except:
@@ -1970,29 +2060,93 @@ class CallbackQueryHandler:
                 return
 
             if data.startswith("pay_"):
+                # Формат: pay_<tariff_key>_<method>. tariff_key содержит "_"
+                # (напр. adtariff_24h), а ключ метода — БЕЗ "_", поэтому метод =
+                # ПОСЛЕДНИЙ сегмент, а тариф — всё между "pay_" и методом.
                 parts = data.split("_")
-                tariff_key = parts[1]
-                coin_key = parts[2]
-                
-                tariff_name = "Закреп на 24 часа ($15)" if tariff_key == "adtariff_24h" else "Рассылка по всей базе ($30)"
-                wallet_info = SAFEPAL_WALLETS.get(coin_key, {"name": coin_key.upper(), "address": "ADRESS_NOT_SET"})
-                
-                self.user_input_states[chat_id] = {"step": "waiting_ad_content", "tariff": tariff_name, "coin": coin_key}
-                
+                method_key = parts[-1]
+                tariff_key = "_".join(parts[1:-1])
+
+                tinfo = ADS_TARIFFS.get(tariff_key)
+                if not tinfo:
+                    try:
+                        self.bot.answer_callback_query(call.id, "Тариф не найден", show_alert=True)
+                    except:
+                        pass
+                    return
+
+                method = PAYMENT_METHODS.get(method_key)
+                if not method:
+                    try:
+                        self.bot.answer_callback_query(call.id, "Способ оплаты не найден", show_alert=True)
+                    except:
+                        pass
+                    return
+
+                tariff_name = f"{tinfo['name']} ({tinfo['price']})"
+
+                # Анти-абуз: запрещаем вторую заявку, пока есть незакрытая.
+                already = any(o.get("user_id") == chat_id for o in self.pending_ad_orders.values())
+                if already:
+                    self.sender.send_message_direct(
+                        chat_id,
+                        "⚠️ **У вас уже есть заявка на рекламу**, ожидающая проверки администратором.\n"
+                        "Дождитесь решения, прежде чем оформлять новую.",
+                        reply_markup=get_ads_keyboard(),
+                        parse_mode="Markdown"
+                    )
+                    return
+
+                wallet_info = SAFEPAL_WALLETS.get(
+                    method["wallet_key"],
+                    {"name": method["label"], "address": "ADRESS_NOT_SET"}
+                )
+
+                self.user_input_states[chat_id] = {
+                    "step": "waiting_ad_content",
+                    "tariff": tariff_name,
+                    "tariff_key": tariff_key,
+                    "method": method_key,
+                    "coin": method["coin"],
+                    "network": method["network"],
+                    "wallet_key": method["wallet_key"],
+                }
+
+                pay_kb = types.InlineKeyboardMarkup()
+                pay_kb.row(types.InlineKeyboardButton(text="🔙 Изменить тариф", callback_data="ads_buy"))
+                pay_kb.row(types.InlineKeyboardButton(text="❌ Отменить заявку", callback_data="ad_cancel"))
+
                 self.sender.send_message_direct(
                     chat_id,
-                    f"💳 **Реквизиты для оплаты:**\n\n"
+                    f"🧾 **Ваш заказ**\n"
                     f"📋 Тариф: *{tariff_name}*\n"
-                    f"🪙 Монета: *{wallet_info['name']}*\n\n"
-                    f"📌 **Адрес кошелька SafePal:**\n`{wallet_info['address']}`\n\n"
-                    f"⚠️ **Инструкция:** Переведите точную сумму на указанный адрес SafePal, после чего **отправьте текстом креатив вашей рекламы** (и хэш транзакции/скрин), чтобы администратор мог подтвердить платеж.",
+                    f"💳 Способ: *{method['label']}*\n\n"
+                    f"📌 **Адрес для оплаты** (нажмите, чтобы скопировать):\n"
+                    f"`{wallet_info['address']}`\n\n"
+                    f"⚠️ **Что делать дальше:**\n"
+                    f"1️⃣ Отправьте оплату (*{tinfo['price']}* в {method['coin']}) на адрес выше.\n"
+                    f"2️⃣ Пришлите **одним сообщением** текст рекламы + хэш транзакции.\n"
+                    f"{'3️⃣ Оплата подтвердится автоматически после подтверждения сети (~10–30 мин для BTC).' if method['network'] == 'bitcoin' else '3️⃣ Оплата подтверждается автоматически по хэшу почти мгновенно.'}",
+                    reply_markup=pay_kb,
+                    parse_mode="Markdown"
+                )
+                return
+
+            if data == "ad_cancel":
+                st = self.user_input_states.get(chat_id)
+                if st and st.get("step") == "waiting_ad_content":
+                    self.user_input_states.pop(chat_id, None)
+                self.sender.send_message_direct(
+                    chat_id,
+                    "❌ **Заявка на рекламу отменена.**",
+                    reply_markup=get_ads_keyboard(),
                     parse_mode="Markdown"
                 )
                 return
 
             if data == "ads_menu_back":
                 try:
-                    self.bot.edit_message_text("📢 **Размещение рекламы через SafePal:**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_ads_keyboard(), parse_mode="Markdown")
+                    self.bot.edit_message_text("📢 **Размещение рекламы:**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_ads_keyboard(), parse_mode="Markdown")
                 except:
                     pass
                 return
@@ -2410,6 +2564,268 @@ def run_doodle_loop(chat_id, target_game_bot):
             loop.close()
         except Exception:
             pass
+
+# ============================================================
+# АВТО-ПРОВЕРКА ОПЛАТЫ USDT-TRC20 ПО ХЭШУ ТРАНЗАКЦИИ (сеть Tron)
+# ============================================================
+# Официальный контракт USDT (TRC20) в сети Tron.
+USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+# Файл с уже использованными хэшами (защита от повторного использования).
+USED_TX_FILE = "used_tx_hashes.txt"
+
+def _load_used_tx():
+    s = set()
+    if os.path.exists(USED_TX_FILE):
+        try:
+            with open(USED_TX_FILE, "r", encoding="utf-8") as f:
+                for line in f:
+                    h = line.strip().lower()
+                    if h:
+                        s.add(h)
+        except Exception as e:
+            logger.error(f"Ошибка загрузки использованных tx: {e}")
+    return s
+
+used_tx_hashes = _load_used_tx()
+
+def mark_tx_used(tx_hash: str):
+    """Помечает хэш как использованный (в памяти и в файле)."""
+    try:
+        used_tx_hashes.add(tx_hash.lower())
+        with open(USED_TX_FILE, "a", encoding="utf-8") as f:
+            f.write(tx_hash.lower() + "\n")
+    except Exception as e:
+        logger.error(f"Ошибка сохранения использованного tx: {e}")
+
+def parse_price_usd(price_str: str) -> float:
+    """Извлекает число из строки цены вида '$15' -> 15.0."""
+    m = re.search(r'\d+(?:\.\d+)?', price_str or "")
+    return float(m.group(0)) if m else 0.0
+
+def extract_tx_hash(text: str):
+    """Ищет в тексте хэш транзакции Tron (64 hex-символа)."""
+    m = re.search(r'\b[0-9a-fA-F]{64}\b', text or "")
+    return m.group(0) if m else None
+
+def verify_usdt_trc20(tx_hash: str, expected_usd: float, our_address: str):
+    """
+    Проверяет входящий USDT-TRC20 перевод по хэшу через публичный Tronscan API.
+    Возвращает (ok: bool, reason: str). При любой неоднозначности → False
+    (тогда сработает резервное ручное подтверждение админом).
+    """
+    tx_hash = (tx_hash or "").strip()
+    if not tx_hash:
+        return False, "Хэш транзакции не указан."
+    if tx_hash.lower() in used_tx_hashes:
+        return False, "Этот хэш уже был использован ранее."
+    try:
+        url = f"https://apilist.tronscanapi.com/api/transaction-info?hash={tx_hash}"
+        r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            return False, "Не удалось получить данные транзакции (сеть)."
+        data = r.json() or {}
+        if not data:
+            return False, "Транзакция не найдена в сети."
+
+        # Подтверждённость и успешность
+        if data.get("confirmed") is False:
+            return False, "Транзакция ещё не подтверждена сетью."
+        if data.get("contractRet") not in (None, "SUCCESS"):
+            return False, "Транзакция завершилась неуспешно."
+
+        info = data.get("tokenTransferInfo") or {}
+        if not info:
+            return False, "В транзакции нет TRC20-перевода."
+
+        symbol = (info.get("symbol") or "").upper()
+        contract = info.get("contract_address") or ""
+        to_addr = info.get("to_address") or ""
+        try:
+            decimals = int(info.get("decimals") or 6)
+            amount = int(info.get("amount_str") or "0") / (10 ** decimals)
+        except Exception:
+            return False, "Не удалось разобрать сумму перевода."
+
+        if symbol != "USDT" or contract != USDT_TRC20_CONTRACT:
+            return False, "Это не перевод USDT-TRC20."
+        if to_addr != our_address:
+            return False, "Перевод отправлен не на наш адрес."
+        # USDT — стейблкоин (~$1). Допускаем -2% на округление.
+        if amount + 1e-9 < expected_usd * 0.98:
+            return False, f"Сумма ({amount:.2f} USDT) меньше требуемой ({expected_usd:.2f})."
+
+        return True, f"Получено {amount:.2f} USDT."
+    except Exception as e:
+        logger.error(f"Ошибка проверки USDT-TRC20 tx: {e}")
+        return False, "Ошибка проверки транзакции."
+
+# ============================================================
+# АВТО-ПРОВЕРКА ОПЛАТЫ BTC ПО ХЭШУ (сеть Bitcoin, API Blockstream)
+# ============================================================
+def get_btc_usd_rate() -> float:
+    """Текущий курс BTC→USD через CoinGecko (0.0 при ошибке)."""
+    try:
+        r = requests.get(
+            "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd",
+            timeout=8
+        )
+        return float(r.json()["bitcoin"]["usd"])
+    except Exception as e:
+        logger.error(f"Ошибка получения курса BTC: {e}")
+        return 0.0
+
+def verify_btc(tx_hash: str, expected_usd: float, our_address: str):
+    """
+    Проверяет входящий BTC-перевод по хэшу через публичный Blockstream API.
+    Возвращает (ok: bool, reason: str). При любой неоднозначности → False
+    (тогда сработает резервное ручное подтверждение админом).
+    """
+    tx_hash = (tx_hash or "").strip().lower()
+    if not tx_hash:
+        return False, "Хэш транзакции не указан."
+    if tx_hash in used_tx_hashes:
+        return False, "Этот хэш уже был использован ранее."
+    try:
+        r = requests.get(
+            f"https://blockstream.info/api/tx/{tx_hash}",
+            timeout=12, headers={"User-Agent": "Mozilla/5.0"}
+        )
+        if r.status_code != 200:
+            return False, "Транзакция не найдена в сети BTC."
+        tx = r.json() or {}
+
+        status = tx.get("status") or {}
+        if not status.get("confirmed", False):
+            return False, "Транзакция ещё не подтверждена сетью."
+
+        # Суммируем все выходы, ушедшие на наш адрес.
+        received_sat = 0
+        for o in tx.get("vout", []):
+            if o.get("scriptpubkey_address") == our_address:
+                received_sat += int(o.get("value") or 0)
+        if received_sat <= 0:
+            return False, "Перевод не найден на наш BTC-адрес."
+
+        received_btc = received_sat / 1e8
+        rate = get_btc_usd_rate()
+        if rate <= 0:
+            return False, "Не удалось получить курс BTC."
+        expected_btc = expected_usd / rate
+        # BTC волатилен — допускаем 5% отклонения курса.
+        if received_btc + 1e-12 < expected_btc * 0.95:
+            return False, (
+                f"Сумма ({received_btc:.8f} BTC ≈ ${received_btc * rate:.2f}) "
+                f"меньше требуемой (${expected_usd:.2f})."
+            )
+        return True, f"Получено {received_btc:.8f} BTC (≈ ${received_btc * rate:.2f})."
+    except Exception as e:
+        logger.error(f"Ошибка проверки BTC tx: {e}")
+        return False, "Ошибка проверки транзакции."
+
+# ============================================================
+# АВТО-ПРОВЕРКА ОПЛАТЫ TON ПО ХЭШУ (сеть TON, API TonAPI)
+# ============================================================
+TON_API_BASE = "https://tonapi.io/v2"
+
+def _ton_hash_to_hex(h: str):
+    """Приводит хэш TON (hex или base64/base64url из tonviewer) к hex."""
+    h = (h or "").strip()
+    if re.fullmatch(r'[0-9a-fA-F]{64}', h):
+        return h.lower()
+    try:
+        s = h.replace('-', '+').replace('_', '/')
+        s += '=' * (-len(s) % 4)  # добить паддинг
+        raw = base64.b64decode(s)
+        if len(raw) == 32:
+            return raw.hex()
+    except Exception:
+        pass
+    return None
+
+def extract_ton_hash(text: str):
+    """Ищет хэш TON в тексте: из ссылки tonviewer/tonscan, hex или base64."""
+    text = text or ""
+    m = re.search(r'transaction/([A-Za-z0-9+/_\-]{43,44}=?)', text)
+    if m:
+        return m.group(1)
+    m = re.search(r'\b[0-9a-fA-F]{64}\b', text)
+    if m:
+        return m.group(0)
+    m = re.search(r'[A-Za-z0-9+/_\-]{43}=', text)
+    if m:
+        return m.group(0)
+    return None
+
+def _ton_address_raw(addr: str) -> str:
+    """Через TonAPI получаем raw-форму адреса (0:hex) для надёжного сравнения."""
+    try:
+        r = requests.get(f"{TON_API_BASE}/address/{addr}/parse", timeout=10)
+        if r.status_code == 200:
+            return ((r.json() or {}).get("raw_form") or "").lower()
+    except Exception as e:
+        logger.error(f"Ошибка парсинга TON-адреса: {e}")
+    return ""
+
+def get_ton_usd_rate() -> float:
+    """Текущий курс TON→USD через CoinGecko (0.0 при ошибке)."""
+    try:
+        r = requests.get(
+            "https://api.coingecko.com/api/v3/simple/price?ids=the-open-network&vs_currencies=usd",
+            timeout=8
+        )
+        return float(r.json()["the-open-network"]["usd"])
+    except Exception as e:
+        logger.error(f"Ошибка получения курса TON: {e}")
+        return 0.0
+
+def verify_ton(tx_hash: str, expected_usd: float, our_address: str):
+    """
+    Проверяет входящий TON-перевод по хэшу через публичный TonAPI.
+    Возвращает (ok: bool, reason: str). При любой неоднозначности → False
+    (тогда сработает резервное ручное подтверждение админом).
+    """
+    tx_hex = _ton_hash_to_hex(tx_hash)
+    if not tx_hex:
+        return False, "Не удалось распознать хэш транзакции TON."
+    if tx_hex in used_tx_hashes:
+        return False, "Этот хэш уже был использован ранее."
+    try:
+        r = requests.get(
+            f"{TON_API_BASE}/blockchain/transactions/{tx_hex}",
+            timeout=12, headers={"User-Agent": "Mozilla/5.0"}
+        )
+        if r.status_code != 200:
+            return False, "Транзакция не найдена в сети TON."
+        tx = r.json() or {}
+
+        if tx.get("success") is False:
+            return False, "Транзакция завершилась неуспешно."
+
+        in_msg = tx.get("in_msg") or {}
+        dest = ((in_msg.get("destination") or {}).get("address") or "")
+        value_nano = int(in_msg.get("value") or 0)
+        if value_nano <= 0:
+            return False, "В транзакции нет входящего перевода TON."
+        received_ton = value_nano / 1e9
+
+        our_raw = _ton_address_raw(our_address)
+        if our_raw and dest and our_raw != dest.lower():
+            return False, "Перевод отправлен не на наш адрес."
+
+        rate = get_ton_usd_rate()
+        if rate <= 0:
+            return False, "Не удалось получить курс TON."
+        expected_ton = expected_usd / rate
+        # TON волатилен — допускаем 5% отклонения курса.
+        if received_ton + 1e-9 < expected_ton * 0.95:
+            return False, (
+                f"Сумма ({received_ton:.4f} TON ≈ ${received_ton * rate:.2f}) "
+                f"меньше требуемой (${expected_usd:.2f})."
+            )
+        return True, f"Получено {received_ton:.4f} TON (≈ ${received_ton * rate:.2f})."
+    except Exception as e:
+        logger.error(f"Ошибка проверки TON tx: {e}")
+        return False, "Ошибка проверки транзакции."
 
 def generate_advanced_captcha(chat_id):
     return CaptchaManager.generate_advanced_captcha(chat_id, advanced_captchas)
