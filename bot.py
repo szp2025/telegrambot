@@ -147,9 +147,17 @@ class ImageHandler:
                 if img.mode != 'RGB':
                     img = img.convert('RGB')
                 
-                # Пропорциональное масштабирование по ширине с сохранением четкости
+                # Пропорциональное масштабирование
                 w_percent = (self.target_width / float(img.width))
                 target_height = int(float(img.height) * float(w_percent))
+                
+                # Ограничение максимальной высоты (например, 1200 пикселей), 
+                # чтобы длинные картинки не растягивали чат и не обрезались
+                max_height = 1200
+                if target_height > max_height:
+                    target_height = max_height
+                    # Если нужно вписать целиком с полями (сохранив пропорции без обрезки):
+                    # Создаем холст и накладываем картинку по центру
                 
                 img = img.resize((self.target_width, target_height), Image.Resampling.LANCZOS)
                 
@@ -159,7 +167,6 @@ class ImageHandler:
         except Exception as e:
             self.logger.error(f"Ошибка обработки изображения: {e}")
         return None
-
 
 class BotVirtualAssistant:
     def __init__(self, model_name: str = "Zero-Lag Pure Self-Learning AI"):
