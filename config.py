@@ -105,6 +105,15 @@ COMBO_GAMES_DATA = {
         "ref_link_2": "https://t.me/MiningComboBot",
         "strategy": "🃏 Стратегия Meme Mining.",
     },
+
+   "happy-farm": {
+        "name": "happy farm",
+        "path": "/happyfarm/",
+        "ref_link_1": "https://t.me/HappyFarmGramBot?start=ref_5290309079",
+        "ref_link_2": "https://t.me/HappyFarmGramBot?start=ref_5290309079",
+        "strategy": "🃏 Стратегия Happy Farm.",
+    },
+
 }
 
 
