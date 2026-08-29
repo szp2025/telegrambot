@@ -143,9 +143,6 @@ def background_independent_updater(interval_seconds: int = 7200):
         else:
             print("⚡ [SKIP RESTART] Основной файл бота не обновлялся или содержал ошибки. Перезапуск пропущен.")
 
-# Запуск фонового потока (интервал: 2 часа = 7200 секунд)
-updater_thread = threading.Thread(target=background_independent_updater, args=(7200,), daemon=True)
-updater_thread.start()
 
 
 class ImageHandler:
@@ -253,16 +250,10 @@ class BotVirtualAssistant:
 
         return response_text
 
-# Инициализация виртуального помощника
-ai_assistant = BotVirtualAssistant()
-
 
 logger = logging.getLogger(__name__)
 
-
-
 # ==================== МОДУЛЬ АВТОМАТИЗАЦИИ ИГР ====================
-
 class BaseGameAutomation(ABC):
     def __init__(self, name: str, interval_seconds: int):
         self.name = name
@@ -291,42 +282,6 @@ class BaseGameAutomation(ABC):
     def stop(self) -> None:
         self.is_running = False
 
-class GoldMinerGame(BaseGameAutomation):
-    """Модуль автоматизации для Gold Miner (сбор золота и клики по таймеру)"""
-    def __init__(self):
-        super().__init__(name="Gold Miner", interval_seconds=3600)  # Интервал 1 час
-
-    async def collect_rewards(self) -> bool:
-        logger.info(Fore.GREEN + "[Gold Miner] Запуск сессии сбора руды и монет...")
-        await asyncio.sleep(3)
-        logger.info(Fore.GREEN + "[Gold Miner] Ресурсы успешно собраны!")
-        return True
-
-    async def watch_videos(self) -> bool:
-        logger.info(Fore.BLUE + "[Gold Miner] Проверка доступности рекламных роликов...")
-        await asyncio.sleep(2)
-        logger.info(Fore.GREEN + "[Gold Miner] Реклама просмотрена, бонус зачислен.")
-        return True
-
-
-class HoneyFarmGame(BaseGameAutomation):
-    """Модуль автоматизации для Honey Farm (сбор меда с ульев)"""
-    def __init__(self):
-        super().__init__(name="Honey Farm", interval_seconds=1800)  # Интервал 30 минут
-
-    async def collect_rewards(self) -> bool:
-        logger.info(Fore.GREEN + "[Honey Farm] Проверка ульев и сбор меда...")
-        await asyncio.sleep(2)
-        logger.info(Fore.GREEN + "[Honey Farm] Мед успешно собран на склад!")
-        return True
-
-    async def watch_videos(self) -> bool:
-        logger.info(Fore.BLUE + "[Honey Farm] Запуск просмотра видео для ускорения производства...")
-        await asyncio.sleep(3)
-        logger.info(Fore.GREEN + "[Honey Farm] Видео бонус активирован.")
-        return True
-
-
 class DogsHouseMinerGame(BaseGameAutomation):
     """Модуль автоматизации для Dogs House Miner (майнинг монет в домике собакена)"""
     def __init__(self):
@@ -343,25 +298,6 @@ class DogsHouseMinerGame(BaseGameAutomation):
         await asyncio.sleep(4)
         logger.info(Fore.GREEN + "[Dogs House Miner] Буст успешно применен.")
         return True
-
-
-class GrowTeaGame(BaseGameAutomation):
-    """Модуль автоматизации для Grow Tea (выращивание и сбор чая)"""
-    def __init__(self):
-        super().__init__(name="Grow Tea", interval_seconds=14400)  # Интервал 4 часа
-
-    async def collect_rewards(self) -> bool:
-        logger.info(Fore.GREEN + "[Grow Tea] Проверка кустов, сбор готового урожая чая...")
-        await asyncio.sleep(2)
-        logger.info(Fore.GREEN + "[Grow Tea] Чай собран, посадка новых ростков...")
-        return True
-
-    async def watch_videos(self) -> bool:
-        logger.info(Fore.BLUE + "[Grow Tea] Просмотр видео для полива и ускорения роста...")
-        await asyncio.sleep(3)
-        logger.info(Fore.GREEN + "[Grow Tea] Ускорение роста применено.")
-        return True
-
 
 class SignalDoodleJumpGame(BaseGameAutomation):
     """Модуль автоматизации для Doodle Jump (сбор, авто-прокачка за 150 монет и просмотр рекламы с паузой 4 мин)"""
@@ -430,8 +366,6 @@ class SignalDoodleJumpGame(BaseGameAutomation):
         return True
 
 
-
-
 class BotGameFarmManager:
     """Менеджер для управления списком игр и их фоновыми задачами"""
     def __init__(self):
@@ -450,13 +384,6 @@ class BotGameFarmManager:
         self.tasks.clear()
 
 
-# Инициализация менеджера и всех игровых модулей фермы
-game_farm_manager = BotGameFarmManager()
-game_farm_manager.register_game(GoldMinerGame())
-game_farm_manager.register_game(HoneyFarmGame())
-game_farm_manager.register_game(DogsHouseMinerGame())
-game_farm_manager.register_game(GrowTeaGame())
-game_farm_manager.register_game(SignalDoodleJumpGame())
 
 
 
@@ -679,8 +606,6 @@ class AdvancedSecurityGuard:
             
         return {"action": "allow", "sanitized_text": sanitized_text, "trust_score": self._get_user_trust(chat_id)}
 
-# Инициализация усиленного защитного модуля
-sec_guard = AdvancedSecurityGuard()
 
 
 # --- ЦВЕТНОЕ И ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ДЛЯ TERMUX ---
@@ -974,7 +899,6 @@ class UltimateSecurityCore:
 
         return False, "✅ **Sterile Channel [95]:** Канал абсолютно чист."
 
-security_core = UltimateSecurityCore()
 
 
 class MiningComboManager:
@@ -1079,9 +1003,6 @@ class MiningComboManager:
             
         return None, "Ошибка парсинга"
 
-# Инициализация менеджеров
-image_handler = ImageHandler(logger, target_width=800)
-manager = MiningComboManager()
 
 class ContentKeyboardManager:
     """Менеджер клавиатур для каталогов и детальных страниц с динамической проверкой и генерацией реферальных ссылок."""
@@ -1858,10 +1779,6 @@ class MessageInputHandler:
                 self.sender.send_message_direct(chat_id, "⚠️ Ошибка получения данных с API. Введите корректное число:")
                 return
 
-        # 6. Передача запроса ИИ-ассистенту
-        ai_response = self.ai.generate_response(text, chat_id=chat_id)
-        self.sender.send_message_direct(chat_id, ai_response, parse_mode="Markdown", reply_markup=MenuManager.get_reply_keyboard(self.main_menu_buttons))
-
 
 class CallbackQueryHandler:
     """Менеджер для обработки всех входящих callback-запросов от инлайн-клавиатур."""
@@ -2279,8 +2196,6 @@ class CallbackQueryHandler:
         except Exception as e:
             self.logger.error(f"Ошибка в обработчике callback-запросов: {e}")
 
-
-
 class AIChatHandler:
     """Менеджер для управления интерактивным чатом с Виртуальным Интеллектом."""
 
@@ -2333,11 +2248,13 @@ class AIChatHandler:
             except Exception:
                 pass
 
+# 6. Передача запроса ИИ-ассистенту
+ai_response = self.ai.generate_response(text, chat_id=chat_id)
+self.sender.send_message_direct(chat_id, ai_response, parse_mode="Markdown", reply_markup=MenuManager.get_reply_keyboard(self.main_menu_buttons))
 
-# Инициализация хранилища и обработчика чата с ИИ (теперь нужны только уже точно существующие bot, logger, ai_assistant)
-AI_CHAT_ACTIVE = set()
-ai_chat_handler = AIChatHandler(bot, logger, ai_assistant, AI_CHAT_ACTIVE)
+# --- Конец классов ---
 
+# --- callback_query_handler ---
 @bot.callback_query_handler(func=lambda call: call.data == "start_ai_chat")
 def handle_start_ai_chat(call: types.CallbackQuery):
     ai_chat_handler.handle_start_ai_chat(call)
@@ -2406,30 +2323,59 @@ def get_crypto_currency_keyboard():
 def get_fiat_currency_keyboard(crypto_symbol):
     return MenuManager.get_fiat_currency_keyboard(crypto_symbol, FIAT_CURRENCIES, row_width=3)
 
-# Инициализируем отправителя (если у вас bot и logger уже объявлены глобально)
-sender = NotificationSender(bot, logger)
-
 def send_message_direct(chat_id, text, reply_markup=None, parse_mode="Markdown"):
     return sender.send_message_direct(chat_id, text, reply_markup, parse_mode)
 
 def send_combo_result(chat_id, info, img_bytes, date_text):
     return sender.send_combo_result(chat_id, info, img_bytes, date_text)
-    
-# Инициализируем менеджер профиля (используя уже созданные bot, logger и sender)
-profile_manager = ProfileManager(bot, logger, sender)
 
 def show_user_profile(chat_id):
     return profile_manager.show_user_profile(chat_id, user_game_stats)
     
-# Инициализация фонового шедулера
-scheduler_manager = BackgroundSchedulerManager(bot, logger, manager, sender, ads_manager, ADMIN_CHAT_ID)
-
 def daily_auto_checker():
     scheduler_manager.run_daily_checker(user_game_timers)
     
 def generate_advanced_captcha(chat_id):
     return CaptchaManager.generate_advanced_captcha(chat_id, advanced_captchas)
 
+def handle_menu_text(message: types.Message):
+    menu_text_processor.handle_menu_text(message)
+
+
+@bot.message_handler(content_types=['photo'])
+def handle_photo(message: types.Message):
+    message_input_handler.handle_photo(message)
+
+@bot.message_handler(func=lambda m: True)
+def handle_text_all(message: types.Message):
+    message_input_handler.handle_text_all(message)
+
+@bot.callback_query_handler(func=lambda call: True)
+def handle_callbacks(call: types.CallbackQuery):
+    callback_query_handler.handle_callbacks(call)
+
+
+# --- ВСЕ ИНИЦИАЛИЗАЦИИ И ССЫЛКИ НА ОБЪЕКТЫ ---
+# (здесь создаются message_processor, bot_controller, image_handler, manager и т.д.)
+
+# Запуск фонового потока (интервал: 2 часа = 7200 секунд)
+updater_thread = threading.Thread(target=background_independent_updater, args=(7200,), daemon=True)
+updater_thread.start()
+
+# Инициализируем отправителя (если у вас bot и logger уже объявлены глобально)
+sender = NotificationSender(bot, logger)
+# Инициализация виртуального помощника
+ai_assistant = BotVirtualAssistant()
+# Инициализация усиленного защитного модуля
+sec_guard = AdvancedSecurityGuard()
+security_core = UltimateSecurityCore()
+# Инициализация менеджеров
+image_handler = ImageHandler(logger, target_width=800)
+manager = MiningComboManager()
+# Инициализация менеджера и всех игровых модулей фермы
+game_farm_manager = BotGameFarmManager()
+game_farm_manager.register_game(DogsHouseMinerGame())
+game_farm_manager.register_game(SignalDoodleJumpGame())
 # 1. Сначала создаем экземпляр процессора
 message_processor = MessageProcessor(bot, logger, sender, manager, ...)
 
@@ -2439,10 +2385,6 @@ bot_controller = TelegramBotController(bot, message_processor, BOT_COMMANDS_LIST
 # Инициализация процессора текстового меню
 menu_text_processor = MenuTextProcessor(bot, logger, sender, manager, verified_users, user_game_timers, cloud_proofs)
 
-def handle_menu_text(message: types.Message):
-    menu_text_processor.handle_menu_text(message)
-
-
 # Инициализация обработчика сообщений
 message_input_handler = MessageInputHandler(
     bot, logger, sender, security_core, ai_assistant, manager,
@@ -2451,14 +2393,6 @@ message_input_handler = MessageInputHandler(
     ADMIN_CHAT_ID, MAIN_MENU_BUTTONS
 )
 
-@bot.message_handler(content_types=['photo'])
-def handle_photo(message: types.Message):
-    message_input_handler.handle_photo(message)
-
-@bot.message_handler(func=lambda m: True)
-def handle_text_all(message: types.Message):
-    message_input_handler.handle_text_all(message)
-    
 # Инициализация обработчика callback-запросов
 callback_query_handler = CallbackQueryHandler(
     bot, logger, sender, manager,
@@ -2467,9 +2401,14 @@ callback_query_handler = CallbackQueryHandler(
     active_farms_state, active_farm_threads, ADMIN_CHAT_ID, TARGET_GAME_BOT, MAIN_MENU_BUTTONS
 )
 
-@bot.callback_query_handler(func=lambda call: True)
-def handle_callbacks(call: types.CallbackQuery):
-    callback_query_handler.handle_callbacks(call)
+# Инициализация фонового шедулера
+scheduler_manager = BackgroundSchedulerManager(bot, logger, manager, sender, ads_manager, ADMIN_CHAT_ID)
+# Инициализация хранилища и обработчика чата с ИИ (теперь нужны только уже точно существующие bot, logger, ai_assistant)
+AI_CHAT_ACTIVE = set()
+ai_chat_handler = AIChatHandler(bot, logger, ai_assistant, AI_CHAT_ACTIVE)
+
+# Инициализируем менеджер профиля (используя уже созданные bot, logger и sender)
+profile_manager = ProfileManager(bot, logger, sender)
 
 if __name__ == "__main__":
     logger.info("=== ZERO-LAG TERMUX NATIVE BOT ЗАПУЩЕН ===")
