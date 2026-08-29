@@ -1822,18 +1822,23 @@ class CallbackQueryHandler:
         self.main_menu_buttons = main_menu_buttons
         
     def handle_callbacks(self, call: types.CallbackQuery):
+        print(f"DEBUG: Нажата кнопка с данными: {call.data}")
         """Основной метод маршрутизации и обработки callback-данных."""
-        # 1. Мгновенно гасим анимацию загрузки кнопки (защита от таймаута Telegram)
+        
+        # 1. Мгновенно гасим анимацию загрузки кнопки
         try:
             self.bot.answer_callback_query(call.id)
         except Exception:
             pass
 
-        # 2. Глобальный защитный блок от любых непредвиденных падений
+        # 2. Глобальный защитный блок с безопасным получением chat_id
         try:
+            if not call.message:
+                # Если нажата кнопка из инлайн-режима (нет объекта message)
+                return
+                
             chat_id = call.message.chat.id
             data = call.data
-
             if data.startswith("advcap_"):
                 if data.replace("advcap_", "") == self.advanced_captchas.get(chat_id):
                     save_verified_user(chat_id)
