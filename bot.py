@@ -735,24 +735,24 @@ ads_manager = ActiveAdsManager(ACTIVE_ADS_FILE)
 active_farms_state = {}  # Например: {chat_id: {"doodle": True/False, "all": True/False}}
 
 def get_farms_menu_keyboard(chat_id):
-    # Получаем текущие состояния для пользователя (по умолчанию все выключено)
-    user_state = active_farms_state.get(chat_id, {"doodle": False, "all": False})
-    
+    # Каждый пользователь сам включает игры, по которым хочет авто-напоминания.
+    # Состояние хранится в user_game_timers (та же база, что и «⏰ Мои таймеры»).
     keyboard = types.InlineKeyboardMarkup()
-    
-    # Динамический текст для Doodle Jump
-    doodle_text = "🛑 Остановить Doodle Jump" if user_state["doodle"] else "🕹 Запустить Doodle Jump"
-    doodle_callback = "toggle_doodle_stop" if user_state["doodle"] else "toggle_doodle_start"
-    keyboard.row(types.InlineKeyboardButton(text=doodle_text, callback_data=doodle_callback))
-    
-    # Динамический текст для кнопки «Запустить всё» / «Остановить всё»
-    all_text = "🛑 Остановить всё" if user_state["all"] else "🟢 Запустить всё"
-    all_callback = "toggle_all_stop" if user_state["all"] else "toggle_all_start"
-    keyboard.row(types.InlineKeyboardButton(text=all_text, callback_data=all_callback))
-    
-    # Кнопка статуса
-    keyboard.row(types.InlineKeyboardButton(text="📊 Статус игр", callback_data="farm_status"))
-    
+    user_timers = user_game_timers.get(chat_id, {})
+
+    all_games = {}
+    all_games.update({k: v.get("name", k) for k, v in manager.combo_games.items()})
+    all_games.update({k: v.get("name", k) for k, v in manager.independent_farms.items()})
+
+    for key, name in all_games.items():
+        t = user_timers.get(key)
+        enabled = bool(t and t.get("target"))
+        if enabled:
+            keyboard.row(types.InlineKeyboardButton(text=f"🔔 {name} — ВКЛ", callback_data=f"farmrem_off_{key}"))
+        else:
+            keyboard.row(types.InlineKeyboardButton(text=f"🔕 {name} — ВЫКЛ", callback_data=f"farmrem_on_{key}"))
+
+    keyboard.row(types.InlineKeyboardButton(text="📊 Статус напоминаний", callback_data="farm_status"))
     return keyboard
 
 
@@ -1441,11 +1441,23 @@ class BackgroundSchedulerManager:
                         if t_data and isinstance(t_data, dict):
                             target_time = t_data.get("target")
                             if target_time and now_time >= target_time:
-                                game_name = (
-                                    self.manager.combo_games[game_key]["name"] if game_key in self.manager.combo_games 
-                                    else self.manager.independent_farms.get(game_key, {}).get("name", game_key)
+                                game_data = self.manager.combo_games.get(game_key) or self.manager.independent_farms.get(game_key, {})
+                                game_name = game_data.get("name", game_key)
+
+                                # Кнопка «▶️ Открыть игру» — ведёт прямо в mini-app
+                                # (ссылка берётся из ref_link_1 / play_market в конфиге).
+                                play_link = game_data.get("ref_link_1") or game_data.get("play_market")
+                                reminder_kb = None
+                                if play_link:
+                                    reminder_kb = types.InlineKeyboardMarkup()
+                                    reminder_kb.row(types.InlineKeyboardButton(text="▶️ Открыть игру", url=play_link))
+
+                                self.sender.send_message_direct(
+                                    chat_id,
+                                    f"⏰ **Напоминание!** Пора зайти в игру: **{game_name}** 🚀\n"
+                                    f"Соберите монеты и посмотрите видео 👇",
+                                    reply_markup=reminder_kb
                                 )
-                                self.sender.send_message_direct(chat_id, f"⏰ **Напоминание!** Пора заходить в игру: **{game_name}** 🚀")
                                 duration = t_data.get("duration_hours", 8)
                                 user_game_timers[chat_id][game_key]["target"] = time.time() + (duration * 3600)
             except Exception as e:
@@ -1571,15 +1583,6 @@ class MenuTextProcessor:
             keyboard, total_count = get_combo_list_keyboard(page=0)
             self.sender.send_message_direct(chat_id, f"🎮 **Активные комбо-проекты**\nВсего доступно игр с комбо: **{total_count}**\n\nВыберите проект из списка ниже:", reply_markup=keyboard)
             
-        elif text in ["🤖 Авто-ферма игр"]:
-            keyboard = get_farms_menu_keyboard(chat_id)
-            self.sender.send_message_direct(
-                chat_id,
-                "🤖 **Управление авто-фермой игр**\n\nВыберите нужную игру из списка для управления:",
-                reply_markup=keyboard,
-                parse_mode="Markdown"
-            )
-             
         elif text in ["👤 Профиль и статы", "/profile"]:
             show_user_profile(chat_id)
         elif text in ["📱 Телефонные майнеры", "/miners"]:
@@ -2264,23 +2267,16 @@ class CallbackQueryHandler:
                     send_combo_result(chat_id, self.manager.combo_games[key], image_handler.resize_img(img_url) if img_url else None, date_text)
                 return
 
-            # Управление Doodle Jump (динамическое переключение)
-            if data in ["toggle_doodle_start", "toggle_doodle_stop"]:
-                if chat_id not in self.active_farms_state:
-                    self.active_farms_state[chat_id] = {"doodle": False, "all": False}
-                
-                is_running = (data == "toggle_doodle_start")
-                self.active_farms_state[chat_id]["doodle"] = is_running
-                
-                if is_running:
-                    self.logger.info(Fore.GREEN + f"[User {chat_id}] Пользователь запустил Signal Doodle Jump!")
-                    thread = threading.Thread(target=run_doodle_loop, args=(chat_id, self.target_game_bot))
-                    thread.daemon = True
-                    thread.start()
-                    self.active_farm_threads[chat_id] = thread
-                else:
-                    self.logger.info(Fore.RED + f"[User {chat_id}] Пользователь остановил Signal Doodle Jump.")
-                
+            # Авто-напоминания: ВКЛючить игру для конкретного пользователя.
+            if data.startswith("farmrem_on_"):
+                key = data.replace("farmrem_on_", "")
+                default_hours = 8
+                if chat_id not in self.game_timers:
+                    self.game_timers[chat_id] = {}
+                self.game_timers[chat_id][key] = {
+                    "target": time.time() + default_hours * 3600,
+                    "duration_hours": default_hours
+                }
                 try:
                     self.bot.edit_message_reply_markup(
                         chat_id=chat_id,
@@ -2289,23 +2285,17 @@ class CallbackQueryHandler:
                     )
                 except Exception:
                     pass
-                
-                status_msg = "🟢 Doodle Jump успешно запущен в фоновом режиме!" if is_running else "🛑 Doodle Jump остановлен."
                 try:
-                    self.bot.answer_callback_query(call.id, status_msg)
+                    self.bot.answer_callback_query(call.id, f"🔔 Напоминания включены (каждые {default_hours} ч)")
                 except:
                     pass
                 return
 
-            # Управление «Запустить всё» / «Остановить всё»
-            if data in ["toggle_all_start", "toggle_all_stop"]:
-                if chat_id not in self.active_farms_state:
-                    self.active_farms_state[chat_id] = {"doodle": False, "all": False}
-                
-                is_running = (data == "toggle_all_start")
-                self.active_farms_state[chat_id]["all"] = is_running
-                self.active_farms_state[chat_id]["doodle"] = is_running
-                
+            # Авто-напоминания: ВЫКЛючить игру.
+            if data.startswith("farmrem_off_"):
+                key = data.replace("farmrem_off_", "")
+                if chat_id in self.game_timers:
+                    self.game_timers[chat_id].pop(key, None)
                 try:
                     self.bot.edit_message_reply_markup(
                         chat_id=chat_id,
@@ -2314,10 +2304,8 @@ class CallbackQueryHandler:
                     )
                 except Exception:
                     pass
-                
-                status_msg = "🚀 Все фермы запущены!" if is_running else "🛑 Все фермы остановлены."
                 try:
-                    self.bot.answer_callback_query(call.id, status_msg)
+                    self.bot.answer_callback_query(call.id, "🔕 Напоминания выключены")
                 except:
                     pass
                 return
@@ -2352,13 +2340,20 @@ class CallbackQueryHandler:
                     self.bot.answer_callback_query(call.id, "📊 Проверка статуса...")
                 except:
                     pass
-                status_text = (
-                    "📊 **Статус авто-ферм:**\n\n"
-                    "🟢 **Signal Doodle Jump:** Активна\n"
-                    "• Баланс проверка: Работает\n"
-                    "• Видео-цикл: Ожидание / Просмотр\n"
-                    "• Общий статус: Фоновый процесс запущен"
-                )
+                user_timers = self.game_timers.get(chat_id, {})
+                active = [k for k, v in user_timers.items() if v and v.get("target")]
+                if active:
+                    lines = []
+                    for k in active:
+                        nm = (self.manager.combo_games.get(k, {}).get("name")
+                              or self.manager.independent_farms.get(k, {}).get("name", k))
+                        t_target = user_timers[k].get("target")
+                        left = int(t_target - time.time()) if t_target else 0
+                        when = f"через {max(0, left)//3600}ч {(max(0, left)%3600)//60}м" if left > 0 else "скоро"
+                        lines.append(f"🔔 *{nm}* — {when}")
+                    status_text = "📊 **Ваши активные напоминания:**\n\n" + "\n".join(lines)
+                else:
+                    status_text = "📊 У вас нет активных напоминаний.\nВключите игры кнопками выше 👆"
                 self.sender.send_message_direct(chat_id, status_text, parse_mode="Markdown")
                 return
 
