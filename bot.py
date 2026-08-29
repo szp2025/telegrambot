@@ -1459,21 +1459,21 @@ class BackgroundSchedulerManager:
                         continue
 
                     try:
-    img_url, date_text = self.manager.fetch_combo(key)
-    if img_url:
-        # Вызываем resize_img у нашего отдельного класса image_handler
-        img_bytes = image_handler.resize_img(img_url)
-        if img_bytes:
-            self.manager.found_today[key] = True
-            self.logger.info(f"✅ [AUTO-CHECKER] Картинка для {key} успешно найдена и зафиксирована!")
-            
-            caption = f"🎯 **[Авто-комбо] {info.get('name', key)}**\n📅 `{date_text}`"
-            try:
-                self.bot.send_photo(self.admin_chat_id, photo=img_bytes, caption=caption[:1024], parse_mode="Markdown")
-            except Exception as e:
-                self.logger.error(f"Ошибка отправки авто-фото администратору: {e}")
-except Exception as e:
-    self.logger.error(f"Ошибка авто-проверки игры {key}: {e}")
+                        img_url, date_text = self.manager.fetch_combo(key)
+                        if img_url:
+                            # Вызываем resize_img у нашего отдельного класса image_handler
+                            img_bytes = image_handler.resize_img(img_url)
+                            if img_bytes:
+                                self.manager.found_today[key] = True
+                                self.logger.info(f"✅ [AUTO-CHECKER] Картинка для {key} успешно найдена и зафиксирована!")
+                                
+                                caption = f"🎯 **[Авто-комбо] {info.get('name', key)}**\n📅 `{date_text}`"
+                                try:
+                                    self.bot.send_photo(self.admin_chat_id, photo=img_bytes, caption=caption[:1024], parse_mode="Markdown")
+                                except Exception as e:
+                                    self.logger.error(f"Ошибка отправки авто-фото администратору: {e}")
+                    except Exception as e:
+                        self.logger.error(f"Ошибка авто-проверки игры {key}: {e}")
 
                 run_check_now = False
 
