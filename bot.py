@@ -1024,17 +1024,20 @@ class MiningComboManager:
             res = requests.get(url, timeout=5)
             if res.status_code == 200:
                 img = Image.open(io.BytesIO(res.content))
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
                 
-                # Единая оптимальная ширина для всех картинок для сохранения максимальной четкости
-                max_width = 600
+                # Фиксируем удобную для Телеграма ширину и пропорциональную высоту, 
+                # но ограничиваем максимальную высоту, чтобы картинка не превращалась в длинную «колбасу»
+                target_width = 800
+                w_percent = (target_width / float(img.width))
+                target_height = int(float(img.height) * float(w_percent))
                 
-                if img.width > max_width:
-                    w_percent = (max_width / float(img.width))
-                    h_size = int(float(img.height) * float(w_percent))
-                    img = img.resize((max_width, h_size), Image.Resampling.LANCZOS)
+                # Изменяем размер с сохранением качества
+                img = img.resize((target_width, target_height), Image.Resampling.LANCZOS)
                 
                 out = io.BytesIO()
-                img.convert("RGB").save(out, format="JPEG", quality=95)
+                img.save(out, format="JPEG", quality=95)
                 return out.getvalue()
         except Exception as e:
             logger.error(f"Ошибка изменения размера: {e}")
