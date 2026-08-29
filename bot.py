@@ -1927,8 +1927,8 @@ class CallbackQueryHandler:
                 if action == "ok":
                     if "24" in order["tariff"]:
                         expire_timestamp = time.time() + 86400
-                        self.active_ads[order_id] = {"user_id": target_user_id, "expire_time": expire_timestamp}
-                        save_active_ads_to_file()
+                        # Исправлено: используем метод класса ads_manager вместо глобальной функции
+                        self.ads_manager.add_ad(order_id, target_user_id, expire_timestamp)
 
                     self.sender.send_message_direct(
                         target_user_id,
