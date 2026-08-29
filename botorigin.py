@@ -661,7 +661,74 @@ try:
 except Exception as e:
     print(f"[⚠️ WARNING] Команды не зарегистрированы (проблема сети/таймаут): {e}")
     print("[🛡️ SECURITY CORE] Бот продолжает запуск в автономном режиме обхода...")
-    
+
+
+class ActiveAdsManager:
+    def __init__(self, file_path):
+        self.file_path = file_path
+        # Логика загрузки теперь вызывается здесь при создании объекта
+        self.storage = self.load_from_file()
+
+    def load_from_file(self):
+        """Бывшая функция load_active_ads, ставшая методом класса."""
+        ads = {}
+        if os.path.exists(self.file_path):
+            try:
+                with open(self.file_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        parts = line.strip().split("|")
+                        if len(parts) >= 3:
+                            order_id, user_id, expire_time = parts[0], int(parts[1]), float(parts[2])
+                            ads[order_id] = {"user_id": user_id, "expire_time": expire_time}
+            except Exception as e:
+                logger.error(f"Ошибка загрузки активной рекламы: {e}")
+        return ads
+
+    def save_to_file(self):
+        """Бывшая функция save_active_ads_to_file, ставшая методом класса."""
+        try:
+            with open(self.file_path, "w", encoding="utf-8") as f:
+                for oid, data in self.storage.items():
+                    f.write(f"{oid}|{data['user_id']}|{data['expire_time']}\n")
+        except Exception as e:
+            logger.error(f"Ошибка сохранения активной рекламы в файл: {e}")
+
+    def add_ad(self, order_id, user_id, expire_time):
+        self.storage[order_id] = {"user_id": user_id, "expire_time": expire_time}
+        self.save_to_file()
+        
+class VerifiedUsersManager:
+    def __init__(self, file_path):
+        self.file_path = file_path
+        # Множество верифицированных пользователей хранится внутри объекта
+        self.verified_users = self.load_from_file()
+
+    def load_from_file(self):
+        users = set()
+        if os.path.exists(self.file_path):
+            try:
+                with open(self.file_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.isdigit():
+                            users.add(int(line))
+            except Exception as e:
+                logger.error(f"Ошибка загрузки верифицированных пользователей: {e}")
+        return users
+
+    def save_user(self, user_id):
+        try:
+            self.verified_users.add(user_id)
+            with open(self.file_path, "a", encoding="utf-8") as f:
+                f.write(f"{user_id}\n")
+        except Exception as e:
+            logger.error(f"Ошибка сохранения пользователя в файл: {e}")
+
+    def is_verified(self, user_id):
+        """Удобный метод для проверки, верифицирован ли пользователь."""
+        return user_id in self.verified_users
+
+
 # Хранилища данных
 user_game_timers = {}
 cloud_proofs = []
@@ -671,81 +738,65 @@ user_reviews_storage = []
 pending_ad_orders = {}
 active_farm_threads = {}  # {chat_id: thread_object}
 
-def load_verified_users():
-    users = set()
-    if os.path.exists(VERIFIED_FILE):
-        try:
-            with open(VERIFIED_FILE, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line.isdigit():
-                        users.add(int(line))
-        except Exception as e:
-            logger.error(f"Ошибка загрузки верифицированных пользователей: {e}")
-    return users
-
-def save_verified_user(user_id):
-    try:
-        verified_users.add(user_id)
-        with open(VERIFIED_FILE, "a", encoding="utf-8") as f:
-            f.write(f"{user_id}\n")
-    except Exception as e:
-        logger.error(f"Ошибка сохранения пользователя в файл: {e}")
-
+# Инициализация менеджера верификации
+verified_manager = VerifiedUsersManager(VERIFIED_FILE)
+                                        
 verified_users = load_verified_users()  
 user_game_stats = {}  
 user_input_states = {} 
 
-# Управление активной рекламой с сохранением в файл
-def load_active_ads():
-    ads = {}
-    if os.path.exists(ACTIVE_ADS_FILE):
-        try:
-            with open(ACTIVE_ADS_FILE, "r", encoding="utf-8") as f:
-                for line in f:
-                    parts = line.strip().split("|")
-                    if len(parts) >= 3:
-                        order_id, user_id, expire_time = parts[0], int(parts[1]), float(parts[2])
-                        ads[order_id] = {"user_id": user_id, "expire_time": expire_time}
-        except Exception as e:
-            logger.error(f"Ошибка загрузки активной рекламы: {e}")
-    return ads
+# Создаем менеджер рекламы (он сам внутри вызовет загрузку из файла)
+ads_manager = ActiveAdsManager(ACTIVE_ADS_FILE)
 
-def save_active_ads_to_file():
-    try:
-        with open(ACTIVE_ADS_FILE, "w", encoding="utf-8") as f:
-            for oid, data in active_ads_storage.items():
-                f.write(f"{oid}|{data['user_id']}|{data['expire_time']}\n")
-    except Exception as e:
-        logger.error(f"Ошибка сохранения активной рекламы в файл: {e}")
-
-active_ads_storage = load_active_ads()
-
+# Передаем его в обработчик колбэков
+callback_handler = CallbackQueryHandler(bot, ads_manager)
 
 # Словарь для отслеживания состояния запусков (ключ - ID пользователя или общая ферма)
 active_farms_state = {}  # Например: {chat_id: {"doodle": True/False, "all": True/False}}
 
-def get_farms_menu_keyboard(chat_id):
-    # Получаем текущие состояния для пользователя (по умолчанию все выключено)
-    user_state = active_farms_state.get(chat_id, {"doodle": False, "all": False})
-    
-    keyboard = types.InlineKeyboardMarkup()
-    
-    # Динамический текст для Doodle Jump
-    doodle_text = "🛑 Остановить Doodle Jump" if user_state["doodle"] else "🕹 Запустить Doodle Jump"
-    doodle_callback = "toggle_doodle_stop" if user_state["doodle"] else "toggle_doodle_start"
-    keyboard.row(types.InlineKeyboardButton(text=doodle_text, callback_data=doodle_callback))
-    
-    # Динамический текст для кнопки «Запустить всё» / «Остановить всё»
-    all_text = "🛑 Остановить всё" if user_state["all"] else "🟢 Запустить всё"
-    all_callback = "toggle_all_stop" if user_state["all"] else "toggle_all_start"
-    keyboard.row(types.InlineKeyboardButton(text=all_text, callback_data=all_callback))
-    
-    # Кнопка статуса
-    keyboard.row(types.InlineKeyboardButton(text="📊 Статус игр", callback_data="farm_status"))
-    
-    return keyboard
+class FarmsStateManager:
+    def __init__(self):
+        # Глобальный словарь теперь становится защищенным атрибутом объекта
+        self.states = {}
 
+    def get_state(self, chat_id):
+        """Получение текущего состояния пользователя (по умолчанию всё выключено)."""
+        return self.states.get(chat_id, {"doodle": False, "all": False})
+
+    def update_state(self, chat_id, key, value):
+        """Обновление конкретного параметра состояния пользователя."""
+        if chat_id not in self.states:
+            self.states[chat_id] = {"doodle": False, "all": False}
+        self.states[chat_id][key] = value
+
+
+def get_farms_menu_keyboard(self, chat_id):
+        # Получаем текущие состояния через метод менеджера вместо глобальной переменной
+        user_state = self.farms_manager.get_state(chat_id)
+        
+        keyboard = types.InlineKeyboardMarkup()
+        
+        # Динамический текст для Doodle Jump
+        doodle_text = "🛑 Остановить Doodle Jump" if user_state["doodle"] else "🕹 Запустить Doodle Jump"
+        doodle_callback = "toggle_doodle_stop" if user_state["doodle"] else "toggle_doodle_start"
+        keyboard.row(types.InlineKeyboardButton(text=doodle_text, callback_data=doodle_callback))
+        
+        # Динамический текст для кнопки «Запустить всё» / «Остановить всё»
+        all_text = "🛑 Остановить всё" if user_state["all"] else "🟢 Запустить всё"
+        all_callback = "toggle_all_stop" if user_state["all"] else "toggle_all_start"
+        keyboard.row(types.InlineKeyboardButton(text=all_text, callback_data=all_callback))
+        
+        # Кнопка статуса
+        keyboard.row(types.InlineKeyboardButton(text="📊 Статус игр", callback_data="farm_status"))
+        
+        return keyboard
+
+
+ # Создаем экземпляр менеджера состояний ферм
+farms_manager = FarmsStateManager()
+
+# Передаем его в обработчики вместе с остальными менеджерами
+menu_handler = MenuHandler(bot, farms_manager)
 
 class UltimateSecurityCore:
     """
