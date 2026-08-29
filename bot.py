@@ -2419,11 +2419,15 @@ if __name__ == "__main__":
     print("DEBUG: Мы зашли в блок __main__")
     while True:
         try:
-            print("🤖 Запуск бота...")
-            print("DEBUG: Перед вызовом infinity_polling")
-            bot.infinity_polling(skip_pending=True, timeout=5, long_polling_timeout=15)
-          
-            print("DEBUG: После вызова infinity_polling")
+            print("🤖 Запуск бота (ручной цикл)...")
+            offset = 0
+            while True:
+                # Запрашиваем обновления вручную с жестким таймаутом в 5 секунд
+                updates = bot.get_updates(offset=offset, timeout=5, allowed_updates=["message", "callback_query"])
+                for update in updates:
+                    offset = update.update_id + 1
+                    # Передаем обновление боту на обработку
+                    bot.process_new_updates([update])
         except Exception as e:
-            print(f"⚠️ Ошибка соединения: {e}. Переподключение через 5 секунд...")
+            print(f"⚠️ Ошибка в цикле опроса: {e}. Переподключение через 5 секунд...")
             time.sleep(5)
