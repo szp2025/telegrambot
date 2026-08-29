@@ -1025,16 +1025,15 @@ class MiningComboManager:
             if res.status_code == 200:
                 img = Image.open(io.BytesIO(res.content))
                 
-                # Для Grow Tea делаем размер компактным (280px), для остальных — 600px
-                max_width = 280 if game_key == "grow-tea" else 600
+                # Единая оптимальная ширина для всех картинок для сохранения максимальной четкости
+                max_width = 600
                 
                 if img.width > max_width:
                     w_percent = (max_width / float(img.width))
                     h_size = int(float(img.height) * float(w_percent))
                     img = img.resize((max_width, h_size), Image.Resampling.LANCZOS)
-                    
+                
                 out = io.BytesIO()
-                # Повышаем качество до 95 для кристальной четкости текста и мелких деталей
                 img.convert("RGB").save(out, format="JPEG", quality=95)
                 return out.getvalue()
         except Exception as e:
