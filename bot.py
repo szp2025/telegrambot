@@ -2971,7 +2971,7 @@ class CallbackQueryHandler:
             # (или предлагаем добавить, если их ещё нет).
             if data.startswith("profgame_"):
                 gname = data[len("profgame_"):]
-                info = self.user_game_stats.get(chat_id, {}).get(gname)
+                info = user_game_stats.get(chat_id, {}).get(gname)
                 if info:
                     caption = f"🎮 *{gname}*\n📊 Стат / Уровень: `{info.get('stat', 'Н/Д')}`"
                     row_kb = types.InlineKeyboardMarkup()
@@ -3003,7 +3003,7 @@ class CallbackQueryHandler:
             # Удаление конкретной строки статистики.
             if data.startswith("statdel_"):
                 gname = data[len("statdel_"):]
-                stats = self.user_game_stats.get(chat_id, {})
+                stats = user_game_stats.get(chat_id, {})
                 if gname in stats:
                     stats.pop(gname, None)
                     save_user_stats()
@@ -3025,7 +3025,7 @@ class CallbackQueryHandler:
             # Изменение уровня конкретной строки статистики.
             if data.startswith("statedit_"):
                 gname = data[len("statedit_"):]
-                stats = self.user_game_stats.get(chat_id, {})
+                stats = user_game_stats.get(chat_id, {})
                 if gname in stats:
                     self.user_input_states[chat_id] = {"step": "waiting_game_stat", "game": gname}
                     self.sender.send_message_direct(
