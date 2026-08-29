@@ -62,7 +62,30 @@ from private_config import (
     TOKEN,
 )
 
-
+if __name__ == "__main__":
+    print("DEBUG: Мы зашли в блок __main__")
+    while True:
+        try:
+            print("🤖 Запуск бота (через HTTP-запросы)...")
+            offset = 0
+            token = bot.token # Берем токен из вашего объекта бота
+            url = f"https://api.telegram.org/bot{token}/getUpdates"
+            
+            while True:
+                response = requests.get(url, params={"offset": offset, "timeout": 5}, timeout=10)
+                data = response.json()
+                
+                if data.get("ok"):
+                    for update in data.get("result", []):
+                        offset = update["update_id"] + 1
+                        # Превращаем сырой json в объект обновления telebot и обрабатываем
+                        telegram_update = telebot.types.Update.de_json(update)
+                        bot.process_new_updates([telegram_update])
+                
+        except Exception as e:
+            print(f"⚠️ Ошибка сети или запроса: {e}. Переподключение через 5 секунд...")
+            time.sleep(5)
+            
 # Настройка таймаутов, чтобы бот не зависал при медленном ответе Telegram API
 apihelper.CONNECT_TIMEOUT = 10
 apihelper.READ_TIMEOUT = 10
