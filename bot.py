@@ -1175,7 +1175,13 @@ class ContentKeyboardManager:
 
 class MessageProcessor:
     """Класс для обработки входящих сообщений и команд бота."""
-
+    def __init__(self, bot, logger, sender, manager, *args, **kwargs):
+        self.bot = bot
+        self.logger = logger
+        self.sender = sender
+        self.manager = manager
+        # сохраните остальные переменные, которые передаете при вызове
+    
     @staticmethod
     def handle_start(message: types.Message):
         chat_id = message.chat.id
