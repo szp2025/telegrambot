@@ -1784,7 +1784,6 @@ def handle_callbacks(call: types.CallbackQuery):
         if action == "ok":
              if "24" in order["tariff"]:
                  expire_timestamp = time.time() + 86400
-                 # Заменяем прямое обращение на метод добавления рекламы в менеджер
                  ads_manager.add_ad(order_id, target_user_id, expire_timestamp)
 
              send_message_direct(
