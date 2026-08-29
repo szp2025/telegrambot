@@ -20,8 +20,6 @@ import json
 from datetime import datetime
 import math
 import subprocess
-import asyncio
-from abc import ABC, abstractmethod
 from colorama import Fore
 import urllib.parse
 from typing import Tuple, Dict, List, Any
@@ -84,19 +82,7 @@ apihelper.READ_TIMEOUT = 60
 apihelper.SESSION_TIME_TO_LIVE = 5 * 60
 
 
-# --- ФОНОВЙ ПОТОК ДЛЯ АВТО-ПРОВЕРКИ И ТАЙМЕРОВ ---
-def start_auto_checker_thread(checker_instance):
-    """Фоновый поток для автоматической проверки комбо и таймеров."""
-    while True:
-        try:
-            # Метод, содержащий логику проверки комбо, таймеров и рекламы
-            checker_instance.run_loop_step() 
-        except Exception as e:
-            logger.error(f"Ошибка в фоновом потоке чекера: {e}")
-        time.sleep(10) # Защитная микропауза перед повтором при сбое
-        
-
-# Целевой бот для авто-фермы Doodle Jump
+# Исторический идентификатор (оставлен для совместимости конструктора).
 TARGET_GAME_BOT = "@DoodlePlayBot"
 # Настройка логирования для отслеживания запросов ИИ
 logging.basicConfig(level=logging.INFO)
@@ -625,136 +611,8 @@ class BotVirtualAssistant:
 
 logger = logging.getLogger(__name__)
 
-# ==================== МОДУЛЬ АВТОМАТИЗАЦИИ ИГР ====================
-class BaseGameAutomation(ABC):
-    def __init__(self, name: str, interval_seconds: int):
-        self.name = name
-        self.interval_seconds = interval_seconds
-        self.is_running = False
-
-    @abstractmethod
-    async def collect_rewards(self) -> bool:
-        pass
-
-    @abstractmethod
-    async def watch_videos(self) -> bool:
-        pass
-
-    async def run_routine(self) -> None:
-        self.is_running = True
-        logger.info(f"[{self.name}] Запуск автоматизированного цикла фермы...")
-        while self.is_running:
-            try:
-                await self.collect_rewards()
-                await self.watch_videos()
-            except Exception as e:
-                logger.error(f"[{self.name}] Ошибка в цикле: {e}")
-            await asyncio.sleep(self.interval_seconds)
-
-    def stop(self) -> None:
-        self.is_running = False
-
-class DogsHouseMinerGame(BaseGameAutomation):
-    """Модуль автоматизации для Dogs House Miner (майнинг монет в домике собакена)"""
-    def __init__(self):
-        super().__init__(name="Dogs House Miner", interval_seconds=7200)  # Интервал 2 часа
-
-    async def collect_rewards(self) -> bool:
-        logger.info(Fore.GREEN + "[Dogs House Miner] Подключение к майнеру, сбор добытых монет...")
-        await asyncio.sleep(3)
-        logger.info(Fore.GREEN + "[Dogs House Miner] Баланс успешно обновлен!")
-        return True
-
-    async def watch_videos(self) -> bool:
-        logger.info(Fore.BLUE + "[Dogs House Miner] Просмотр рекламного блока для бустом майнинга...")
-        await asyncio.sleep(4)
-        logger.info(Fore.GREEN + "[Dogs House Miner] Буст успешно применен.")
-        return True
-
-class SignalDoodleJumpGame(BaseGameAutomation):
-    """Модуль автоматизации для Doodle Jump (сбор, авто-прокачка за 150 монет и просмотр рекламы с паузой 4 мин)"""
-    def __init__(self):
-        super().__init__(name="Signal Doodle Jump", interval_seconds=1800)  # Общий цикл проверки каждые 30 минут
-        self.max_hourly_videos = 5
-        self.max_daily_videos = 25
-        self.video_cooldown_seconds = 240  # Пауза между видео 4 минуты
-
-    async def collect_rewards(self) -> bool:
-        logger.info(Fore.GREEN + f"[{self.name}] Переход на главную страницу...")
-        
-        # 1. Клик по кнопке «Собрать» пассивный доход
-        # await page.click('text=Собрать')
-        await asyncio.sleep(2)
-        logger.info(Fore.GREEN + f"[{self.name}] Пассивные монеты собраны.")
-
-        # 2. Безопасная проверка баланса перед покупкой «Тройной прокачки» (требуется 150 монет)
-        # Считываем текущий баланс со страницы (например, из элемента с монетами)
-        # current_coins_text = await page.locator('.coin-balance-selector').inner_text()
-        # current_coins = float(current_coins_text.replace(',', '.'))
-        
-        current_coins = 49.34  # Значение для примера (как на вашем скриншоте баланс 49.34)
-        upgrade_cost = 150
-
-        if current_coins >= upgrade_cost:
-            logger.info(Fore.MAGENTA + f"[{self.name}] Баланс ({current_coins}) достаточно для аппа ({upgrade_cost}). Нажимаем прокачку...")
-            # await page.click('text=150')  # Кликаем только если точно хватает
-            await asyncio.sleep(2)
-            logger.info(Fore.GREEN + f"[{self.name}] Прокачка успешно куплена!")
-        else:
-            logger.info(Fore.YELLOW + f"[{self.name}] Баланс ({current_coins}) ниже требуемого ({upgrade_cost}). Пропускаем апгрейд во избежание ошибки.")
-
-        return True
-
-    async def watch_videos(self) -> bool:
-        logger.info(Fore.BLUE + f"[{self.name}] Переход во вкладку «Задания»...")
-        
-        # Клик на вкладку «Задания» внизу
-        # await page.click('text=Задания')
-        await asyncio.sleep(2)
-
-        current_hourly_watched = 0
-        # Пауза между видео: ваши 4 минуты + 5 минут запаса = 9 минут (540 секунд)
-        safe_video_cooldown = 540  
-
-        while current_hourly_watched < self.max_hourly_videos:
-            logger.info(Fore.BLUE + f"[{self.name}] Кликаем «смотреть видео» ({current_hourly_watched + 1}/{self.max_hourly_videos})...")
-            
-            # Клик по кнопке просмотра рекламы
-            # await page.click('.task-item button')
-            
-            # Длительность самого ролика
-            await asyncio.sleep(5)
-            
-            current_hourly_watched += 1
-            logger.info(Fore.GREEN + f"[{self.name}] Видео просмотрено и засчитано.")
-
-            # Если посмотрели меньше 5 видео, выдерживаем паузу с запасом
-            if current_hourly_watched < self.max_hourly_videos:
-                logger.info(Fore.CYAN + f"[{self.name}] Пауза 9 минут (с учетом запаса) перед следующим видео...")
-                await asyncio.sleep(safe_video_cooldown)
-            else:
-                logger.info(Fore.MAGENTA + f"[{self.name}] Лимит 5 видео исчерпан. Включается таймер (~36 минут).")
-
-        return True
-
-
-class BotGameFarmManager:
-    """Менеджер для управления списком игр и их фоновыми задачами"""
-    def __init__(self):
-        self.games = {}
-        self.tasks = {}
-
-    def register_game(self, game: BaseGameAutomation):
-        self.games[game.name.lower()] = game
-
-    def stop_all_games(self):
-        for game in self.games.values():
-            game.stop()
-        for task in self.tasks.values():
-            if not task.done():
-                task.cancel()
-        self.tasks.clear()
-
+# (Модуль автоматизации игр удалён: реальная авто-ферма третьих ботов не ведётся,
+#  вместо неё — напоминания в «⏰ Мои таймеры».)
 
 
 class AdvancedSecurityGuard:
@@ -1089,28 +947,6 @@ ads_manager = ActiveAdsManager(ACTIVE_ADS_FILE)
 
 # Словарь для отслеживания состояния запусков (ключ - ID пользователя или общая ферма)
 active_farms_state = {}  # Например: {chat_id: {"doodle": True/False, "all": True/False}}
-
-def get_farms_menu_keyboard(chat_id):
-    # Каждый пользователь сам включает игры, по которым хочет авто-напоминания.
-    # Состояние хранится в user_game_timers (та же база, что и «⏰ Мои таймеры»).
-    keyboard = types.InlineKeyboardMarkup()
-    user_timers = user_game_timers.get(chat_id, {})
-
-    all_games = {}
-    all_games.update({k: v.get("name", k) for k, v in manager.combo_games.items()})
-    all_games.update({k: v.get("name", k) for k, v in manager.independent_farms.items()})
-
-    for key, name in all_games.items():
-        t = user_timers.get(key)
-        enabled = bool(t and t.get("target"))
-        if enabled:
-            keyboard.row(types.InlineKeyboardButton(text=f"🔔 {name} — ВКЛ", callback_data=f"farmrem_off_{key}"))
-        else:
-            keyboard.row(types.InlineKeyboardButton(text=f"🔕 {name} — ВЫКЛ", callback_data=f"farmrem_on_{key}"))
-
-    keyboard.row(types.InlineKeyboardButton(text="📊 Статус напоминаний", callback_data="farm_status"))
-    return keyboard
-
 
 class UltimateSecurityCore:
    
@@ -2067,8 +1903,18 @@ class ProfileManager:
             user_name = "Игрок"
 
         profile_text = f"👤 **Профиль пользователя:** {user_name}\n\n🏆 **Ваш игровой прогресс и статы:**\n"
-        
+
         keyboard_markup = MenuManager.get_inline_keyboard(PROFILE_KEYBOARD_DATA, extra_button=MenuManager.get_ai_button())
+
+        # Каталог доступных игр (из «Меню комбо» и «Отдельных фермерских проектов»).
+        try:
+            available = [v.get("name", k) for k, v in manager.combo_games.items()]
+            available += [v.get("name", k) for k, v in manager.independent_farms.items()]
+        except Exception:
+            available = []
+        catalog = ""
+        if available:
+            catalog = "\n\n🎮 **Игры, для которых можно добавить прогресс:**\n" + "\n".join(f"• {n}" for n in available)
 
         if chat_id in user_game_stats and user_game_stats[chat_id]:
             self.sender.send_message_direct(chat_id, profile_text, parse_mode="Markdown")
@@ -2082,19 +1928,20 @@ class ProfileManager:
                         self.sender.send_message_direct(chat_id, caption, parse_mode="Markdown")
                 else:
                     self.sender.send_message_direct(chat_id, caption, parse_mode="Markdown")
-            
-            # Отправка клавиатуры управления после списка игр
+
+            # Клавиатура управления + каталог доступных игр.
             self.sender.send_message_direct(
-                chat_id, 
-                "⚙️ Управление профилем:", 
-                reply_markup=keyboard_markup
+                chat_id,
+                "⚙️ Управление профилем:" + catalog,
+                reply_markup=keyboard_markup,
+                parse_mode="Markdown"
             )
         else:
-            profile_text += "_Список игр пуст. Нажмите кнопку ниже, чтобы добавить свой прогресс и скриншот._"
+            profile_text += "_Список игр пуст. Нажмите кнопку ниже, чтобы добавить свой прогресс и скриншот._" + catalog
             self.sender.send_message_direct(
-                chat_id, 
-                profile_text, 
-                reply_markup=keyboard_markup, 
+                chat_id,
+                profile_text,
+                reply_markup=keyboard_markup,
                 parse_mode="Markdown"
             )
 
@@ -2324,7 +2171,18 @@ class MenuTextProcessor:
         elif text in ["🧮 Крипто-курс", "/calc"]:
             self.sender.send_message_direct(chat_id, "🧮 **Выберите криптовалюту:**", reply_markup=get_crypto_currency_keyboard())
         elif text in ["📊 Защита фермы", "/farm"]:
-            self.sender.send_message_direct(chat_id, "📊 **Статус:** Сеть работает на максимальной скорости.")
+            found = sum(1 for v in self.manager.found_today.values() if v)
+            total_games = len(self.manager.combo_games)
+            status = (
+                "🛡️ **Статус защиты бота:**\n\n"
+                f"👥 Верифицировано пользователей: **{len(self.verified_users)}**\n"
+                f"🚫 Заблокировано (спам/скам): **{len(account_guard.banned)}**\n"
+                f"🔗 Скам-доменов в базе: **{len(link_guard.scam_domains)}**\n"
+                f"🧾 Проверено оплат (хэшей): **{len(used_tx_hashes)}**\n"
+                f"🎯 Комбо найдено сегодня: **{found}/{total_games}**\n\n"
+                "✅ Все системы защиты активны."
+            )
+            self.sender.send_message_direct(chat_id, status, parse_mode="Markdown")
         elif text in ["⏰ Мои таймеры", "/timers"]:
             report = "⏰ **Ваши персональные таймеры сбора:**\n\n"
             user_timers_dict = self.user_game_timers.get(chat_id, {})
@@ -2583,6 +2441,23 @@ class MessageInputHandler:
                 self.sender.send_message_direct(chat_id, "⚠️ Неверный формат! Введите число (например: `2.5`):", parse_mode="Markdown")
                 return
 
+        # 3b. Добавление игры в профиль: «Название | Уровень» → затем ждём фото.
+        if chat_id in self.user_input_states and self.user_input_states[chat_id].get("step") == "waiting_game_info":
+            if "|" in raw_text:
+                game, stat = [p.strip() for p in raw_text.split("|", 1)]
+            else:
+                game, stat = raw_text.strip(), "—"
+            if not game:
+                self.sender.send_message_direct(chat_id, "⚠️ Формат: `Название игры | Уровень`", parse_mode="Markdown")
+                return
+            self.user_input_states[chat_id] = {"step": "waiting_photo", "game": game, "stat": stat}
+            self.sender.send_message_direct(
+                chat_id,
+                f"📸 Теперь отправьте скриншот прогресса для *{game}* (или любое фото).",
+                parse_mode="Markdown"
+            )
+            return
+
         # 4. Проверка ссылок (скоринг: скам / фишинг / вирус) + общая безопасность.
         text = self.security.sanitize_input(raw_text)
 
@@ -2593,8 +2468,11 @@ class MessageInputHandler:
             self.sender.send_message_direct(chat_id, link_verdict["message"], parse_mode=None)
             return
 
+        # Блокируем ТОЛЬКО реальные угрозы: analyze_traffic сам ловит скам-@юзернеймы
+        # по маркерам (SCAM_USERNAME_MARKERS). Обычные «@» и e-mail больше не блокируем.
+        # Ссылки (в т.ч. t.me/) уже проверены выше через link_guard.
         is_threat, security_msg = self.security.analyze_traffic(text)
-        if is_threat or any(x in text.lower() for x in ["t.me/", "@"]):
+        if is_threat:
             self.sender.send_message_direct(chat_id, security_msg)
             return
 
@@ -2802,7 +2680,28 @@ class CallbackQueryHandler:
                 return
 
             if data == "ads_stats":
-                self.sender.send_message_direct(chat_id, f"📊 **Статистика:** Активных пользователей: **~{len(self.verified_users) + 120}**", parse_mode="Markdown")
+                audience = len(self.verified_users)
+                games_count = len(self.manager.combo_games) + len(self.manager.independent_farms)
+                # Персональная статистика: активные размещения ЭТОГО пользователя.
+                my_ads = [(oid, d) for oid, d in self.ads_manager.storage.items() if d.get("user_id") == chat_id]
+
+                lines = [
+                    "📊 **Статистика аудитории:**\n",
+                    f"👥 Аудитория (потенциальный охват): **{audience}** польз.",
+                    f"🎮 Проектов в каталоге: **{games_count}**",
+                ]
+                if my_ads:
+                    lines.append("\n📢 **Ваши активные размещения:**")
+                    for oid, d in my_ads:
+                        left = int(d.get("expire_time", 0) - time.time())
+                        if left > 0:
+                            lines.append(f"• `{oid}` — осталось {left // 3600}ч {(left % 3600) // 60}м · охват ~{audience}")
+                        else:
+                            lines.append(f"• `{oid}` — истекает")
+                else:
+                    lines.append("\n📢 У вас нет активных размещений. Купите рекламу кнопкой выше 👆")
+
+                self.sender.send_message_direct(chat_id, "\n".join(lines), parse_mode="Markdown")
                 return
 
             if data in ADS_TARIFFS:
@@ -3023,96 +2922,6 @@ class CallbackQueryHandler:
                     send_combo_result(chat_id, self.manager.combo_games[key], image_handler.resize_img(img_url) if img_url else None, date_text)
                 return
 
-            # Авто-напоминания: ВКЛючить игру для конкретного пользователя.
-            if data.startswith("farmrem_on_"):
-                key = data.replace("farmrem_on_", "")
-                default_hours = 8
-                if chat_id not in self.game_timers:
-                    self.game_timers[chat_id] = {}
-                self.game_timers[chat_id][key] = {
-                    "target": time.time() + default_hours * 3600,
-                    "duration_hours": default_hours
-                }
-                try:
-                    self.bot.edit_message_reply_markup(
-                        chat_id=chat_id,
-                        message_id=call.message.message_id,
-                        reply_markup=get_farms_menu_keyboard(chat_id)
-                    )
-                except Exception:
-                    pass
-                try:
-                    self.bot.answer_callback_query(call.id, f"🔔 Напоминания включены (каждые {default_hours} ч)")
-                except:
-                    pass
-                return
-
-            # Авто-напоминания: ВЫКЛючить игру.
-            if data.startswith("farmrem_off_"):
-                key = data.replace("farmrem_off_", "")
-                if chat_id in self.game_timers:
-                    self.game_timers[chat_id].pop(key, None)
-                try:
-                    self.bot.edit_message_reply_markup(
-                        chat_id=chat_id,
-                        message_id=call.message.message_id,
-                        reply_markup=get_farms_menu_keyboard(chat_id)
-                    )
-                except Exception:
-                    pass
-                try:
-                    self.bot.answer_callback_query(call.id, "🔕 Напоминания выключены")
-                except:
-                    pass
-                return
-
-            # Управление авто-фермами игр
-            if data == "farm_start_all":
-                try:
-                    self.bot.answer_callback_query(call.id, "🟢 Запуск всех ферм...")
-                except:
-                    pass
-                self.sender.send_message_direct(
-                    chat_id, 
-                    "🚀 **Авто-ферма для Doodle Jump запущена в фоновом режиме!**\nСкрипт начал цикл сбора монет, проверки баланса и просмотра видео.", 
-                    parse_mode="Markdown"
-                )
-                return
-
-            if data == "farm_stop_all":
-                try:
-                    self.bot.answer_callback_query(call.id, "🛑 Остановка ферм...")
-                except:
-                    pass
-                self.sender.send_message_direct(
-                    chat_id, 
-                    "🛑 **Все фоновые фермы остановлены.**", 
-                    parse_mode="Markdown"
-                )
-                return
-
-            if data == "farm_status":
-                try:
-                    self.bot.answer_callback_query(call.id, "📊 Проверка статуса...")
-                except:
-                    pass
-                user_timers = self.game_timers.get(chat_id, {})
-                active = [k for k, v in user_timers.items() if v and v.get("target")]
-                if active:
-                    lines = []
-                    for k in active:
-                        nm = (self.manager.combo_games.get(k, {}).get("name")
-                              or self.manager.independent_farms.get(k, {}).get("name", k))
-                        t_target = user_timers[k].get("target")
-                        left = int(t_target - time.time()) if t_target else 0
-                        when = f"через {max(0, left)//3600}ч {(max(0, left)%3600)//60}м" if left > 0 else "скоро"
-                        lines.append(f"🔔 *{nm}* — {when}")
-                    status_text = "📊 **Ваши активные напоминания:**\n\n" + "\n".join(lines)
-                else:
-                    status_text = "📊 У вас нет активных напоминаний.\nВключите игры кнопками выше 👆"
-                self.sender.send_message_direct(chat_id, status_text, parse_mode="Markdown")
-                return
-
         except Exception as e:
             self.logger.error(f"Ошибка в обработчике callback-запросов: {e}")
 
@@ -3300,67 +3109,6 @@ def show_user_profile(chat_id):
     
 def daily_auto_checker():
     scheduler_manager.run_daily_checker(user_game_timers)
-
-def run_doodle_loop(chat_id, target_game_bot):
-    """
-    Фоновый цикл авто-фермы Signal Doodle Jump для конкретного пользователя.
-
-    Работает, пока active_farms_state[chat_id]['doodle'] == True.
-    Останавливается автоматически, когда пользователь нажимает «Остановить».
-    Использует асинхронные методы SignalDoodleJumpGame внутри отдельного
-    event-loop (asyncio требует свой loop на каждый поток).
-    """
-    game = SignalDoodleJumpGame()
-
-    # Отдельный event loop для этого потока.
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    def is_active():
-        return active_farms_state.get(chat_id, {}).get("doodle", False)
-
-    try:
-        sender.send_message_direct(
-            chat_id,
-            "🕹 **Doodle Jump — авто-ферма запущена!**\n"
-            "Собираю монеты и смотрю рекламу в фоне. "
-            "Нажмите «🛑 Остановить», чтобы прекратить.",
-            parse_mode="Markdown"
-        )
-
-        while is_active():
-            try:
-                # 1. Сбор пассивного дохода и авто-прокачка.
-                loop.run_until_complete(game.collect_rewards())
-                if not is_active():
-                    break
-                # 2. Цикл просмотра видео-заданий.
-                loop.run_until_complete(game.watch_videos())
-            except Exception as e:
-                logger.error(f"[Doodle Loop {chat_id}] Ошибка в цикле: {e}")
-
-            # Пауза до следующего цикла короткими интервалами,
-            # чтобы быстро реагировать на остановку пользователем.
-            waited = 0
-            while waited < game.interval_seconds and is_active():
-                time.sleep(5)
-                waited += 5
-
-        logger.info(Fore.RED + f"[Doodle Loop {chat_id}] Цикл остановлен пользователем.")
-        try:
-            sender.send_message_direct(
-                chat_id,
-                "🛑 **Doodle Jump — авто-ферма остановлена.**",
-                parse_mode="Markdown"
-            )
-        except Exception:
-            pass
-    finally:
-        active_farm_threads.pop(chat_id, None)
-        try:
-            loop.close()
-        except Exception:
-            pass
 
 # ============================================================
 # АВТО-ПРОВЕРКА ОПЛАТЫ USDT-TRC20 ПО ХЭШУ ТРАНЗАКЦИИ (сеть Tron)
@@ -3656,12 +3404,8 @@ account_guard = AccountGuard(bot, SCAM_USERNAME_MARKERS, ADMIN_CHAT_ID)
 # Инициализация менеджеров
 image_handler = ImageHandler(logger, target_width=600)
 manager = MiningComboManager()
-# Инициализация менеджера и всех игровых модулей фермы
-game_farm_manager = BotGameFarmManager()
-game_farm_manager.register_game(DogsHouseMinerGame())
-game_farm_manager.register_game(SignalDoodleJumpGame())
 # 1. Сначала создаем экземпляр процессора
-message_processor = MessageProcessor(bot, logger, sender, manager, ...)
+message_processor = MessageProcessor(bot, logger, sender, manager)
 
 # 2. Передаем его в контроллер (с маленькой буквы)
 bot_controller = TelegramBotController(bot, message_processor, BOT_COMMANDS_LIST, MAIN_MENU_BUTTONS)
