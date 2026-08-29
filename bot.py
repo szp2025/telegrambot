@@ -2424,8 +2424,11 @@ def daily_auto_checker():
 def generate_advanced_captcha(chat_id):
     return CaptchaManager.generate_advanced_captcha(chat_id, advanced_captchas)
 
-# Инициализация контроллера для регистрации команд
-bot_controller = TelegramBotController(bot, MessageProcessor, BOT_COMMANDS_LIST, MAIN_MENU_BUTTONS)
+# 1. Сначала создаем экземпляр процессора
+message_processor = MessageProcessor(bot, logger, sender, manager, ...)
+
+# 2. Передаем его в контроллер (с маленькой буквы)
+bot_controller = TelegramBotController(bot, message_processor, BOT_COMMANDS_LIST, MAIN_MENU_BUTTONS)
 
 # Инициализация процессора текстового меню
 menu_text_processor = MenuTextProcessor(bot, logger, sender, manager, verified_users, user_game_timers, cloud_proofs)
