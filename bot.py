@@ -895,9 +895,75 @@ def save_verified_user(user_id):
     except Exception as e:
         logger.error(f"Ошибка сохранения пользователя в файл: {e}")
 
-verified_users = load_verified_users()  
-user_game_stats = {}  
-user_input_states = {} 
+verified_users = load_verified_users()
+
+# ── Персистентность статов профиля ────────────────────────────────────────
+# На телефоне лежит лишь крошечный JSON: ссылки Telegram (file_id) + текст
+# уровня. САМИ картинки хранятся на серверах Telegram, НЕ на телефоне.
+USER_STATS_FILE = "user_game_stats.json"
+
+def load_user_stats():
+    data = {}
+    if os.path.exists(USER_STATS_FILE):
+        try:
+            with open(USER_STATS_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            for k, v in raw.items():
+                try:
+                    data[int(k)] = v          # ключи-чаты в JSON — строки → int
+                except (ValueError, TypeError):
+                    data[k] = v
+        except Exception as e:
+            logger.error(f"Ошибка загрузки статов профиля: {e}")
+    return data
+
+def save_user_stats():
+    try:
+        with open(USER_STATS_FILE, "w", encoding="utf-8") as f:
+            json.dump(user_game_stats, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения статов профиля: {e}")
+
+user_game_stats = load_user_stats()
+
+# ── История найденных комбо (общая для всех) ──────────────────────────────
+# Тоже только file_id Telegram + дата; картинки — на серверах Telegram.
+COMBO_HISTORY_FILE = "combo_history.json"
+COMBO_HISTORY_MAX = 60           # держим последние N записей
+
+def load_combo_history():
+    if os.path.exists(COMBO_HISTORY_FILE):
+        try:
+            with open(COMBO_HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Ошибка загрузки истории комбо: {e}")
+    return []
+
+def save_combo_history():
+    try:
+        with open(COMBO_HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(combo_history[-COMBO_HISTORY_MAX:], f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения истории комбо: {e}")
+
+def add_combo_to_history(game_key, name, date_text, file_id):
+    """Добавляет комбо в историю (одна запись на игру в день)."""
+    day_key = time.strftime("%Y-%m-%d", time.localtime())
+    for h in combo_history:
+        if h.get("key") == game_key and h.get("day") == day_key:
+            return                            # за сегодня уже записано
+    combo_history.append({
+        "key": game_key, "name": name, "date": date_text,
+        "file_id": file_id, "day": day_key
+    })
+    if len(combo_history) > COMBO_HISTORY_MAX:
+        del combo_history[:-COMBO_HISTORY_MAX]
+    save_combo_history()
+
+combo_history = load_combo_history()
+
+user_input_states = {}
 
 class ActiveAdsManager:
     """Менеджер для управления активной рекламой с автоматической синхронизацией с файлом."""
@@ -1904,40 +1970,48 @@ class ProfileManager:
 
         profile_text = f"👤 **Профиль пользователя:** {user_name}\n\n🏆 **Ваш игровой прогресс и статы:**\n"
 
-        keyboard_markup = MenuManager.get_inline_keyboard(PROFILE_KEYBOARD_DATA, extra_button=MenuManager.get_ai_button())
-
-        # Каталог доступных игр (из «Меню комбо» и «Отдельных фермерских проектов»).
+        # Клавиатура: КНОПКА на каждую игру (добавить прогресс) + просмотр статов + ИИ.
+        keyboard_markup = types.InlineKeyboardMarkup()
         try:
-            available = [v.get("name", k) for k, v in manager.combo_games.items()]
-            available += [v.get("name", k) for k, v in manager.independent_farms.items()]
+            all_games = list(manager.combo_games.items()) + list(manager.independent_farms.items())
         except Exception:
-            available = []
-        catalog = ""
-        if available:
-            catalog = "\n\n🎮 **Игры, для которых можно добавить прогресс:**\n" + "\n".join(f"• {n}" for n in available)
+            all_games = []
+        for key, gdata in all_games:
+            gname = gdata.get("name", key)
+            keyboard_markup.row(types.InlineKeyboardButton(text=f"➕ {gname}", callback_data=f"profadd_{key}"))
+        keyboard_markup.row(types.InlineKeyboardButton(text="📋 Посмотреть мои статы", callback_data="prof_view"))
+        keyboard_markup.row(types.InlineKeyboardButton(text="📜 История комбо", callback_data="combo_hist"))
+        keyboard_markup.row(MenuManager.get_ai_button())
+
+        hint = "\n\n👇 Нажмите на игру, чтобы добавить свой прогресс и скриншот."
 
         if chat_id in user_game_stats and user_game_stats[chat_id]:
             self.sender.send_message_direct(chat_id, profile_text, parse_mode="Markdown")
             for game, info in user_game_stats[chat_id].items():
                 caption = f"🎮 *{game}*\n📊 Стат / Уровень: `{info.get('stat', 'Н/Д')}`"
+                # Кнопки редактирования/удаления именно этой строки статы.
+                row_kb = types.InlineKeyboardMarkup()
+                row_kb.row(
+                    types.InlineKeyboardButton(text="✏️ Изменить", callback_data=f"statedit_{game}"),
+                    types.InlineKeyboardButton(text="🗑 Удалить", callback_data=f"statdel_{game}")
+                )
                 if info.get("photo"):
                     try:
-                        self.bot.send_photo(chat_id, photo=info["photo"], caption=caption, parse_mode="Markdown")
+                        self.bot.send_photo(chat_id, photo=info["photo"], caption=caption, parse_mode="Markdown", reply_markup=row_kb)
                     except Exception as e:
                         self.logger.error(f"Ошибка отправки фото профиля: {e}")
-                        self.sender.send_message_direct(chat_id, caption, parse_mode="Markdown")
+                        self.sender.send_message_direct(chat_id, caption, parse_mode="Markdown", reply_markup=row_kb)
                 else:
-                    self.sender.send_message_direct(chat_id, caption, parse_mode="Markdown")
+                    self.sender.send_message_direct(chat_id, caption, parse_mode="Markdown", reply_markup=row_kb)
 
-            # Клавиатура управления + каталог доступных игр.
             self.sender.send_message_direct(
                 chat_id,
-                "⚙️ Управление профилем:" + catalog,
+                "⚙️ Выберите игру для добавления/обновления прогресса:" + hint,
                 reply_markup=keyboard_markup,
                 parse_mode="Markdown"
             )
         else:
-            profile_text += "_Список игр пуст. Нажмите кнопку ниже, чтобы добавить свой прогресс и скриншот._" + catalog
+            profile_text += "_Список игр пуст._" + hint
             self.sender.send_message_direct(
                 chat_id,
                 profile_text,
@@ -1997,7 +2071,10 @@ class BackgroundSchedulerManager:
                                 
                                 caption = f"🎯 **[Авто-комбо] {info.get('name', key)}**\n📅 `{date_text}`"
                                 try:
-                                    self.bot.send_photo(self.admin_chat_id, photo=img_bytes, caption=caption[:1024], parse_mode="Markdown")
+                                    sent = self.bot.send_photo(self.admin_chat_id, photo=img_bytes, caption=caption[:1024], parse_mode="Markdown")
+                                    # Фиксируем file_id (картинка живёт на серверах Telegram) в историю
+                                    if sent and getattr(sent, "photo", None):
+                                        add_combo_to_history(key, info.get('name', key), date_text, sent.photo[-1].file_id)
                                 except Exception as e:
                                     self.logger.error(f"Ошибка отправки авто-фото администратору: {e}")
                     except Exception as e:
@@ -2247,9 +2324,10 @@ class MessageInputHandler:
             if chat_id not in self.user_game_stats:
                 self.user_game_stats[chat_id] = {}
             self.user_game_stats[chat_id][state_data["game"]] = {
-                "stat": state_data["stat"], 
+                "stat": state_data["stat"],
                 "photo": message.photo[-1].file_id
             }
+            save_user_stats()
             self.user_input_states.pop(chat_id, None)
             try:
                 self.bot.reply_to(
@@ -2295,6 +2373,13 @@ class MessageInputHandler:
         if chat_id not in self.verified_users:
             self.sender.send_message_direct(chat_id, "⚠️ Пожалуйста, пройдите верификацию через /start.")
             return
+
+        # Скриншот профиля НЕОБЯЗАТЕЛЕН: если ждали фото, но пришёл текст —
+        # значит пользователь его пропустил (прогресс уже сохранён). Сбрасываем
+        # состояние, чтобы будущее чужое фото не прикрепилось к игре по ошибке.
+        _pending = self.user_input_states.get(chat_id)
+        if _pending and _pending.get("step") == "waiting_photo":
+            self.user_input_states.pop(chat_id, None)
 
         # 1. Обработка ввода текста отзыва (с фильтрацией безопасности)
         if chat_id in self.user_input_states and self.user_input_states[chat_id].get("step") == "waiting_review_text":
@@ -2441,7 +2526,7 @@ class MessageInputHandler:
                 self.sender.send_message_direct(chat_id, "⚠️ Неверный формат! Введите число (например: `2.5`):", parse_mode="Markdown")
                 return
 
-        # 3b. Добавление игры в профиль: «Название | Уровень» → затем ждём фото.
+        # 3b. Добавление игры в профиль: «Название | Уровень». СКРИНШОТ НЕОБЯЗАТЕЛЕН.
         if chat_id in self.user_input_states and self.user_input_states[chat_id].get("step") == "waiting_game_info":
             if "|" in raw_text:
                 game, stat = [p.strip() for p in raw_text.split("|", 1)]
@@ -2450,10 +2535,39 @@ class MessageInputHandler:
             if not game:
                 self.sender.send_message_direct(chat_id, "⚠️ Формат: `Название игры | Уровень`", parse_mode="Markdown")
                 return
+            game = game[:24]                       # имя коротким → callback_data < 64 байт
+            if chat_id not in self.user_game_stats:
+                self.user_game_stats[chat_id] = {}
+            prev_photo = self.user_game_stats[chat_id].get(game, {}).get("photo")
+            self.user_game_stats[chat_id][game] = {"stat": stat, "photo": prev_photo}
+            save_user_stats()
             self.user_input_states[chat_id] = {"step": "waiting_photo", "game": game, "stat": stat}
             self.sender.send_message_direct(
                 chat_id,
-                f"📸 Теперь отправьте скриншот прогресса для *{game}* (или любое фото).",
+                f"✅ Прогресс для *{game}* сохранён (уровень: `{stat}`).\n"
+                "📸 Скриншот — по желанию: пришлите фото, чтобы прикрепить (необязательно).",
+                parse_mode="Markdown"
+            )
+            return
+
+        # 3c. Ввод уровня для игры (кнопка в профиле). СКРИНШОТ НЕОБЯЗАТЕЛЕН:
+        #     прогресс сохраняем сразу; фото (если пришлёт) просто прикрепится.
+        #     Само фото хранится на серверах Telegram (file_id), не на телефоне.
+        if chat_id in self.user_input_states and self.user_input_states[chat_id].get("step") == "waiting_game_stat":
+            st = self.user_input_states[chat_id]
+            game = st.get("game", "Игра")
+            stat = raw_text.strip() or "—"
+            if chat_id not in self.user_game_stats:
+                self.user_game_stats[chat_id] = {}
+            # При редактировании сохраняем ранее прикреплённое фото.
+            prev_photo = self.user_game_stats[chat_id].get(game, {}).get("photo")
+            self.user_game_stats[chat_id][game] = {"stat": stat, "photo": prev_photo}
+            save_user_stats()
+            self.user_input_states[chat_id] = {"step": "waiting_photo", "game": game, "stat": stat}
+            self.sender.send_message_direct(
+                chat_id,
+                f"✅ Прогресс для *{game}* сохранён (уровень: `{stat}`).\n"
+                "📸 Скриншот — по желанию: пришлите фото, чтобы прикрепить (необязательно).",
                 parse_mode="Markdown"
             )
             return
@@ -2538,9 +2652,9 @@ class CallbackQueryHandler:
         self.sender = sender_instance
         self.manager = manager_instance
         self.verified_users = verified_users_storage
-        self.user_input = user_input_states_storage
-        self.game_timers = user_game_timers_storage
-        self.calc_states = user_calc_states_storage
+        self.user_input_states = user_input_states_storage
+        self.user_game_timers = user_game_timers_storage
+        self.user_calc_states = user_calc_states_storage
         self.pending_ad_orders = pending_ad_orders_storage
         self.ads_manager = ads_manager  # <--- Сохраняем менеджер в атрибут класса
         self.user_reviews = user_reviews_storage
@@ -2860,8 +2974,88 @@ class CallbackQueryHandler:
                 self.sender.send_message_direct(chat_id, "✍️ **Введите данные в формате:**\n`Название игры | Уровень`", parse_mode="Markdown")
                 return
 
+            # Кнопка конкретной игры в профиле → сразу вводим прогресс для неё.
+            if data.startswith("profadd_"):
+                key = data.replace("profadd_", "")
+                gdata = self.manager.combo_games.get(key) or self.manager.independent_farms.get(key, {})
+                gname = gdata.get("name", key)
+                self.user_input_states[chat_id] = {"step": "waiting_game_stat", "game": gname, "game_key": key}
+                self.sender.send_message_direct(
+                    chat_id,
+                    f"✍️ Введите ваш уровень/прогресс для *{gname}*\n(например: `15` или `Уровень 20`):",
+                    parse_mode="Markdown"
+                )
+                return
+
             if data == "prof_view":
                 show_user_profile(chat_id)
+                return
+
+            # Удаление конкретной строки статистики.
+            if data.startswith("statdel_"):
+                gname = data[len("statdel_"):]
+                stats = self.user_game_stats.get(chat_id, {})
+                if gname in stats:
+                    stats.pop(gname, None)
+                    save_user_stats()
+                    try:
+                        self.bot.answer_callback_query(call.id, f"🗑 «{gname}» удалено")
+                    except Exception:
+                        pass
+                    try:
+                        self.bot.delete_message(chat_id, call.message.message_id)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        self.bot.answer_callback_query(call.id, "Уже удалено")
+                    except Exception:
+                        pass
+                return
+
+            # Изменение уровня конкретной строки статистики.
+            if data.startswith("statedit_"):
+                gname = data[len("statedit_"):]
+                stats = self.user_game_stats.get(chat_id, {})
+                if gname in stats:
+                    self.user_input_states[chat_id] = {"step": "waiting_game_stat", "game": gname}
+                    self.sender.send_message_direct(
+                        chat_id,
+                        f"✏️ Введите новый уровень/прогресс для *{gname}*:",
+                        parse_mode="Markdown"
+                    )
+                else:
+                    try:
+                        self.bot.answer_callback_query(call.id, "Записи больше нет")
+                    except Exception:
+                        pass
+                return
+
+            # История найденных комбо (картинки берутся с серверов Telegram по file_id).
+            if data == "combo_hist":
+                try:
+                    self.bot.answer_callback_query(call.id, "Загрузка истории...")
+                except Exception:
+                    pass
+                if not combo_history:
+                    self.sender.send_message_direct(chat_id, "📜 История комбо пока пуста. Загляните позже!")
+                    return
+                recent = list(reversed(combo_history))[:15]
+                self.sender.send_message_direct(
+                    chat_id,
+                    f"📜 *История найденных комбо* (последние {len(recent)}):",
+                    parse_mode="Markdown"
+                )
+                for h in recent:
+                    cap = f"🎯 *{h.get('name', 'Комбо')}*\n📅 `{h.get('date', h.get('day', ''))}`"
+                    fid = h.get("file_id")
+                    if fid:
+                        try:
+                            self.bot.send_photo(chat_id, photo=fid, caption=cap, parse_mode="Markdown")
+                        except Exception:
+                            self.sender.send_message_direct(chat_id, cap, parse_mode="Markdown")
+                    else:
+                        self.sender.send_message_direct(chat_id, cap, parse_mode="Markdown")
                 return
 
             if data.startswith("combopage_"):
