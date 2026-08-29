@@ -2421,7 +2421,8 @@ if __name__ == "__main__":
         try:
             print("🤖 Запуск бота...")
             print("DEBUG: Перед вызовом infinity_polling")
-            bot.infinity_polling(skip_pending=True, timeout=20, long_polling_timeout=15)
+            bot.infinity_polling(skip_pending=True, timeout=5, long_polling_timeout=15)
+          
             print("DEBUG: После вызова infinity_polling")
         except Exception as e:
             print(f"⚠️ Ошибка соединения: {e}. Переподключение через 5 секунд...")
