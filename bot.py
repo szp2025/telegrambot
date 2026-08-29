@@ -16,6 +16,7 @@ from PIL import Image
 import urllib.request
 import ast
 import base64
+import json
 from datetime import datetime
 import math
 import subprocess
@@ -169,102 +170,449 @@ class ImageHandler:
         self.target_width = target_width
 
     def resize_img(self, url: str) -> bytes | None:
-        """Загружает картинку по ссылке, оптимизирует и приводит к единому стандарту для Telegram."""
+        """
+        Готовит картинку под телефон:
+        1) уменьшает (без увеличения) в компактный бокс;
+        2) LETTERBOX — добавляет боковые поля до широкого формата 2:1, чтобы на
+           мобильном высота была ограничена (широкая картинка = низкая высота).
+        Поля берут цвет из угла картинки, чтобы сливаться с фоном.
+        """
         try:
             res = requests.get(url, timeout=5)
             if res.status_code == 200:
                 img = Image.open(io.BytesIO(res.content))
                 if img.mode != 'RGB':
                     img = img.convert('RGB')
-                
-                # Пропорциональное масштабирование
-                w_percent = (self.target_width / float(img.width))
-                target_height = int(float(img.height) * float(w_percent))
-                
-                # Ограничение максимальной высоты (например, 1200 пикселей), 
-                # чтобы длинные картинки не растягивали чат и не обрезались
-                max_height = 1200
-                if target_height > max_height:
-                    target_height = max_height
-                    # Если нужно вписать целиком с полями (сохранив пропорции без обрезки):
-                    # Создаем холст и накладываем картинку по центру
-                
-                img = img.resize((self.target_width, target_height), Image.Resampling.LANCZOS)
-                
+
+                # 1) Только уменьшение в бокс.
+                max_w = self.target_width
+                max_h = int(self.target_width * 1.3)
+                w, h = img.width, img.height
+                scale = min(max_w / w, max_h / h, 1.0)
+                if scale < 1.0:
+                    img = img.resize(
+                        (max(1, int(w * scale)), max(1, int(h * scale))),
+                        Image.Resampling.LANCZOS
+                    )
+
+                # 2) Letterbox до 2:1, если картинка «высокая».
+                target_ratio = 2.0
+                cw, ch = img.width, img.height
+                if ch > 0 and (cw / ch) < target_ratio:
+                    canvas_w = int(round(ch * target_ratio))
+                    try:
+                        pad_color = img.getpixel((0, 0))
+                        if not (isinstance(pad_color, tuple) and len(pad_color) == 3):
+                            pad_color = (255, 255, 255)
+                    except Exception:
+                        pad_color = (255, 255, 255)
+                    canvas = Image.new("RGB", (canvas_w, ch), pad_color)
+                    canvas.paste(img, ((canvas_w - cw) // 2, 0))
+                    img = canvas
+                    # Ограничим итоговую ширину, чтобы файл не разрастался.
+                    if img.width > 900:
+                        r = 900 / img.width
+                        img = img.resize((900, max(1, int(img.height * r))),
+                                         Image.Resampling.LANCZOS)
+
                 out = io.BytesIO()
-                img.save(out, format="JPEG", quality=95)
+                img.save(out, format="JPEG", quality=88)
                 return out.getvalue()
         except Exception as e:
             self.logger.error(f"Ошибка обработки изображения: {e}")
         return None
 
 class BotVirtualAssistant:
-    def __init__(self, model_name: str = "Zero-Lag Pure Self-Learning AI"):
+    """
+    Локальный (офлайн) виртуальный интеллект — работает БЕЗ интернета и внешних API.
+
+    Возможности:
+    • Встроенная база знаний по теме бота (комбо, майнинг, краны, фарм, вывод,
+      кошельки, безопасность, таймеры, курс, реклама).
+    • Понимание вопроса по ключевым словам (нормализация + взвешенное сходство),
+      а не по точному совпадению.
+    • ОБУЧЕНИЕ прямо в диалоге: команда «запомни: вопрос = ответ» добавляет знание
+      и сохраняет его в файл (переживает перезапуск бота).
+    • Память контекста беседы по каждому пользователю.
+    """
+
+    KNOWLEDGE_FILE = "ai_knowledge.json"
+
+    STOP_WORDS = {
+        "и", "в", "во", "не", "что", "он", "на", "я", "с", "со", "как", "а", "то",
+        "все", "она", "так", "его", "но", "да", "ты", "к", "у", "же", "вы", "за",
+        "бы", "по", "только", "ее", "мне", "было", "вот", "от", "меня", "о", "из",
+        "для", "ну", "ли", "если", "или", "это", "эта", "этот", "мой", "есть",
+        "быть", "чем", "the", "a", "to", "is", "of", "мне", "мы", "нам",
+    }
+
+    # Встроенная база: (список ключевых слов/фраз-триггеров, ответ).
+    BASE_KNOWLEDGE = [
+        (["комбо", "combo", "daily combo", "связка", "карты"],
+         "🎯 Комбо (daily combo) — ежедневная связка карт/действий в tap-to-earn играх, "
+         "которая даёт большой бонус монет. Открой «🚀 Меню комбо-игр», выбери игру и "
+         "нажми «Открыть комбо» — увидишь актуальную комбинацию на сегодня."),
+        (["майнинг", "майнер", "добыча", "mining"],
+         "⛏️ Майнинг — пассивная добыча монет в приложении/боте. Раздел «📱 Телефонные "
+         "майнеры»: выбери проект, установи и собирай монеты по таймеру. Регулярно заходи "
+         "и смотри буст-видео, чтобы ускорить добычу."),
+        (["кран", "краны", "faucet", "краник", "фаусет"],
+         "🚰 Крипто-краны — сайты/боты, где дают маленькие суммы крипты за простые действия "
+         "(клики, капча, задания). Смотри «🚰 Крипто-краны». Выводи на сеть с низкой "
+         "комиссией (TON или USDT-TRC20)."),
+        (["ферма", "фарм", "farming", "фармить"],
+         "🌾 Фарм — регулярный сбор наград в игре. Настрой «⏰ Мои таймеры» — бот будет "
+         "напоминать, когда пора зайти собрать монеты и посмотреть видео."),
+        (["вывод", "вывести", "withdraw", "снять"],
+         "💸 Для вывода нужен криптокошелёк. Дождись минимальной суммы в проекте, укажи адрес "
+         "своей сети (TON, TRC20, BTC) и подтверди. ВСЕГДА проверяй сеть — при неверной сети "
+         "средства теряются безвозвратно."),
+        (["кошелек", "кошелёк", "wallet", "safepal", "seed", "фраза"],
+         "👛 Кошелёк хранит твою крипту. НИКОГДА и НИКОМУ не показывай seed-фразу (12/24 слова) "
+         "— это полный доступ к деньгам. Храни её офлайн, на бумаге."),
+        (["безопасность", "скам", "мошенник", "развод", "scam", "обман"],
+         "🛡️ Безопасность: не вводи seed-фразу на сайтах, не переходи по подозрительным ссылкам, "
+         "не отправляй крипту «для разблокировки вывода». Обещают лёгкие деньги за предоплату — "
+         "это скам."),
+        (["таймер", "напоминание", "timer", "напомнить"],
+         "⏰ Открой «⏰ Мои таймеры», выбери игру и интервал — бот будет присылать напоминание "
+         "со ссылкой прямо на игру каждые несколько часов."),
+        (["курс", "цена", "стоимость", "price", "конвертер", "сколько стоит"],
+         "🧮 Раздел «🧮 Крипто-курс»: выбери монету и валюту, введи количество — бот покажет "
+         "актуальную стоимость и тренд за 24 часа."),
+        (["реклама", "рекламу", "ads", "разместить"],
+         "📢 Раздел «📢 Реклама и монетизация» → выбери тариф → способ оплаты (BTC/TON) → "
+         "пришли текст объявления и хэш транзакции. Оплата проверяется автоматически по хэшу."),
+        (["привет", "здравствуй", "хай", "hello", "hi", "здарова", "прив"],
+         "👋 Привет! Я помощник по крипте, майнингу и комбо-играм. Спроси про комбо, фарм, "
+         "краны, вывод средств или безопасность."),
+        (["спасибо", "благодарю", "thanks", "спс"],
+         "🙌 Всегда пожалуйста! Будут вопросы по крипте или играм — пиши."),
+        (["кто ты", "что умеешь", "помощь", "help", "команды", "умеешь"],
+         "🧠 Я локальный ИИ-помощник бота. Объясняю про комбо, майнинг, краны, фарм, вывод и "
+         "безопасность, считаю по твоим числам, советую тактику по играм и проверяю ссылки на "
+         "скам. Меня можно обучать: напиши «запомни: вопрос = ответ»."),
+
+        # --- Криптовалюты и сети ---
+        (["биткоин", "bitcoin", "btc", "битка"],
+         "₿ Bitcoin (BTC) — первая и главная криптовалюта. Медленные подтверждения (~10–30 мин) "
+         "и заметная комиссия сети. Для мелких сумм лучше USDT-TRC20 или TON — быстрее и дешевле."),
+        (["тон", "ton", "toncoin", "the open network"],
+         "💎 TON (Toncoin) — быстрая и дешёвая сеть, тесно связана с Telegram. Удобна для мелких "
+         "выплат и внутриигровых наград. Кошелёк можно открыть прямо в Telegram (@wallet)."),
+        (["usdt", "тизер", "tether", "стейбл", "стейблкоин", "юсдт"],
+         "💵 USDT (Tether) — стейблкоин, ~1$ всегда. Есть в разных сетях: TRC20 (Tron) — дёшево и "
+         "быстро, ERC20 (Ethereum) — дорого. Всегда выбирай ту же сеть, что и получатель!"),
+        (["сеть", "network", "trc20", "erc20", "bep20", "какая сеть"],
+         "🌐 Сеть — это «дорога», по которой идёт перевод. TRC20 (Tron) и TON — дешёвые и быстрые; "
+         "ERC20 (Ethereum) — дорогой. КРИТИЧЕСКИ важно: отправитель и получатель должны быть в "
+         "ОДНОЙ сети, иначе средства теряются навсегда."),
+        (["комиссия", "комисия", "fee", "газ", "gas", "сколько комиссия"],
+         "⛽ Комиссия (fee/gas) — плата сети за перевод. В BTC/ERC20 она высокая, в TON и TRC20 — "
+         "копейки. Для частых мелких выводов выбирай TON или USDT-TRC20."),
+        (["купить крипту", "где купить", "p2p", "обмен", "обменник", "поменять"],
+         "🔁 Купить/обменять крипту можно на биржах (P2P) или в проверенных обменниках. Никогда "
+         "не переводи деньги «частнику» из ЛС без гаранта — это классический развод."),
+
+        # --- Безопасность (углублённо) ---
+        (["seed", "сид", "фраза", "мнемоника", "12 слов", "24 слова"],
+         "🔑 Seed-фраза (12/24 слова) = ПОЛНЫЙ доступ к кошельку. Кто её знает — заберёт все деньги. "
+         "Правила: записать на бумаге, хранить офлайн, НИКОМУ не показывать, НИКУДА не вводить, "
+         "кроме восстановления своего же кошелька. Поддержка НИКОГДА её не спрашивает."),
+        (["2fa", "двухфактор", "двухфакторная", "гугл аутентификатор", "authenticator"],
+         "🔐 2FA (двухфакторная аутентификация) — второй код при входе (Google Authenticator). "
+         "Обязательно включай на биржах и в кошельках. Не используй SMS, если есть приложение-"
+         "аутентификатор — SMS перехватывают."),
+        (["дрейнер", "drainer", "подключить кошелек", "connect wallet", "подпись", "approve"],
+         "🚱 Дрейнер — вредоносный сайт, который просит «подключить кошелёк» или подписать "
+         "транзакцию и опустошает баланс. Не подключай кошелёк к незнакомым сайтам, проверяй, "
+         "что именно подписываешь, отзывай лишние разрешения (revoke)."),
+        (["фейк", "поддержка", "support", "админ пишет", "написал админ", "техподдержка"],
+         "🎭 Настоящая поддержка НИКОГДА не пишет первой в ЛС и не просит seed-фразу, пароль или "
+         "предоплату «за разблокировку». Любой, кто это делает, — мошенник. Проверяй юзернеймы: "
+         "@s_upp0rt и подобные подмены — скам."),
+        (["предоплата", "разблокировка вывода", "комиссия за вывод", "заплати чтобы вывести"],
+         "🚨 Классический развод: «внеси предоплату/комиссию, чтобы разблокировать вывод». "
+         "Настоящий вывод НИКОГДА не требует сначала прислать деньги. Это 100% скам — не плати."),
+        (["холодный кошелек", "аппаратный", "ledger", "trezor", "hardware"],
+         "🧊 Холодный (аппаратный) кошелёк (Ledger/Trezor) хранит ключи офлайн — самый безопасный "
+         "способ для крупных сумм. Для мелких игровых наград достаточно обычного (горячего) "
+         "кошелька, но seed всё равно береги."),
+
+        # --- Заработок и механика бота ---
+        (["заработать", "доход", "сколько можно заработать", "как заработать", "профит"],
+         "💰 Честно: на кранах, комбо и tap-to-earn заработок небольшой и требует регулярности. "
+         "Реальные плюсы — из ретро-дропов (airdrop) и рефералов. Не вкладывай деньги в проекты, "
+         "которые обещают «иксы» — почти всегда это скам."),
+        (["airdrop", "аирдроп", "дроп", "раздача токенов"],
+         "🪂 Airdrop (дроп) — бесплатная раздача токенов за активность в проекте. Легитимные дропы "
+         "НЕ просят seed-фразу и предоплату. Делай задания заранее и жди листинга токена."),
+        (["реферал", "рефка", "реф", "пригласить", "referral"],
+         "👥 Реферальная программа — ты получаешь % от активности приглашённых. Делись своей "
+         "реф-ссылкой из проекта. Это один из самых стабильных способов заработка в таких ботах."),
+        (["минималка", "минимальная сумма", "минимум для вывода", "порог вывода"],
+         "📉 Минималка — наименьшая сумма, которую можно вывести. Пока не накопил её — вывод "
+         "недоступен. Копи, собирай ежедневно и подключай рефералов, чтобы дойти до порога быстрее."),
+        (["не приходит вывод", "вывод завис", "не пришли деньги", "где мои деньги"],
+         "⏳ Если вывод не пришёл: 1) проверь статус транзакции по хэшу в блокчейн-эксплорере; "
+         "2) убедись, что указал ВЕРНУЮ сеть и адрес; 3) иногда сеть перегружена — подожди. "
+         "Если проект просит доплатить «за разблокировку» — это скам."),
+        (["верификация", "капча", "не пройти", "start", "/start", "доступ"],
+         "✅ Чтобы получить доступ к боту, пройди простую капчу по команде /start (реши пример). "
+         "Это защита от ботов и спамеров. После верификации откроется главное меню."),
+        (["скрины выплат", "пруфы", "proofs", "доказательства", "выплаты реальные"],
+         "💎 Раздел «💎 Скрины выплат» показывает реальные скриншоты выводов. Это помогает "
+         "убедиться, что проекты платят. Но всегда перепроверяй актуальность сам."),
+        (["волатильность", "риск", "падение", "просадка", "risk"],
+         "📉 Крипта волатильна — цена может резко падать и расти. Никогда не вкладывай больше, чем "
+         "готов потерять, и не бери кредиты под крипту. Стейблкоины (USDT) не колеблются в цене."),
+        (["телеграм кошелек", "@wallet", "telegram wallet", "кошелек в телеграм"],
+         "📲 В Telegram есть встроенный кошелёк (@wallet) — удобно принимать TON и USDT прямо в "
+         "мессенджере, без отдельного приложения. Подходит для мелких игровых выплат."),
+    ]
+
+    def __init__(self, model_name: str = "Local Self-Learning AI"):
         self.model_name = model_name
-        self.session_memory = {}
-        self.learned_knowledge = []
-        self.is_offline_mode = False
+        self.session_memory = {}          # {chat_id: [последние реплики]}
+        self.is_offline_mode = True
+        self.learned = self._load_learned()   # [{"keys": [...], "answer": "..."}]
+
+    # ---------- Персистентность выученных знаний ----------
+    def _load_learned(self):
+        if os.path.exists(self.KNOWLEDGE_FILE):
+            try:
+                with open(self.KNOWLEDGE_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        return data
+            except Exception as e:
+                logger.error(f"Ошибка загрузки базы знаний ИИ: {e}")
+        return []
+
+    def _save_learned(self):
+        try:
+            with open(self.KNOWLEDGE_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.learned, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"Ошибка сохранения базы знаний ИИ: {e}")
 
     def set_offline_status(self, status: bool):
         self.is_offline_mode = status
 
-    def generate_response(self, userQuery: str, chat_id: int = 0) -> str:
-        query_lower = userQuery.lower().strip()
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        if chat_id not in self.session_memory:
-            self.session_memory[chat_id] = []
-        self.session_memory[chat_id].append(userQuery)
-        if len(self.session_memory[chat_id]) > 5:
-            self.session_memory[chat_id].pop(0)
+    # ---------- Обработка текста ----------
+    def _tokens(self, text: str):
+        words = re.findall(r'[a-zA-Zа-яА-ЯёЁ0-9]+', (text or "").lower())
+        return [w for w in words if w not in self.STOP_WORDS and len(w) > 2]
 
-        words = [w.strip(".,!?«»'\"") for w in userQuery.split() if len(w) > 3]
-        for word in words:
-            stop_words = ["для", "что", "как", "или", "это", "про", "при", "без"]
-            if word not in stop_words and word not in self.learned_knowledge:
-                self.learned_knowledge.append(word.lower())
-                if len(self.learned_knowledge) > 100:
-                    self.learned_knowledge.pop(0)
+    def _score(self, query_tokens, key_tokens) -> float:
+        """Мягкое сходство по пересечению множеств слов."""
+        qset, kset = set(query_tokens), set(key_tokens)
+        if not qset or not kset:
+            return 0.0
+        overlap = len(qset & kset)
+        if overlap == 0:
+            return 0.0
+        return overlap / (len(kset) ** 0.5) + overlap / (len(qset) ** 0.5)
 
-        matched_learned_tags = [item for item in self.learned_knowledge if item in query_lower]
+    def _best_answer(self, query: str):
+        q_tokens = self._tokens(query)
+        q_lower = query.lower()
+        best_answer, best_score = None, 0.0
 
-        gambit_keywords = ["перевод", "транзакция", "деньги", "счет", "вывод", "зарплата", "caf", "карт", "монет", "оплата"]
-        bank_gambit_triggered = any(w in query_lower for w in gambit_keywords)
-        
-        if self.is_offline_mode:
-            security_report = "⚠️ **ВНИМАНИЕ:** Интернет-соединение потеряно. Активирован **Offline Fallback контур** защиты счета."
-        else:
-            security_report = (
-                "🛡️ **Статус «Банковский Гамбит»:** АКТИВЕН. Потоки верифицированы."
-                if bank_gambit_triggered else 
-                f"⚡ **Метрика системы:** 'ghost' mode активен. Усвоено паттернов: {len(self.learned_knowledge)}."
-            )
+        # 1) Выученные знания — приоритет обучению пользователя.
+        for item in self.learned:
+            keys = item.get("keys", [])
+            score = self._score(q_tokens, self._tokens(" ".join(keys)))
+            for k in keys:
+                if k and k.lower() in q_lower:      # прямое попадание фразы
+                    score += 2.0
+            if score > best_score:
+                best_score, best_answer = score, item.get("answer")
 
-        numbers = re.findall(r'\d+', userQuery)
-        math_analysis = ""
-        asset_keywords = [
-            "монет", "золот", "серебр", "металл", "инвест", "сумм", "баланс", "фарм", "проц", 
-            "доллар", "рубл", "унц", "крипт", "токен", "койн", "coin", "token", "btc", "eth", "usdt", "ton", "блокчейн"
-        ]
-        
-        if numbers and any(w in query_lower for w in asset_keywords):
-            val = float(numbers[0])
-            daily_income = val * 0.05
-            math_analysis = f"\n📊 **ИИ-прогноз актива (База: {val}):** Расчет доходности (24ч): `+{daily_income:.2f}`"
+        # 2) Встроенная база знаний.
+        for keys, answer in self.BASE_KNOWLEDGE:
+            score = self._score(q_tokens, self._tokens(" ".join(keys)))
+            for k in keys:
+                if k in q_lower:                    # прямое попадание ключа
+                    score += 1.6
+            if score > best_score:
+                best_score, best_answer = score, answer
 
-        core_object = matched_learned_tags[-1].capitalize() if matched_learned_tags else "Адаптивный модуль"
-        query_hash = abs(hash(userQuery))
-        optimization_index = (query_hash % 75) + 25
+        return best_answer, best_score
 
-        response_text = (
-            f"🧠 **{self.model_name}** `[Time: {current_time}]`:\n\n"
-            f"⚙️ `Объект анализа: [{core_object}] | Оптимизация: {optimization_index}%`\n"
-            f"{math_analysis}\n"
-            f"{security_report}\n\n"
-            f"💡 *Локальная обработка данных завершена.*"
+    # ---------- Обучение прямо в диалоге ----------
+    def _try_learn(self, text: str, is_admin: bool):
+        """
+        Ловит команды обучения: «запомни: вопрос = ответ» (также научи/выучи,
+        разделители = => | — ::). Возвращает текст подтверждения или None.
+        """
+        m = re.match(r'^\s*(?:запомни|научи|выучи|обучись)\b\s*[:\-]?\s*(.+)$',
+                     text, re.IGNORECASE | re.DOTALL)
+        if not m:
+            return None
+        if not is_admin:
+            return ("🔒 Обучать ИИ может только администратор. "
+                    "Задай вопрос обычным текстом — я постараюсь ответить.")
+        body = m.group(1)
+        parts = re.split(r'\s*(?:=>|=|\||—|::)\s*', body, maxsplit=1)
+        if len(parts) < 2 or not parts[0].strip() or not parts[1].strip():
+            return ("⚠️ Формат обучения: «запомни: вопрос = ответ».\n"
+                    "Например: запомни: когда сброс комбо = каждый день в 09:00 UTC")
+        question, answer = parts[0].strip(), parts[1].strip()
+        keys = list(dict.fromkeys(self._tokens(question) + [question.lower()]))
+        self.learned.append({"keys": keys, "answer": answer})
+        self._save_learned()
+        return f"✅ Запомнил! Теперь на «{question}» я отвечу так:\n\n{answer}"
+
+    # ---------- Калькулятор (безопасный, без eval произвольного кода) ----------
+    def _safe_eval(self, expr: str):
+        """Безопасно вычисляет арифметическое выражение через ast (только числа и + - * / // % **)."""
+        try:
+            node = ast.parse(expr, mode="eval")
+        except Exception:
+            return None
+        allowed = (
+            ast.Expression, ast.BinOp, ast.UnaryOp, ast.Constant, ast.Num,
+            ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
+            ast.USub, ast.UAdd,
         )
+        for n in ast.walk(node):
+            if not isinstance(n, allowed):
+                return None
+            if isinstance(n, ast.Constant) and not isinstance(n.value, (int, float)):
+                return None
+            # Защита от гигантских степеней (2**999999 повесит бота).
+            if isinstance(n, ast.BinOp) and isinstance(n.op, ast.Pow):
+                r = n.right
+                if isinstance(r, ast.Constant) and isinstance(r.value, (int, float)) and r.value > 1000:
+                    return None
+        try:
+            val = eval(compile(node, "<calc>", "eval"), {"__builtins__": {}}, {})
+            if isinstance(val, (int, float)) and abs(val) < 1e15:
+                return val
+        except Exception:
+            return None
+        return None
 
-        return response_text
+    def _try_math(self, text: str):
+        """Считает по данным пользователя: проценты, сложный процент (прогноз) и обычную арифметику."""
+        t = text.lower().replace(",", ".").replace("^", "**").replace("×", "*").replace("÷", "/")
+
+        # 1) «X% от Y»
+        m = re.search(r'(\d+(?:\.\d+)?)\s*%\s*(?:от|of|из)\s*(\d+(?:\.\d+)?)', t)
+        if m:
+            x, y = float(m.group(1)), float(m.group(2))
+            return f"🧮 {m.group(1)}% от {m.group(2)} = {x / 100 * y:g}"
+
+        # 2) Прогноз со сложным процентом: старт, ставка%/день, срок в днях.
+        if any(w in t for w in ["день", "дн", "days", "сут"]):
+            m = re.search(
+                r'(\d+(?:\.\d+)?)\D+?(\d+(?:\.\d+)?)\s*%\D+?(\d+(?:\.\d+)?)\s*(?:дн|день|дней|days|сут)',
+                t
+            )
+            if m:
+                base, rate, days = float(m.group(1)), float(m.group(2)), float(m.group(3))
+                if 0 < days <= 3650:
+                    total = base * (1 + rate / 100.0) ** days
+                    profit = total - base
+                    return (
+                        "📈 Прогноз (сложный процент):\n"
+                        f"Старт: {base:g} | ставка: {rate:g}%/день | срок: {int(days)} дн.\n"
+                        f"Итог: ≈ {total:,.2f} (прибыль ≈ {profit:,.2f})\n"
+                        "⚠️ Это оценка: реальные проценты в играх меняются."
+                    )
+
+        # 3) Обычное арифметическое выражение (если есть хотя бы один оператор).
+        math_only = re.sub(r'[^0-9+\-*/().\s]', ' ', t)
+        if re.search(r'\d', math_only) and re.search(r'[-+*/]', math_only):
+            expr = re.sub(r'\s+', ' ', math_only).strip()
+            val = self._safe_eval(expr)
+            if val is not None:
+                return f"🧮 {expr} = {val:g}"
+        return None
+
+    # ---------- Советник по тактике игр ----------
+    def _try_tactic(self, query: str):
+        """Подсказывает тактику по конкретной игре (берёт strategy из конфига)."""
+        q = query.lower()
+        tactic_words = ["тактик", "стратег", "совет", "гайд", "как играть",
+                        "как пройти", "как выигр", "как фарм", "что делать"]
+        wants_tactic = any(w in q for w in tactic_words)
+
+        mgr = globals().get("manager")
+        if mgr is None:
+            return None
+        games = {}
+        try:
+            games.update(mgr.combo_games)
+            games.update(mgr.independent_farms)
+        except Exception:
+            return None
+
+        # Ищем упомянутую в вопросе игру (по имени или ключу).
+        for key, data in games.items():
+            name_words = re.findall(r'[a-zа-яё0-9]+', str(data.get("name", "")).lower())
+            key_words = re.findall(r'[a-z0-9]+', key.lower())
+            if any(len(w) > 2 and w in q for w in name_words + key_words):
+                strat = data.get("strategy")
+                if strat:
+                    return f"🎮 Тактика — {data.get('name', key)}:\n\n{strat}"
+                return (f"🎮 По игре «{data.get('name', key)}» отдельной тактики пока нет. "
+                        "Общий принцип: собирай пассив по таймеру, смотри буст-видео, "
+                        "копи на апгрейды и не пропускай ежедневное комбо.")
+
+        # Тактика вообще, без конкретной игры.
+        if wants_tactic:
+            names = ", ".join(str(d.get("name", k)) for k, d in list(games.items())[:12])
+            return ("🎮 По какой игре нужна тактика? Доступные проекты: " + names + ".\n"
+                    "Общий совет: заходи по таймеру, собирай пассив, смотри буст-видео, "
+                    "копи на апгрейды и обязательно бери ежедневное комбо.")
+        return None
+
+    # ---------- Основной вход ----------
+    def generate_response(self, userQuery: str, chat_id: int = 0) -> str:
+        userQuery = (userQuery or "").strip()
+        if not userQuery:
+            return "🤔 Задай вопрос словами — и я постараюсь помочь."
+
+        # Память диалога (последние 8 реплик пользователя).
+        hist = self.session_memory.setdefault(chat_id, [])
+        hist.append(userQuery)
+        if len(hist) > 8:
+            del hist[:len(hist) - 8]
+
+        # 1) Обучение (запись в базу — только для админа).
+        is_admin = str(chat_id) == str(ADMIN_CHAT_ID)
+        taught = self._try_learn(userQuery, is_admin)
+        if taught:
+            return taught
+
+        # 2) Калькулятор по данным пользователя.
+        calc = self._try_math(userQuery)
+        if calc:
+            return calc
+
+        # 3) Советник по тактике игр.
+        tactic = self._try_tactic(userQuery)
+        if tactic:
+            return tactic
+
+        # 4) База знаний (встроенная + выученная).
+        answer, score = self._best_answer(userQuery)
+        if answer and score >= 1.2:
+            return answer
+
+        # 5) Не знаем — честно говорим и предлагаем научить.
+        topics = "комбо, майнинг, краны, фарм, вывод, кошелёк, безопасность, таймеры, курс, реклама, расчёты, тактика игр"
+        base = (
+            "🤔 Пока не знаю точного ответа на это.\n\n"
+            f"Я умею: отвечать по темам ({topics}), считать по твоим числам "
+            "и советовать тактику по играм."
+        )
+        if is_admin:
+            base += ("\n\nНаучи меня: «запомни: вопрос = ответ», "
+                     "и в следующий раз я отвечу правильно.")
+        return base
 
 
 logger = logging.getLogger(__name__)
@@ -901,6 +1249,338 @@ class UltimateSecurityCore:
         return False, "✅ **Sterile Channel [95]:** Канал абсолютно чист."
 
 
+class LinkScamGuard:
+    """
+    Анализатор ссылок (офлайн): скоринг риска, эвристика скама/фишинга и
+    вредоносных файлов («вирус»). Возвращает вердикт clean/suspicious/scam
+    и аннотированный текст, где опасные ссылки ЗАБЛОКИРОВАНЫ и помечены 🚨.
+    """
+
+    SHORTENERS = {
+        "bit.ly", "tinyurl.com", "cutt.ly", "t.co", "is.gd", "goo.gl", "ow.ly",
+        "rb.gy", "shorturl.at", "clck.ru", "vk.cc", "tiny.cc", "rebrand.ly", "surl.li",
+    }
+    SUSPICIOUS_TLDS = (
+        ".xyz", ".top", ".cc", ".cfd", ".tk", ".ml", ".gq", ".ga", ".click", ".link",
+        ".live", ".online", ".site", ".club", ".rest", ".buzz", ".monster", ".lol",
+        ".sbs", ".autos", ".cyou", ".quest", ".bond",
+    )
+    MALWARE_EXT = (".exe", ".apk", ".scr", ".bat", ".msi", ".dll", ".jar", ".vbs", ".cmd", ".apk")
+    SCAM_URL_WORDS = (
+        "airdrop", "claim", "free", "bonus", "giveaway", "double", "verify", "connect",
+        "wallet", "seed", "drain", "mint", "presale", "gift", "reward", "unlock",
+        "recovery", "validate", "халяв", "бонус", "розыгрыш", "подарок", "кошел", "верифи",
+    )
+    SCAM_FILE = "scam_domains.txt"
+
+    def __init__(self, phishing_domains=None, ghost_domains=None, scam_patterns=None, blacklist=None):
+        self.phishing_domains = [str(d).lower() for d in (phishing_domains or [])]
+        self.ghost_domains = [str(d).lower() for d in (ghost_domains or [])]
+        self.scam_patterns = scam_patterns or []
+        self.blacklist_core = [str(d).lower() for d in (blacklist or [])]
+        self.scam_domains = self._load_scam_domains()
+
+    # ---- Чёрный список доменов (обучаемый админом) ----
+    def _load_scam_domains(self):
+        s = set()
+        if os.path.exists(self.SCAM_FILE):
+            try:
+                with open(self.SCAM_FILE, "r", encoding="utf-8") as f:
+                    for line in f:
+                        d = line.strip().lower()
+                        if d:
+                            s.add(d)
+            except Exception as e:
+                logger.error(f"Ошибка загрузки scam_domains: {e}")
+        return s
+
+    def add_scam_domain(self, domain: str) -> bool:
+        d = (domain or "").strip().lower()
+        d = re.sub(r'^https?://', '', d).split("/")[0].split("?")[0]
+        if not d or "." not in d:
+            return False
+        self.scam_domains.add(d)
+        try:
+            with open(self.SCAM_FILE, "a", encoding="utf-8") as f:
+                f.write(d + "\n")
+        except Exception as e:
+            logger.error(f"Ошибка сохранения scam-домена: {e}")
+        return True
+
+    @staticmethod
+    def _entropy(s: str) -> float:
+        if not s:
+            return 0.0
+        probs = [s.count(c) / len(s) for c in set(s)]
+        return -sum(p * math.log2(p) for p in probs)
+
+    def _score_url(self, url: str):
+        reasons, score = [], 0
+        try:
+            parsed = urllib.parse.urlparse(url if "//" in url else "http://" + url)
+        except Exception:
+            return 40, ["Не удалось разобрать ссылку"]
+
+        host = (parsed.netloc or "").lower()
+        if "@" in host:                       # трюк с userinfo: real@fake
+            score += 50
+            reasons.append("Скрытый адрес через символ '@'")
+            host = host.split("@")[-1]
+        host_only = host.split(":")[0]
+        full = url.lower()
+        path = (parsed.path or "").lower()
+
+        # Чёрные списки
+        if any(host_only == d or host_only.endswith("." + d) or d in host_only for d in self.scam_domains):
+            score += 100
+            reasons.append("Домен в чёрном списке скама")
+        if any(d and d in host_only for d in self.blacklist_core):
+            score += 90
+            reasons.append("Домен в базовом блэклисте")
+        if any(d and d in full for d in self.phishing_domains):
+            score += 90
+            reasons.append("Совпадение с фишинг-базой")
+        if any(g and (host_only.endswith(g) or g in host_only) for g in self.ghost_domains):
+            score += 60
+            reasons.append("Подозрительный домен/префикс (ghost)")
+
+        # Эвристики
+        if re.match(r'^\d{1,3}(\.\d{1,3}){3}$', host_only):
+            score += 45
+            reasons.append("IP-адрес вместо домена")
+        if "xn--" in host_only:
+            score += 45
+            reasons.append("Punycode (возможен омоглиф-обман)")
+        if re.search(r'[а-яё]', host_only):
+            score += 50
+            reasons.append("Кириллица в домене (омоглиф-атака)")
+        if any(host_only.endswith(t) for t in self.SUSPICIOUS_TLDS):
+            score += 30
+            reasons.append("Подозрительная доменная зона")
+        if host_only in self.SHORTENERS:
+            score += 30
+            reasons.append("Сокращатель ссылок (скрыт реальный адрес)")
+        if host_only.count(".") >= 3:
+            score += 20
+            reasons.append("Слишком много поддоменов")
+        main = host_only.split(".")[0]
+        if len(main) >= 10 and self._entropy(main) > 3.6:
+            score += 25
+            reasons.append("Случайно сгенерированный (DGA) домен")
+        if any(full.split("?")[0].endswith(ext) for ext in self.MALWARE_EXT) or any(ext in path for ext in self.MALWARE_EXT):
+            score += 50
+            reasons.append("Прямая загрузка файла (возможен вирус)")
+        hits = [w for w in self.SCAM_URL_WORDS if w in full]
+        if hits:
+            score += min(40, 12 * len(hits))
+            reasons.append("Скам-слова в ссылке: " + ", ".join(hits[:4]))
+        for pat in self.scam_patterns:
+            try:
+                if re.search(pat, full, re.IGNORECASE):
+                    score += 25
+                    reasons.append("Совпадение со скам-паттерном")
+                    break
+            except Exception:
+                continue
+
+        return min(score, 100), reasons
+
+    @staticmethod
+    def _verdict(score: int) -> str:
+        if score >= 90:
+            return "scam"
+        if score >= 45:
+            return "suspicious"
+        return "clean"
+
+    def analyze(self, text: str):
+        text = text or ""
+        md = re.findall(r'\[([^\]]+)\]\((https?://[^\s)]+)\)', text)
+        urls = re.findall(r'(?:https?://|www\.)[^\s<>()\]]+', text)
+        urls += re.findall(r'\bt\.me/[^\s<>()\]]+', text, re.IGNORECASE)
+        for _anchor, u in md:
+            urls.append(u)
+
+        seen, links = set(), []
+        for u in urls:
+            u = u.rstrip('.,!?)»"\'')
+            key = u.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            score, reasons = self._score_url(u)
+            for anchor, mu in md:                 # подмена текста ссылки
+                if mu.startswith(u) and "." in anchor and anchor.lower() not in u.lower():
+                    score = min(100, score + 40)
+                    reasons.append("Текст ссылки не совпадает с реальным адресом")
+            links.append({"url": u, "score": score, "verdict": self._verdict(score), "reasons": reasons})
+
+        if not links:
+            return {"links": [], "worst": "clean", "max_score": 0, "message": ""}
+
+        worst = max(links, key=lambda l: l["score"])
+        worst_v = self._verdict(worst["score"])
+        return {
+            "links": links,
+            "worst": worst_v,
+            "max_score": worst["score"],
+            "message": self._build_message(text, links, worst, worst_v),
+        }
+
+    def _annotate(self, text: str, links: list) -> str:
+        out = text
+        for l in links:
+            if l["verdict"] == "scam":
+                out = out.replace(l["url"], "🚨[СКАМ-ССЫЛКА ЗАБЛОКИРОВАНА]")
+            elif l["verdict"] == "suspicious":
+                out = out.replace(l["url"], "⚠️[ПОДОЗРИТЕЛЬНАЯ ССЫЛКА]")
+        return out
+
+    def _build_message(self, text, links, worst, worst_v) -> str:
+        annotated = self._annotate(text, links)
+        reasons = "\n".join(f"• {r}" for r in worst["reasons"][:5]) or "• эвристика безопасности"
+        if worst_v == "scam":
+            return (
+                f"🚨 ВНИМАНИЕ: ссылка заблокирована как СКАМ! (риск {worst['score']}/100)\n\n"
+                f"{annotated}\n\nПричины:\n{reasons}\n\n"
+                "❌ Не переходите по ссылке, не подключайте кошелёк и НЕ вводите seed-фразу."
+            )
+        if worst_v == "suspicious":
+            return (
+                f"⚠️ Подозрительная ссылка (риск {worst['score']}/100). Будьте осторожны.\n\n"
+                f"{annotated}\n\nПричины:\n{reasons}"
+            )
+        return (
+            f"🔗 Явных признаков скама не найдено (риск {worst['score']}/100).\n"
+            "Всё равно проверяйте проект сами и никогда не вводите seed-фразу."
+        )
+
+
+class AccountGuard:
+    """
+    Проверка Telegram-аккаунта пользователя + чёрный список (спамеры/хакеры/скамеры).
+
+    Что умеет офлайн через Bot API:
+    • блокирует ботов;
+    • ловит скам-юзернеймы (@s_upp0rt и т.п.) и поддельные имена (ссылки/омоглифы);
+    • оценивает риск свежих/пустых аккаунтов;
+    • копит «страйки» за флуд и банит рецидивистов (бан хранится в файле).
+
+    Ограничение: официальный флаг «scam/fake» Telegram ботам недоступен —
+    поэтому используются эвристики.
+    """
+
+    BAN_FILE = "banned_users.txt"
+    # Порог «свежести» аккаунта по ID (эвристика: чем выше ID, тем новее аккаунт).
+    NEW_ACCOUNT_ID = 7_500_000_000
+
+    def __init__(self, bot_instance, scam_username_markers=None, admin_chat_id=None):
+        self.bot = bot_instance
+        self.scam_markers = [str(m).lower() for m in (scam_username_markers or [])]
+        self.admin_chat_id = admin_chat_id
+        self.banned = self._load_banned()
+        self.strikes = {}
+
+    # ---- Чёрный список ----
+    def _load_banned(self):
+        s = set()
+        if os.path.exists(self.BAN_FILE):
+            try:
+                with open(self.BAN_FILE, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.isdigit():
+                            s.add(int(line))
+            except Exception as e:
+                logger.error(f"Ошибка загрузки banned_users: {e}")
+        return s
+
+    def is_banned(self, user_id) -> bool:
+        try:
+            return int(user_id) in self.banned
+        except Exception:
+            return False
+
+    def ban(self, user_id, reason: str = ""):
+        try:
+            user_id = int(user_id)
+        except Exception:
+            return
+        if user_id in self.banned:
+            return
+        self.banned.add(user_id)
+        try:
+            with open(self.BAN_FILE, "a", encoding="utf-8") as f:
+                f.write(f"{user_id}\n")
+        except Exception as e:
+            logger.error(f"Ошибка сохранения бана: {e}")
+        logger.warning(Fore.RED + f"🚫 Забанен пользователь {user_id}: {reason}")
+
+    def unban(self, user_id):
+        try:
+            user_id = int(user_id)
+        except Exception:
+            return
+        if user_id in self.banned:
+            self.banned.discard(user_id)
+            try:
+                with open(self.BAN_FILE, "w", encoding="utf-8") as f:
+                    for uid in self.banned:
+                        f.write(f"{uid}\n")
+            except Exception as e:
+                logger.error(f"Ошибка обновления banned_users: {e}")
+
+    def strike(self, user_id, reason: str, limit: int = 3) -> bool:
+        """Добавляет страйк за нарушение; при достижении лимита банит. True = забанен."""
+        try:
+            user_id = int(user_id)
+        except Exception:
+            return False
+        self.strikes[user_id] = self.strikes.get(user_id, 0) + 1
+        if self.strikes[user_id] >= limit:
+            self.ban(user_id, reason)
+            return True
+        return False
+
+    # ---- Анализ аккаунта ----
+    @staticmethod
+    def _full_name(user) -> str:
+        return f"{getattr(user, 'first_name', '') or ''} {getattr(user, 'last_name', '') or ''}".strip()
+
+    def hard_block(self, user):
+        """Жёсткие блокировки. Возвращает (blocked: bool, reason: str)."""
+        if getattr(user, "is_bot", False):
+            return True, "аккаунт является ботом"
+
+        uname = (getattr(user, "username", "") or "").lower()
+        for m in self.scam_markers:
+            if m and m in uname:
+                return True, f"скам-маркер в юзернейме ({m})"
+
+        name = self._full_name(user).lower()
+        # Ссылки/приглашения прямо в имени профиля — типичный спам/скам.
+        if re.search(r'(https?://|t\.me/|@[a-z0-9_]{4,})', name):
+            return True, "ссылка/приглашение в имени профиля"
+        # Смешение кириллицы и латиницы в одном слове имени (омоглиф-подделка).
+        for w in name.split():
+            if len(w) >= 4 and re.search(r'[а-яё]', w) and re.search(r'[a-z]', w):
+                return True, "смешение алфавитов в имени (омоглиф)"
+        return False, ""
+
+    def risk(self, user):
+        """Мягкая оценка риска (0-100) для доп. подозрения (без блокировки)."""
+        score, reasons = 0, []
+        if not getattr(user, "username", None):
+            score += 15
+            reasons.append("нет юзернейма")
+        if not getattr(user, "is_premium", False):
+            score += 5
+        uid = getattr(user, "id", 0) or 0
+        if uid > self.NEW_ACCOUNT_ID:
+            score += 25
+            reasons.append("очень новый аккаунт")
+        return score, reasons
+
 
 class MiningComboManager:
     def __init__(self):
@@ -1107,7 +1787,43 @@ class MessageProcessor:
     @staticmethod
     def handle_start(message: types.Message):
         chat_id = message.chat.id
+        user = message.from_user
+
+        # 0) Забаненные (спам/скам/хакеры) — доступ закрыт.
+        if account_guard.is_banned(user.id):
+            try:
+                bot.send_message(chat_id, "🚫 Доступ заблокирован (подозрение на спам/скам).")
+            except Exception:
+                pass
+            return
+
+        # 1) Проверка аккаунта: боты, скам-юзернеймы, поддельные имена (омоглифы/ссылки).
+        blocked, reason = account_guard.hard_block(user)
+        if blocked:
+            account_guard.ban(user.id, reason)
+            try:
+                bot.send_message(chat_id, f"🚫 Доступ запрещён: {reason}.")
+            except Exception:
+                pass
+            try:
+                # parse_mode=None: имя/юзернейм пользователя не должны ломать/инъектировать разметку.
+                send_message_direct(ADMIN_CHAT_ID, f"🚫 Заблокирован аккаунт {user.id} (@{user.username}): {reason}", None, None)
+            except Exception:
+                pass
+            return
+
         if chat_id not in verified_users:
+            # Подозрительный, но не заблокированный аккаунт — уведомим админа.
+            rscore, rreasons = account_guard.risk(user)
+            if rscore >= 30:
+                try:
+                    send_message_direct(
+                        ADMIN_CHAT_ID,
+                        f"⚠️ Подозрительный вход {user.id} (@{user.username}), риск {rscore}: {', '.join(rreasons)}",
+                        None, None
+                    )
+                except Exception:
+                    pass
             question, markup = generate_advanced_captcha(chat_id)
             bot.send_message(chat_id, f"🛡️ **Проверка на человека**\n\n🧠 *{question}*", reply_markup=markup, parse_mode="Markdown")
             return
@@ -1655,6 +2371,8 @@ class MessageInputHandler:
     def handle_photo(self, message: types.Message):
         """Обработка входящих фотографий (профиль, выплаты)."""
         chat_id = message.chat.id
+        if account_guard.is_banned(message.from_user.id):
+            return
         if chat_id not in self.verified_users:
             return
 
@@ -1689,7 +2407,25 @@ class MessageInputHandler:
         """Универсальный обработчик входящих текстовых сообщений и состояний диалога."""
         chat_id = message.chat.id
         raw_text = message.text.strip()
-        
+
+        uid = message.from_user.id
+        # Забаненных не обслуживаем.
+        if account_guard.is_banned(uid):
+            return
+        # Анти-спам: резкий флуд → страйк, при рецидиве — бан.
+        if sec_guard.check_brute_force(chat_id):
+            if account_guard.strike(uid, "спам/флуд сообщениями"):
+                try:
+                    self.sender.send_message_direct(chat_id, "🚫 Вы заблокированы за спам.")
+                except Exception:
+                    pass
+            else:
+                try:
+                    self.sender.send_message_direct(chat_id, "⏳ Слишком много сообщений подряд. Помедленнее, пожалуйста.")
+                except Exception:
+                    pass
+            return
+
         if chat_id not in self.verified_users:
             self.sender.send_message_direct(chat_id, "⚠️ Пожалуйста, пройдите верификацию через /start.")
             return
@@ -1839,10 +2575,18 @@ class MessageInputHandler:
                 self.sender.send_message_direct(chat_id, "⚠️ Неверный формат! Введите число (например: `2.5`):", parse_mode="Markdown")
                 return
 
-        # 4. Общая проверка безопасности трафика
+        # 4. Проверка ссылок (скоринг: скам / фишинг / вирус) + общая безопасность.
         text = self.security.sanitize_input(raw_text)
+
+        # Если в сообщении есть ссылки — анализируем и показываем вердикт.
+        # Скам/подозрительные ссылки блокируются и помечаются 🚨/⚠️.
+        link_verdict = link_guard.analyze(raw_text)
+        if link_verdict["links"]:
+            self.sender.send_message_direct(chat_id, link_verdict["message"], parse_mode=None)
+            return
+
         is_threat, security_msg = self.security.analyze_traffic(text)
-        if is_threat or any(x in text.lower() for x in ["http://", "https://", "t.me/", "@"]):
+        if is_threat or any(x in text.lower() for x in ["t.me/", "@"]):
             self.sender.send_message_direct(chat_id, security_msg)
             return
 
@@ -1922,7 +2666,6 @@ class CallbackQueryHandler:
         self.main_menu_buttons = main_menu_buttons
         
     def handle_callbacks(self, call: types.CallbackQuery):
-        print(f"DEBUG: Нажата кнопка с данными: {call.data}")
         """Основной метод маршрутизации и обработки callback-данных."""
         
         # 1. Мгновенно гасим анимацию загрузки кнопки
@@ -1939,6 +2682,11 @@ class CallbackQueryHandler:
                 
             chat_id = call.message.chat.id
             data = call.data
+
+            # Забаненных не обслуживаем.
+            if account_guard.is_banned(call.from_user.id):
+                return
+
             if data.startswith("advcap_"):
                 if data.replace("advcap_", "") == self.advanced_captchas.get(chat_id):
                     save_verified_user(chat_id)
@@ -2402,9 +3150,55 @@ class AIChatHandler:
             self.ai_chat_active.discard(user_id)
             return
 
+        # Забаненных не обслуживаем.
+        if account_guard.is_banned(chat_id):
+            return
+
+        # Админские команды модерации.
+        if str(chat_id) == str(ADMIN_CHAT_ID):
+            m = re.match(r'^\s*разбан\s+(\d+)\s*$', text, re.IGNORECASE)
+            if m:
+                account_guard.unban(int(m.group(1)))
+                try:
+                    self.bot.reply_to(message, f"✅ Пользователь {m.group(1)} разбанен.")
+                except Exception:
+                    pass
+                return
+            m = re.match(r'^\s*бан\s+юзер\s+(\d+)\s*$', text, re.IGNORECASE)
+            if m:
+                account_guard.ban(int(m.group(1)), "ручной бан админом")
+                try:
+                    self.bot.reply_to(message, f"🚫 Пользователь {m.group(1)} забанен.")
+                except Exception:
+                    pass
+                return
+            m = re.match(r'^\s*(?:бан|скам|scam|blacklist)\s+(\S+)\s*$', text, re.IGNORECASE)
+            if m:
+                ok = link_guard.add_scam_domain(m.group(1))
+                try:
+                    self.bot.reply_to(
+                        message,
+                        f"🚫 Домен добавлен в чёрный список скама: {m.group(1)}"
+                        if ok else "⚠️ Это не похоже на домен. Пример: бан scam-site.top"
+                    )
+                except Exception:
+                    pass
+                return
+
+        # Проверка ссылок ПЕРЕД ответом ИИ: скам/подозрительные — блокируем и помечаем.
+        link_verdict = link_guard.analyze(text)
+        if link_verdict["links"] and link_verdict["worst"] in ("scam", "suspicious"):
+            try:
+                self.bot.reply_to(message, link_verdict["message"])
+            except Exception:
+                pass
+            return
+
         try:
             ai_response = self.ai.generate_response(text, chat_id=chat_id)
-            self.bot.reply_to(message, ai_response, parse_mode="Markdown")
+            # Без Markdown: ответы ИИ — обычный текст, чтобы произвольные
+            # символы (в т.ч. в выученных знаниях) не ломали отправку.
+            self.bot.reply_to(message, ai_response)
             # 6. Передача запроса ИИ-ассистенту
             #self.sender.send_message_direct(chat_id, ai_response, parse_mode="Markdown", reply_markup=MenuManager.get_reply_keyboard(self.main_menu_buttons))
 
@@ -2847,8 +3641,12 @@ ai_assistant = BotVirtualAssistant()
 # Инициализация усиленного защитного модуля
 sec_guard = AdvancedSecurityGuard()
 security_core = UltimateSecurityCore()
+# Анализатор ссылок (скам/фишинг/вирус) — используется в чате ИИ и в общих сообщениях.
+link_guard = LinkScamGuard(PHISHING_DOMAINS, GHOST_MODE_DOMAINS, SCAM_PATTERNS, NETWORK_CORE_BLACKLIST)
+# Страж аккаунтов: боты, скам-имена, спам-флуд + чёрный список пользователей.
+account_guard = AccountGuard(bot, SCAM_USERNAME_MARKERS, ADMIN_CHAT_ID)
 # Инициализация менеджеров
-image_handler = ImageHandler(logger, target_width=800)
+image_handler = ImageHandler(logger, target_width=600)
 manager = MiningComboManager()
 # Инициализация менеджера и всех игровых модулей фермы
 game_farm_manager = BotGameFarmManager()
