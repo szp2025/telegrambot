@@ -1988,6 +1988,8 @@ class ProfileManager:
         for nm in names:
             mark = "✅" if nm in my_stats else "➕"
             keyboard_markup.row(types.InlineKeyboardButton(text=f"{mark} {nm}", callback_data=f"profgame_{nm}"))
+        # Возможность добавить игру ВНЕ списка (ручной ввод «Название | Уровень»).
+        keyboard_markup.row(types.InlineKeyboardButton(text="➕ Другая игра (вручную)", callback_data="prof_add"))
         keyboard_markup.row(types.InlineKeyboardButton(text="📜 История комбо", callback_data="combo_hist"))
         keyboard_markup.row(MenuManager.get_ai_button())
 
