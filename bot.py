@@ -1832,7 +1832,7 @@ class CallbackQueryHandler:
         user_game_timers_storage: dict,
         user_calc_states_storage: dict,
         pending_ad_orders_storage: dict,
-        active_ads_storage: dict,
+        ads_manager,  # <--- Заменили active_ads_storage: dict на ads_manager
         user_reviews_storage: list,
         advanced_captchas_storage: dict,
         active_farms_state_storage: dict,
@@ -1846,11 +1846,11 @@ class CallbackQueryHandler:
         self.sender = sender_instance
         self.manager = manager_instance
         self.verified_users = verified_users_storage
-        self.user_input_states = user_input_states_storage
-        self.user_game_timers = user_game_timers_storage
-        self.user_calc_states = user_calc_states_storage
+        self.user_input = user_input_states_storage
+        self.game_timers = user_game_timers_storage
+        self.calc_states = user_calc_states_storage
         self.pending_ad_orders = pending_ad_orders_storage
-        self.active_ads = active_ads_storage
+        self.ads_manager = ads_manager  # <--- Сохраняем менеджер в атрибут класса
         self.user_reviews = user_reviews_storage
         self.advanced_captchas = advanced_captchas_storage
         self.active_farms_state = active_farms_state_storage
@@ -1858,7 +1858,7 @@ class CallbackQueryHandler:
         self.admin_chat_id = admin_chat_id
         self.target_game_bot = target_game_bot
         self.main_menu_buttons = main_menu_buttons
-
+        
     def handle_callbacks(self, call: types.CallbackQuery):
         """Основной метод маршрутизации и обработки callback-данных."""
         # 1. Мгновенно гасим анимацию загрузки кнопки (защита от таймаута Telegram)
@@ -2415,7 +2415,7 @@ def handle_text_all(message: types.Message):
 callback_query_handler = CallbackQueryHandler(
     bot, logger, sender, manager,
     verified_users, user_input_states, user_game_timers, user_calc_states,
-    pending_ad_orders, ads_manager, user_reviews_storage, advanced_captchas, # Заменено active_ads_storage на ads_manager
+    pending_ad_orders, ads_manager, user_reviews_storage, advanced_captchas,
     active_farms_state, active_farm_threads, ADMIN_CHAT_ID, TARGET_GAME_BOT, MAIN_MENU_BUTTONS
 )
 
