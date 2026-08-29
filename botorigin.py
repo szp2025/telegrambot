@@ -1806,7 +1806,7 @@ def handle_callbacks(call: types.CallbackQuery):
              except Exception:
                  pass
          return
-        
+                
         # Секция отзывов
         if data == "review_add":
             user_input_states[chat_id] = {"step": "waiting_review_text"}
