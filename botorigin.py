@@ -1795,7 +1795,7 @@ def handle_callbacks(call: types.CallbackQuery):
                  bot.edit_message_text(f"✅ **Заказ успешно подтвержден и запущен!** (Клиент: `{target_user_id}`)", chat_id, call.message.message_id, parse_mode="Markdown")
              except Exception:
                  pass
-         else:
+        else:
              send_message_direct(
                  target_user_id,
                  "❌ **Оплата не подтверждена администратором.** Свяжитесь с поддержкой для уточнения деталей.",
