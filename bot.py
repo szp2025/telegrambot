@@ -1024,40 +1024,46 @@ class MiningComboManager:
         
 manager = MiningComboManager()
 
-def get_main_keyboard():
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    # Создаем кнопки из списка в конфиге в один подход
-    buttons = [types.KeyboardButton(btn_text) for btn_text in MAIN_MENU_BUTTONS]
-    markup.add(*buttons)
-    return markup
+class MenuManager:
+    """Универсальный менеджер клавиатур для генерации Reply и Inline интерфейсов."""
 
-def get_profile_keyboard():
-    keyboard = types.InlineKeyboardMarkup()
-    
-    # Ваши существующие строки кнопок из PROFILE_KEYBOARD_DATA
-    for row in PROFILE_KEYBOARD_DATA:
-        buttons = [types.InlineKeyboardButton(text=text, callback_data=cb) for text, cb in row]
-        keyboard.row(*buttons)
+    @staticmethod
+    def get_reply_keyboard(buttons_data: list, row_width: int = 2) -> types.ReplyKeyboardMarkup:
+        """Универсальная генерация обычной Reply-клавиатуры из списка строк."""
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=row_width)
+        buttons = [types.KeyboardButton(btn_text) for btn_text in buttons_data]
+        markup.add(*buttons)
+        return markup
+
+    @staticmethod
+    def get_inline_keyboard(rows_data: list, extra_button=None) -> types.InlineKeyboardMarkup:
+        """
+        Универсальная генерация Inline-клавиатуры по матрице строк 
+        с опциональным добавлением дополнительной кнопки (или строки) вниз.
+        """
+        keyboard = types.InlineKeyboardMarkup()
         
-    # Добавляем кнопку Виртуального Интеллекта отдельной строкой в самый низ
-    ai_button = types.InlineKeyboardButton(
-        text="🧠 Задать вопрос Виртуальному Интеллекту", 
-        callback_data="start_ai_chat"
-    )
-    keyboard.row(ai_button)
-    
-    return keyboard
+        for row in rows_data:
+            buttons = [types.InlineKeyboardButton(text=text, callback_data=cb) for text, cb in row]
+            keyboard.row(*buttons)
+            
+        if extra_button:
+            if isinstance(extra_button, list):
+                buttons = [types.InlineKeyboardButton(text=t, callback_data=c) for t, c in extra_button]
+                keyboard.row(*buttons)
+            else:
+                keyboard.row(extra_button)
+                
+        return keyboard
 
-# Функция генерации клавиатуры с кнопкой вызова ИИ для telebot
-def get_ai_profile_keyboard() -> types.InlineKeyboardMarkup:
-    keyboard = types.InlineKeyboardMarkup()
-    ai_button = types.InlineKeyboardButton(
-        text="🧠 Задать вопрос Виртуальному Интеллекту", 
-        callback_data="start_ai_chat"
-    )
-    keyboard.add(ai_button)
-    return keyboard
-
+    @staticmethod
+    def get_ai_button() -> types.InlineKeyboardButton:
+        """Переиспользуемая кнопка вызова ИИ-ассистента."""
+        return types.InlineKeyboardButton(
+            text="🧠 Задать вопрос Виртуальному Интеллекту", 
+            callback_data="start_ai_chat"
+        )
+        
 
 # Обработчик нажатия на кнопку "Задать вопрос Виртуальному Интеллекту"
 @bot.callback_query_handler(func=lambda call: call.data == "start_ai_chat")
@@ -1336,10 +1342,19 @@ def show_user_profile(chat_id):
                     send_message_direct(chat_id, caption, parse_mode="Markdown")
             else:
                 send_message_direct(chat_id, caption, parse_mode="Markdown")
-        send_message_direct(chat_id, "⚙️ Управление профилем:", reply_markup=get_profile_keyboard())
+                send_message_direct(
+            chat_id, 
+            "⚙️ Управление профилем:", 
+            reply_markup=MenuManager.get_inline_keyboard(PROFILE_KEYBOARD_DATA, extra_button=MenuManager.get_ai_button())
+        ))
     else:
         profile_text += "_Список игр пуст. Нажмите кнопку ниже, чтобы добавить свой прогресс и скриншот._"
-        send_message_direct(chat_id, profile_text, reply_markup=get_profile_keyboard(), parse_mode="Markdown")
+        send_message_direct(
+    chat_id, 
+    profile_text, 
+    reply_markup=MenuManager.get_inline_keyboard(PROFILE_KEYBOARD_DATA, extra_button=MenuManager.get_ai_button()), 
+    parse_mode="Markdown"
+)
 
 def daily_auto_checker():
     last_reset_day = None
@@ -1452,7 +1467,7 @@ def handle_start(message: types.Message):
         bot.send_message(chat_id, f"🛡️ **Проверка на человека**\n\n🧠 *{question}*", reply_markup=markup, parse_mode="Markdown")
         return
     send_message_direct(chat_id, WELCOME_MESSAGES["zero_lag"])
-    send_message_direct(chat_id, WELCOME_MESSAGES["main_menu"], reply_markup=get_main_keyboard())
+    send_message_direct(chat_id, WELCOME_MESSAGES["main_menu"], reply_markup=MenuManager.get_reply_keyboard(MAIN_MENU_BUTTONS))
 
 @bot.message_handler(commands=BOT_COMMANDS_LIST)
 @bot.message_handler(func=lambda msg: msg.text in MAIN_MENU_BUTTONS)
@@ -1534,7 +1549,12 @@ def handle_photo(message: types.Message):
             user_game_stats[chat_id] = {}
         user_game_stats[chat_id][state_data["game"]] = {"stat": state_data["stat"], "photo": message.photo[-1].file_id}
         user_input_states.pop(chat_id, None)
-        bot.reply_to(message, f"✅ Игра *{state_data['game']}* добавлена в профиль!", reply_markup=get_profile_keyboard(), parse_mode="Markdown")
+        bot.reply_to(
+    message, 
+    f"✅ Игра *{state_data['game']}* добавлена в профиль!", 
+    reply_markup=MenuManager.get_inline_keyboard(PROFILE_KEYBOARD_DATA, extra_button=MenuManager.get_ai_button()), 
+    parse_mode="Markdown"
+)
         return
     if chat_id == ADMIN_CHAT_ID:
         cloud_proofs.append(message.photo[-1].file_id)
@@ -1673,7 +1693,7 @@ def handle_text_all(message: types.Message):
 
    # Если пользователь пишет текст, а калькулятор неактивен — передаем запрос нашему ИИ!    
     ai_response = ai_assistant.generate_response(text, chat_id=chat_id)
-    send_message_direct(chat_id, ai_response, parse_mode="Markdown", reply_markup=get_main_keyboard())
+    send_message_direct(chat_id, ai_response, parse_mode="Markdown", reply_markup=MenuManager.get_reply_keyboard(MAIN_MENU_BUTTONS))
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call: types.CallbackQuery):
@@ -1694,7 +1714,7 @@ def handle_callbacks(call: types.CallbackQuery):
                 advanced_captchas.pop(chat_id, None)
                 try: bot.edit_message_text("✅ **Доступ открыт!**", chat_id, call.message.message_id, parse_mode="Markdown")
                 except: pass
-                send_message_direct(chat_id, "👇 Главное меню:", reply_markup=get_main_keyboard())
+                send_message_direct(chat_id, "👇 Главное меню:", reply_markup=MenuManager.get_reply_keyboard(MAIN_MENU_BUTTONS))
             else:
                 q, m = generate_advanced_captcha(chat_id)
                 try: bot.answer_callback_query(call.id, "❌ Неверно!", show_alert=True)
