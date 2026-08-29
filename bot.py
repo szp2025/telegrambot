@@ -1459,20 +1459,21 @@ class BackgroundSchedulerManager:
                         continue
 
                     try:
-                        img_url, date_text = self.manager.fetch_combo(key)
-                        if img_url:
-                            img_bytes = self.manager.resize_img(img_url, game_key=key)
-                            if img_bytes:
-                                self.manager.found_today[key] = True
-                                self.logger.info(f"✅ [AUTO-CHECKER] Картинка для {key} успешно найдена и зафиксирована!")
-                                
-                                caption = f"🎯 **[Авто-комбо] {info.get('name', key)}**\n📅 `{date_text}`"
-                                try:
-                                    self.bot.send_photo(self.admin_chat_id, photo=img_bytes, caption=caption[:1024], parse_mode="Markdown")
-                                except Exception as e:
-                                    self.logger.error(f"Ошибка отправки авто-фото администратору: {e}")
-                    except Exception as e:
-                        self.logger.error(f"Ошибка авто-проверки игры {key}: {e}")
+    img_url, date_text = self.manager.fetch_combo(key)
+    if img_url:
+        # Вызываем resize_img у нашего отдельного класса image_handler
+        img_bytes = image_handler.resize_img(img_url)
+        if img_bytes:
+            self.manager.found_today[key] = True
+            self.logger.info(f"✅ [AUTO-CHECKER] Картинка для {key} успешно найдена и зафиксирована!")
+            
+            caption = f"🎯 **[Авто-комбо] {info.get('name', key)}**\n📅 `{date_text}`"
+            try:
+                self.bot.send_photo(self.admin_chat_id, photo=img_bytes, caption=caption[:1024], parse_mode="Markdown")
+            except Exception as e:
+                self.logger.error(f"Ошибка отправки авто-фото администратору: {e}")
+except Exception as e:
+    self.logger.error(f"Ошибка авто-проверки игры {key}: {e}")
 
                 run_check_now = False
 
@@ -1608,7 +1609,7 @@ class MenuTextProcessor:
             self.sender.send_message_direct(chat_id, "🔍 **Запущен массовый сбор комбо...**")
             for key, info in self.manager.combo_games.items():
                 img_url, date_text = self.manager.fetch_combo(key)
-                img_bytes = self.manager.resize_img(img_url, game_key=key) if img_url else None
+                img_bytes = image_handler.resize_img(img_url) if img_url else None
                 send_combo_result(chat_id, info, img_bytes, date_text)
         elif text in ["🧮 Крипто-курс", "/calc"]:
             self.sender.send_message_direct(chat_id, "🧮 **Выберите криптовалюту:**", reply_markup=get_crypto_currency_keyboard())
@@ -2144,7 +2145,7 @@ class CallbackQueryHandler:
                     except:
                         pass
                     img_url, date_text = self.manager.fetch_combo(key)
-                    send_combo_result(chat_id, self.manager.combo_games[key], self.manager.resize_img(img_url, key) if img_url else None, date_text)
+                    send_combo_result(chat_id, self.manager.combo_games[key], image_handler.resize_img(img_url) if img_url else None, date_text)
                 return
 
             # Управление Doodle Jump (динамическое переключение)
