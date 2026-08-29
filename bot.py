@@ -9,7 +9,7 @@ import requests
 from bs4 import BeautifulSoup
 from PIL import Image
 import telebot
-from telebot import types
+from telebot import types, apihelper
 from PIL import Image
 import urllib.request
 import ast
@@ -61,6 +61,28 @@ from private_config import (
     SAFEPAL_WALLETS,
     TOKEN,
 )
+
+
+# Настройка таймаутов, чтобы бот не зависал при медленном ответе Telegram API
+apihelper.CONNECT_TIMEOUT = 10
+apihelper.READ_TIMEOUT = 10
+
+# Функция или метод бесконечного цикла проверки
+def start_auto_checker_thread(checker_instance):
+    while True:
+        try:
+            checker_instance.run_loop_step() # ваш метод с циклом и time.sleep(600)
+        except Exception as e:
+            logger.error(f"Ошибка в фоновом потоке чекера: {e}")
+        time.sleep(10)
+
+# Запуск перед стартом polling бота:
+checker_thread = threading.Thread(target=start_auto_checker_thread, args=(your_checker_object,), daemon=True)
+checker_thread.start()
+
+# Запуск самого бота
+bot.infinity_polling()
+
 
 # Целевой бот для авто-фермы Doodle Jump
 TARGET_GAME_BOT = "@DoodlePlayBot"
