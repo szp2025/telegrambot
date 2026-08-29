@@ -752,14 +752,7 @@ def get_farms_menu_keyboard(chat_id):
 
 
 class UltimateSecurityCore:
-    """
-    /**
-     * @apiEndpoint /Internal/UltimateSecurityCore
-     * @apiMethod INTERNAL
-     * @apiDescription Динамический эвристический модуль комплексной защиты трафика 
-     * с поддержкой скоринга угроз, анализа энтропии, детекции омоглифов и Leetspeak.
-     */
-    """
+   
     def __init__(self):
         self.network_core_blacklist = NETWORK_CORE_BLACKLIST
         self.ghost_mode_domains = GHOST_MODE_DOMAINS
@@ -2368,7 +2361,6 @@ def handle_callbacks(call: types.CallbackQuery):
 
 # Запуск фонового потока (интервал: 2 часа = 7200 секунд)
 updater_thread = threading.Thread(target=background_independent_updater, args=(7200,), daemon=True)
-updater_thread.start()
 
 # Инициализируем отправителя (если у вас bot и logger уже объявлены глобально)
 sender = NotificationSender(bot, logger)
@@ -2418,23 +2410,36 @@ ai_chat_handler = AIChatHandler(bot, logger, ai_assistant, AI_CHAT_ACTIVE)
 # Инициализируем менеджер профиля (используя уже созданные bot, logger и sender)
 profile_manager = ProfileManager(bot, logger, sender)
 
+updater_thread.start()
+
 if __name__ == "__main__":
     /**
      * Основная точка запуска Telegram-бота.
-     * Использует штатный infinity_polling() библиотеки pyTelegramBotAPI.
-     * При временной ошибке сети автоматически выполняет повторный запуск polling.
+     * Выполняет последовательную диагностику соединения с Telegram API
+     * перед запуском штатного infinity_polling().
      */
+
+    print("========================================", flush=True)
     print("🤖 Запуск Telegram-бота...", flush=True)
+    print("========================================", flush=True)
+
+    print("🔎 ШАГ 1: вход в main...", flush=True)
 
     while True:
         try:
-            print("🌐 Подключение к Telegram API...", flush=True)
+            print("🔎 ШАГ 2: начинаем подключение к Telegram...", flush=True)
 
-            # Проверяем соединение с Telegram ДО запуска polling.
-            bot.get_me()
+            print("🔎 ШАГ 3: вызываем bot.get_me()...", flush=True)
 
-            print("✅ Telegram API доступен.", flush=True)
-            print("🟢 Polling запущен. Бот готов принимать сообщения.", flush=True)
+            me = bot.get_me()
+
+            print(
+                f"✅ ШАГ 4: Telegram API отвечает. "
+                f"Бот: @{me.username} | ID: {me.id}",
+                flush=True
+            )
+
+            print("🔎 ШАГ 5: запускаем infinity_polling()...", flush=True)
 
             bot.infinity_polling(
                 timeout=20,
@@ -2443,23 +2448,26 @@ if __name__ == "__main__":
                 skip_pending=True
             )
 
+            print(
+                "⚠️ infinity_polling() завершился без исключения.",
+                flush=True
+            )
+
         except KeyboardInterrupt:
             print("🛑 Бот остановлен пользователем.", flush=True)
             break
 
         except Exception as e:
-            logger.exception(
-                "❌ Ошибка Telegram polling: %s",
-                e
-            )
-
             print(
-                f"⚠️ Ошибка Telegram API: {e}",
+                f"❌ ОШИБКА ЗАПУСКА TELEGRAM: "
+                f"{type(e).__name__}: {e}",
                 flush=True
             )
 
+            logger.exception("Полный traceback ошибки Telegram")
+
             print(
-                "🔄 Повторное подключение через 5 секунд...",
+                "🔄 Повтор через 5 секунд...",
                 flush=True
             )
 
