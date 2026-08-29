@@ -2413,11 +2413,7 @@ profile_manager = ProfileManager(bot, logger, sender)
 updater_thread.start()
 
 if __name__ == "__main__":
-    /**
-     * Основная точка запуска Telegram-бота.
-     * Выполняет последовательную диагностику соединения с Telegram API
-     * перед запуском штатного infinity_polling().
-     */
+  
 
     print("========================================", flush=True)
     print("🤖 Запуск Telegram-бота...", flush=True)
