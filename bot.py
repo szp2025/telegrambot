@@ -1,3 +1,4 @@
+
 import sys
 import logging
 import io
@@ -1112,8 +1113,9 @@ class MessageProcessor:
 
     @staticmethod
     def handle_menu_or_commands(message: types.Message):
-        # Здесь будет логика для обработки команд из BOT_COMMANDS_LIST или кнопок главного меню
-        pass
+        # Маршрутизация кнопок главного меню и текстовых команд
+        # в реальный обработчик MenuTextProcessor.handle_menu_text.
+        handle_menu_text(message)
 
 
 class MenuManager:
@@ -2420,6 +2422,13 @@ def handle_callbacks(call: types.CallbackQuery):
     callback_query_handler.handle_callbacks(call)
 
 updater_thread.start()
+
+# Фоновый поток авто-проверки комбо / таймеров / рекламы.
+# ВАЖНО: запускаем ДО infinity_polling(), т.к. polling блокирует поток.
+# run_daily_checker() при старте сразу делает первую проверку комбо.
+combo_checker_thread = threading.Thread(target=daily_auto_checker, daemon=True)
+combo_checker_thread.start()
+print("🔎 Фоновый чекер комбо запущен.", flush=True)
 
 if __name__ == "__main__":
     # ========================================================
