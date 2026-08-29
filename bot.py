@@ -195,19 +195,27 @@ class ImageHandler:
                         Image.Resampling.LANCZOS
                     )
 
-                # 2) Letterbox до 2:1, если картинка «высокая».
+                # 2) Приводим к формату 2:1 (letterbox в ОБЕ стороны):
+                #    • широкие картинки Telegram больше НЕ обрезает — добавляем поля
+                #      сверху/снизу (весь комбо виден целиком);
+                #    • высокие/квадратные делаем широкими (поля по бокам) → низкая
+                #      высота на телефоне.
                 target_ratio = 2.0
                 cw, ch = img.width, img.height
-                if ch > 0 and (cw / ch) < target_ratio:
-                    canvas_w = int(round(ch * target_ratio))
+                cur = (cw / ch) if ch else target_ratio
+                if abs(cur - target_ratio) > 0.02:
+                    if cur < target_ratio:                       # слишком «высокая» → поля по бокам
+                        canvas_w, canvas_h = int(round(ch * target_ratio)), ch
+                    else:                                         # слишком «широкая» → поля сверху/снизу
+                        canvas_w, canvas_h = cw, int(round(cw / target_ratio))
                     try:
                         pad_color = img.getpixel((0, 0))
                         if not (isinstance(pad_color, tuple) and len(pad_color) == 3):
                             pad_color = (255, 255, 255)
                     except Exception:
                         pad_color = (255, 255, 255)
-                    canvas = Image.new("RGB", (canvas_w, ch), pad_color)
-                    canvas.paste(img, ((canvas_w - cw) // 2, 0))
+                    canvas = Image.new("RGB", (canvas_w, canvas_h), pad_color)
+                    canvas.paste(img, ((canvas_w - cw) // 2, (canvas_h - ch) // 2))
                     img = canvas
                     # Ограничим итоговую ширину, чтобы файл не разрастался.
                     if img.width > 900:
