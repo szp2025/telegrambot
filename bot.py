@@ -65,10 +65,20 @@ from private_config import (
 )
 
 
-            
-# Настройка таймаутов, чтобы бот не зависал при медленном ответе Telegram API
-apihelper.CONNECT_TIMEOUT = 10
-apihelper.READ_TIMEOUT = 10
+# ============================================================
+# НАСТРОЙКИ СОЕДИНЕНИЯ С TELEGRAM API
+# ============================================================
+
+# Максимальное время установления TCP-соединения.
+apihelper.CONNECT_TIMEOUT = 30
+
+# Максимальное время ожидания HTTP-ответа.
+apihelper.READ_TIMEOUT = 60
+
+# Периодическое пересоздание HTTP-сессии.
+# Помогает при ConnectionResetError после простоя соединения.
+apihelper.SESSION_TIME_TO_LIVE = 5 * 60
+
 
 # --- ФОНОВЙ ПОТОК ДЛЯ АВТО-ПРОВЕРКИ И ТАЙМЕРОВ ---
 def start_auto_checker_thread(checker_instance):
@@ -2405,20 +2415,29 @@ profile_manager = ProfileManager(bot, logger, sender)
 updater_thread.start()
 
 if __name__ == "__main__":
-    # Основная точка запуска Telegram-бота.
+    # ========================================================
+    # ОСНОВНАЯ ТОЧКА ЗАПУСКА TELEGRAM-БОТА
+    # ========================================================
+
     print("🤖 Запуск Telegram-бота...", flush=True)
 
     try:
+        # ----------------------------------------------------
+        # Проверяем доступность Telegram API.
+        # ----------------------------------------------------
         print("🌐 Проверка Telegram API...", flush=True)
 
         me = bot.get_me()
 
         print(
-            f"✅ Telegram API отвечает: "
-            f"@{me.username} | ID: {me.id}",
+            f"✅ Telegram API отвечает. "
+            f"Бот: @{me.username} | ID: {me.id}",
             flush=True
         )
 
+        # ----------------------------------------------------
+        # Запускаем штатный long polling.
+        # ----------------------------------------------------
         print(
             "🟢 Запускаем infinity_polling()...",
             flush=True
@@ -2435,7 +2454,10 @@ if __name__ == "__main__":
         )
 
     except KeyboardInterrupt:
-        print("🛑 Бот остановлен.", flush=True)
+        print(
+            "🛑 Бот остановлен пользователем.",
+            flush=True
+        )
 
     except Exception as e:
         logger.exception(
@@ -2444,6 +2466,7 @@ if __name__ == "__main__":
         )
 
         print(
-            f"❌ Ошибка: {type(e).__name__}: {e}",
+            f"❌ Telegram polling завершился: "
+            f"{type(e).__name__}: {e}",
             flush=True
         )
