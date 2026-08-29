@@ -69,7 +69,7 @@ if __name__ == "__main__":
             print("🤖 Запуск бота (через HTTP-запросы)...")
             offset = 0
             token = bot.token # Берем токен из вашего объекта бота
-            url = f"https://api.telegram.org/bot{token}/getUpdates"
+            url = f"https://api.telegram.org/telebot{TOKEN}/getUpdates"
             
             while True:
                 response = requests.get(url, params={"offset": offset, "timeout": 5}, timeout=10)
