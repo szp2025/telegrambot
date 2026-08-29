@@ -2405,56 +2405,45 @@ profile_manager = ProfileManager(bot, logger, sender)
 updater_thread.start()
 
 if __name__ == "__main__":
-    print("========================================", flush=True)
+    # Основная точка запуска Telegram-бота.
     print("🤖 Запуск Telegram-бота...", flush=True)
-    print("========================================", flush=True)
 
-    print("🔎 ШАГ 1: вход в main...", flush=True)
+    try:
+        print("🌐 Проверка Telegram API...", flush=True)
 
-    while True:
-        try:
-            print("🔎 ШАГ 2: начинаем подключение к Telegram...", flush=True)
+        me = bot.get_me()
 
-            print("🔎 ШАГ 3: вызываем bot.get_me()...", flush=True)
+        print(
+            f"✅ Telegram API отвечает: "
+            f"@{me.username} | ID: {me.id}",
+            flush=True
+        )
 
-            me = bot.get_me()
+        print(
+            "🟢 Запускаем infinity_polling()...",
+            flush=True
+        )
 
-            print(
-                f"✅ ШАГ 4: Telegram API отвечает. "
-                f"Бот: @{me.username} | ID: {me.id}",
-                flush=True
-            )
+        bot.infinity_polling(
+            timeout=30,
+            long_polling_timeout=30,
+            allowed_updates=[
+                "message",
+                "callback_query"
+            ],
+            skip_pending=True
+        )
 
-            print("🔎 ШАГ 5: запускаем infinity_polling()...", flush=True)
+    except KeyboardInterrupt:
+        print("🛑 Бот остановлен.", flush=True)
 
-            bot.infinity_polling(
-                timeout=20,
-                long_polling_timeout=20,
-                allowed_updates=["message", "callback_query"],
-                skip_pending=True
-            )
+    except Exception as e:
+        logger.exception(
+            "❌ Критическая ошибка Telegram polling: %s",
+            e
+        )
 
-            print(
-                "⚠️ infinity_polling() завершился без исключения.",
-                flush=True
-            )
-
-        except KeyboardInterrupt:
-            print("🛑 Бот остановлен пользователем.", flush=True)
-            break
-
-        except Exception as e:
-            print(
-                f"❌ ОШИБКА ЗАПУСКА TELEGRAM: "
-                f"{type(e).__name__}: {e}",
-                flush=True
-            )
-
-            logger.exception("Полный traceback ошибки Telegram")
-
-            print(
-                "🔄 Повтор через 5 секунд...",
-                flush=True
-            )
-
-            time.sleep(5)
+        print(
+            f"❌ Ошибка: {type(e).__name__}: {e}",
+            flush=True
+        )
