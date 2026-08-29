@@ -1,3 +1,5 @@
+
+import sys
 import logging
 import io
 import random
@@ -2417,10 +2419,23 @@ ai_chat_handler = AIChatHandler(bot, logger, ai_assistant, AI_CHAT_ACTIVE)
 profile_manager = ProfileManager(bot, logger, sender)
 
 if __name__ == "__main__":
-    print("🤖 Запуск Telegram-бота...")
+    /**
+     * Основная точка запуска Telegram-бота.
+     * Использует штатный infinity_polling() библиотеки pyTelegramBotAPI.
+     * При временной ошибке сети автоматически выполняет повторный запуск polling.
+     */
+    print("🤖 Запуск Telegram-бота...", flush=True)
 
     while True:
         try:
+            print("🌐 Подключение к Telegram API...", flush=True)
+
+            # Проверяем соединение с Telegram ДО запуска polling.
+            bot.get_me()
+
+            print("✅ Telegram API доступен.", flush=True)
+            print("🟢 Polling запущен. Бот готов принимать сообщения.", flush=True)
+
             bot.infinity_polling(
                 timeout=20,
                 long_polling_timeout=20,
@@ -2428,9 +2443,24 @@ if __name__ == "__main__":
                 skip_pending=True
             )
 
+        except KeyboardInterrupt:
+            print("🛑 Бот остановлен пользователем.", flush=True)
+            break
+
         except Exception as e:
             logger.exception(
-                "❌ Критическая ошибка polling. "
-                "Перезапуск через 5 секунд."
+                "❌ Ошибка Telegram polling: %s",
+                e
             )
+
+            print(
+                f"⚠️ Ошибка Telegram API: {e}",
+                flush=True
+            )
+
+            print(
+                "🔄 Повторное подключение через 5 секунд...",
+                flush=True
+            )
+
             time.sleep(5)
