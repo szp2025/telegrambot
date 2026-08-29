@@ -2411,13 +2411,10 @@ ai_chat_handler = AIChatHandler(bot, logger, ai_assistant, AI_CHAT_ACTIVE)
 profile_manager = ProfileManager(bot, logger, sender)
 
 if __name__ == "__main__":
-    logger.info("=== ZERO-LAG TERMUX NATIVE BOT ЗАПУЩЕН ===")
-    threading.Thread(target=daily_auto_checker, daemon=True).start()
-    
-    # Безопасный цикл polling с автовосстановлением при обрывах связи
     while True:
         try:
-            bot.infinity_polling(skip_pending=True, timeout=10, long_polling_timeout=5)
+            print("🤖 Запуск бота...")
+            bot.infinity_polling(skip_pending=True, timeout=20, long_polling_timeout=15)
         except Exception as e:
-            logger.error(f"⚠️ Ошибка соединения с Telegram: {e}. Переподключение через 5 секунд...")
+            print(f"⚠️ Ошибка соединения: {e}. Переподключение через 5 секунд...")
             time.sleep(5)
