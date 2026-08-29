@@ -1805,7 +1805,7 @@ def handle_callbacks(call: types.CallbackQuery):
                  bot.edit_message_text(f"❌ **Заказ отклонен.** (Клиент: `{target_user_id}`)", chat_id, call.message.message_id, parse_mode="Markdown")
              except Exception:
                  pass
-         return
+        return
                 
         # Секция отзывов
         if data == "review_add":
