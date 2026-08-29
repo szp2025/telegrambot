@@ -1384,6 +1384,10 @@ class BackgroundSchedulerManager:
 
     def run_daily_checker(self, user_game_timers: dict):
         """Бесконечный цикл фонового мониторинга."""
+        # Плавный старт: даём боту прогреться и быстро отвечать на меню,
+        # прежде чем нагружать сеть массовым скрейпингом комбо.
+        time.sleep(25)
+
         last_reset_day = None
         run_check_now = True
 
@@ -1532,6 +1536,13 @@ class MenuTextProcessor:
         if chat_id not in self.verified_users:
             self.sender.send_message_direct(chat_id, "⚠️ Сначала пройдите верификацию через /start.")
             return
+
+        # Мгновенный визуальный отклик: показываем «печатает…», чтобы
+        # пользователь понимал, что запрос принят и обрабатывается.
+        try:
+            self.bot.send_chat_action(chat_id, "typing")
+        except Exception:
+            pass
 
         text = message.text
         if text in ["🚀 Меню комбо-игр"]:
@@ -2338,7 +2349,68 @@ def show_user_profile(chat_id):
     
 def daily_auto_checker():
     scheduler_manager.run_daily_checker(user_game_timers)
-    
+
+def run_doodle_loop(chat_id, target_game_bot):
+    """
+    Фоновый цикл авто-фермы Signal Doodle Jump для конкретного пользователя.
+
+    Работает, пока active_farms_state[chat_id]['doodle'] == True.
+    Останавливается автоматически, когда пользователь нажимает «Остановить».
+    Использует асинхронные методы SignalDoodleJumpGame внутри отдельного
+    event-loop (asyncio требует свой loop на каждый поток).
+    """
+    game = SignalDoodleJumpGame()
+
+    # Отдельный event loop для этого потока.
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    def is_active():
+        return active_farms_state.get(chat_id, {}).get("doodle", False)
+
+    try:
+        sender.send_message_direct(
+            chat_id,
+            "🕹 **Doodle Jump — авто-ферма запущена!**\n"
+            "Собираю монеты и смотрю рекламу в фоне. "
+            "Нажмите «🛑 Остановить», чтобы прекратить.",
+            parse_mode="Markdown"
+        )
+
+        while is_active():
+            try:
+                # 1. Сбор пассивного дохода и авто-прокачка.
+                loop.run_until_complete(game.collect_rewards())
+                if not is_active():
+                    break
+                # 2. Цикл просмотра видео-заданий.
+                loop.run_until_complete(game.watch_videos())
+            except Exception as e:
+                logger.error(f"[Doodle Loop {chat_id}] Ошибка в цикле: {e}")
+
+            # Пауза до следующего цикла короткими интервалами,
+            # чтобы быстро реагировать на остановку пользователем.
+            waited = 0
+            while waited < game.interval_seconds and is_active():
+                time.sleep(5)
+                waited += 5
+
+        logger.info(Fore.RED + f"[Doodle Loop {chat_id}] Цикл остановлен пользователем.")
+        try:
+            sender.send_message_direct(
+                chat_id,
+                "🛑 **Doodle Jump — авто-ферма остановлена.**",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+    finally:
+        active_farm_threads.pop(chat_id, None)
+        try:
+            loop.close()
+        except Exception:
+            pass
+
 def generate_advanced_captcha(chat_id):
     return CaptchaManager.generate_advanced_captcha(chat_id, advanced_captchas)
 
