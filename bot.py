@@ -67,22 +67,17 @@ from private_config import (
 apihelper.CONNECT_TIMEOUT = 10
 apihelper.READ_TIMEOUT = 10
 
-# Функция или метод бесконечного цикла проверки
+# --- ФОНОВЙ ПОТОК ДЛЯ АВТО-ПРОВЕРКИ И ТАЙМЕРОВ ---
 def start_auto_checker_thread(checker_instance):
+    """Фоновый поток для автоматической проверки комбо и таймеров."""
     while True:
         try:
-            checker_instance.run_loop_step() # ваш метод с циклом и time.sleep(600)
+            # Метод, содержащий логику проверки комбо, таймеров и рекламы
+            checker_instance.run_loop_step() 
         except Exception as e:
             logger.error(f"Ошибка в фоновом потоке чекера: {e}")
-        time.sleep(10)
-
-# Запуск перед стартом polling бота:
-checker_thread = threading.Thread(target=start_auto_checker_thread, args=(your_checker_object,), daemon=True)
-checker_thread.start()
-
-# Запуск самого бота
-bot.infinity_polling()
-
+        time.sleep(10) # Защитная микропауза перед повтором при сбое
+        
 
 # Целевой бот для авто-фермы Doodle Jump
 TARGET_GAME_BOT = "@DoodlePlayBot"
