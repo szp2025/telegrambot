@@ -2413,8 +2413,6 @@ profile_manager = ProfileManager(bot, logger, sender)
 updater_thread.start()
 
 if __name__ == "__main__":
-  
-
     print("========================================", flush=True)
     print("🤖 Запуск Telegram-бота...", flush=True)
     print("========================================", flush=True)
