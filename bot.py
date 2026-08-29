@@ -1,4 +1,3 @@
-
 import sys
 import logging
 import io
@@ -1961,63 +1960,44 @@ class ProfileManager:
         self.sender = sender_instance
 
     def show_user_profile(self, chat_id: int | str, user_game_stats: dict):
-        """Отображение профиля пользователя и его прогресса по играм с фото или текстом."""
+        """Профиль = только СПИСОК игр. Статы конкретной игры показываются
+        отдельно при нажатии на её кнопку (callback profgame_<name>)."""
         try:
             chat_info = self.bot.get_chat(chat_id)
             user_name = chat_info.first_name or "Игрок"
         except Exception:
             user_name = "Игрок"
 
-        profile_text = f"👤 **Профиль пользователя:** {user_name}\n\n🏆 **Ваш игровой прогресс и статы:**\n"
+        my_stats = user_game_stats.get(chat_id, {}) or {}
 
-        # Клавиатура: КНОПКА на каждую игру (добавить прогресс) + просмотр статов + ИИ.
-        keyboard_markup = types.InlineKeyboardMarkup()
+        # Имена игр: из конфига (комбо + фермы) + добавленные пользователем вручную.
+        names = []
         try:
-            all_games = list(manager.combo_games.items()) + list(manager.independent_farms.items())
+            for _k, gd in list(manager.combo_games.items()) + list(manager.independent_farms.items()):
+                nm = gd.get("name", _k)
+                if nm and nm not in names:
+                    names.append(nm)
         except Exception:
-            all_games = []
-        for key, gdata in all_games:
-            gname = gdata.get("name", key)
-            keyboard_markup.row(types.InlineKeyboardButton(text=f"➕ {gname}", callback_data=f"profadd_{key}"))
-        keyboard_markup.row(types.InlineKeyboardButton(text="📋 Посмотреть мои статы", callback_data="prof_view"))
+            pass
+        for nm in my_stats.keys():
+            if nm not in names:
+                names.append(nm)
+
+        # Кнопка на КАЖДУЮ игру: ✅ если стата уже есть, ➕ если ещё нет.
+        keyboard_markup = types.InlineKeyboardMarkup()
+        for nm in names:
+            mark = "✅" if nm in my_stats else "➕"
+            keyboard_markup.row(types.InlineKeyboardButton(text=f"{mark} {nm}", callback_data=f"profgame_{nm}"))
         keyboard_markup.row(types.InlineKeyboardButton(text="📜 История комбо", callback_data="combo_hist"))
         keyboard_markup.row(MenuManager.get_ai_button())
 
-        hint = "\n\n👇 Нажмите на игру, чтобы добавить свой прогресс и скриншот."
-
-        if chat_id in user_game_stats and user_game_stats[chat_id]:
-            self.sender.send_message_direct(chat_id, profile_text, parse_mode="Markdown")
-            for game, info in user_game_stats[chat_id].items():
-                caption = f"🎮 *{game}*\n📊 Стат / Уровень: `{info.get('stat', 'Н/Д')}`"
-                # Кнопки редактирования/удаления именно этой строки статы.
-                row_kb = types.InlineKeyboardMarkup()
-                row_kb.row(
-                    types.InlineKeyboardButton(text="✏️ Изменить", callback_data=f"statedit_{game}"),
-                    types.InlineKeyboardButton(text="🗑 Удалить", callback_data=f"statdel_{game}")
-                )
-                if info.get("photo"):
-                    try:
-                        self.bot.send_photo(chat_id, photo=info["photo"], caption=caption, parse_mode="Markdown", reply_markup=row_kb)
-                    except Exception as e:
-                        self.logger.error(f"Ошибка отправки фото профиля: {e}")
-                        self.sender.send_message_direct(chat_id, caption, parse_mode="Markdown", reply_markup=row_kb)
-                else:
-                    self.sender.send_message_direct(chat_id, caption, parse_mode="Markdown", reply_markup=row_kb)
-
-            self.sender.send_message_direct(
-                chat_id,
-                "⚙️ Выберите игру для добавления/обновления прогресса:" + hint,
-                reply_markup=keyboard_markup,
-                parse_mode="Markdown"
-            )
-        else:
-            profile_text += "_Список игр пуст._" + hint
-            self.sender.send_message_direct(
-                chat_id,
-                profile_text,
-                reply_markup=keyboard_markup,
-                parse_mode="Markdown"
-            )
+        profile_text = (
+            f"👤 **Профиль:** {user_name}\n\n"
+            f"🏆 Игр с вашими статами: **{len(my_stats)}**\n\n"
+            "👇 Нажмите на игру, чтобы посмотреть или добавить свой прогресс.\n"
+            "✅ — стата уже добавлена, ➕ — пока нет."
+        )
+        self.sender.send_message_direct(chat_id, profile_text, reply_markup=keyboard_markup, parse_mode="Markdown")
 
 class BackgroundSchedulerManager:
     """Менеджер фоновых задач: автоматическая проверка комбо, пользовательские таймеры и контроль рекламы."""
@@ -2985,6 +2965,35 @@ class CallbackQueryHandler:
                     f"✍️ Введите ваш уровень/прогресс для *{gname}*\n(например: `15` или `Уровень 20`):",
                     parse_mode="Markdown"
                 )
+                return
+
+            # Клик по игре в профиле → показываем СТАТЫ ИМЕННО ЭТОЙ игры
+            # (или предлагаем добавить, если их ещё нет).
+            if data.startswith("profgame_"):
+                gname = data[len("profgame_"):]
+                info = self.user_game_stats.get(chat_id, {}).get(gname)
+                if info:
+                    caption = f"🎮 *{gname}*\n📊 Стат / Уровень: `{info.get('stat', 'Н/Д')}`"
+                    row_kb = types.InlineKeyboardMarkup()
+                    row_kb.row(
+                        types.InlineKeyboardButton(text="✏️ Изменить", callback_data=f"statedit_{gname}"),
+                        types.InlineKeyboardButton(text="🗑 Удалить", callback_data=f"statdel_{gname}")
+                    )
+                    if info.get("photo"):
+                        try:
+                            self.bot.send_photo(chat_id, photo=info["photo"], caption=caption, parse_mode="Markdown", reply_markup=row_kb)
+                        except Exception:
+                            self.sender.send_message_direct(chat_id, caption, parse_mode="Markdown", reply_markup=row_kb)
+                    else:
+                        self.sender.send_message_direct(chat_id, caption, parse_mode="Markdown", reply_markup=row_kb)
+                else:
+                    self.user_input_states[chat_id] = {"step": "waiting_game_stat", "game": gname}
+                    self.sender.send_message_direct(
+                        chat_id,
+                        f"✍️ У вас пока нет прогресса для *{gname}*.\n"
+                        "Введите ваш уровень/прогресс (например: `15` или `Уровень 20`):",
+                        parse_mode="Markdown"
+                    )
                 return
 
             if data == "prof_view":
