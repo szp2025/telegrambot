@@ -1979,7 +1979,7 @@ def handle_callbacks(call: types.CallbackQuery):
             is_running = (data == "toggle_doodle_start")
             active_farms_state[chat_id]["doodle"] = is_running
             
-            if is_running:
+        if is_running:
             logger.info(Fore.GREEN + f"[User {chat_id}] Пользователь запустил Signal Doodle Jump!")
             # Подставьте имя вашей существующей функции вместо run_doodle_loop
             thread = threading.Thread(target=run_doodle_loop, args=(chat_id, TARGET_GAME_BOT))
@@ -2004,7 +2004,7 @@ def handle_callbacks(call: types.CallbackQuery):
                 bot.answer_callback_query(call.id, status_msg)
             except:
                 pass
-            return
+        return
         
         # Управление «Запустить всё» / «Остановить всё»
         if data in ["toggle_all_start", "toggle_all_stop"]:
