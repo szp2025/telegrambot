@@ -2418,6 +2418,9 @@ profile_manager = ProfileManager(bot, logger, sender)
 if __name__ == "__main__":
     while True:
         try:
+            print("DEBUG: Перед вызовом infinity_polling")
+            bot.infinity_polling(skip_pending=True)
+            print("DEBUG: После вызова infinity_polling")
             print("🤖 Запуск бота...")
             bot.infinity_polling(skip_pending=True, timeout=20, long_polling_timeout=15)
         except Exception as e:
