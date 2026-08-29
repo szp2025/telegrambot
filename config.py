@@ -181,6 +181,13 @@ INDEPENDENT_FARMS_DATA = {
         "ref_link_2": "https://t.me/HappyFarmGramBot?start=ref_5290309079",
         "strategy": "🃏 Стратегия Happy Farm.",
     },
+    "prism": {
+        "name": "prism",
+        "path": "/prism/",
+        "ref_link_1": "https://t.me/PrismHashBot?startapp=zagehSo5",
+        "ref_link_2": "https://t.me/PrismHashBot?startapp=zagehSo5",
+        "strategy": "🃏 Стратегия Prism.",
+    },
 
 }
 
