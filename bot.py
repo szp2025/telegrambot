@@ -1478,7 +1478,8 @@ class BackgroundSchedulerManager:
                 run_check_now = False
 
             # 3. Проверка и обновление игровых таймеров пользователей
-            try:                for chat_id, timers in list(user_game_timers.items()):
+            try:
+                for chat_id, timers in list(user_game_timers.items()):
                     for game_key, t_data in list(timers.items()):
                         if t_data and isinstance(t_data, dict):
                             target_time = t_data.get("target")
@@ -1492,7 +1493,7 @@ class BackgroundSchedulerManager:
                                 user_game_timers[chat_id][game_key]["target"] = time.time() + (duration * 3600)
             except Exception as e:
                 self.logger.error(f"Ошибка в проверке таймеров: {e}")
-
+                
             # 4. Проверка истечения срока активной рекламы через менеджер рекламы
             try:
                 expired_ads = []
