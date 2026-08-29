@@ -10,6 +10,7 @@ from bs4 import BeautifulSoup
 from PIL import Image
 import telebot
 from telebot import types
+from PIL import Image
 import urllib.request
 import ast
 from datetime import datetime
@@ -128,6 +129,37 @@ def background_independent_updater(interval_seconds: int = 7200):
 # Запуск фонового потока (интервал: 2 часа = 7200 секунд)
 updater_thread = threading.Thread(target=background_independent_updater, args=(7200,), daemon=True)
 updater_thread.start()
+
+
+class ImageHandler:
+    """Менеджер для загрузки, изменения размеров и оптимизации изображений."""
+
+    def __init__(self, logger_instance, target_width: int = 800):
+        self.logger = logger_instance
+        self.target_width = target_width
+
+    def resize_img(self, url: str) -> bytes | None:
+        """Загружает картинку по ссылке, оптимизирует и приводит к единому стандарту для Telegram."""
+        try:
+            res = requests.get(url, timeout=5)
+            if res.status_code == 200:
+                img = Image.open(io.BytesIO(res.content))
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+                
+                # Пропорциональное масштабирование по ширине с сохранением четкости
+                w_percent = (self.target_width / float(img.width))
+                target_height = int(float(img.height) * float(w_percent))
+                
+                img = img.resize((self.target_width, target_height), Image.Resampling.LANCZOS)
+                
+                out = io.BytesIO()
+                img.save(out, format="JPEG", quality=95)
+                return out.getvalue()
+        except Exception as e:
+            self.logger.error(f"Ошибка обработки изображения: {e}")
+        return None
+
 
 class BotVirtualAssistant:
     def __init__(self, model_name: str = "Zero-Lag Pure Self-Learning AI"):
@@ -948,24 +980,30 @@ class MiningComboManager:
             
             date_text = "Дата не указана"
 
+            months = [
+                "January", "February", "March", "April", "May", "June", 
+                "July", "August", "September", "October", "November", "December",
+                "Jan", "Feb", "Mar", "Apr", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+            ]
             
             for p in content.find_all(["p", "span", "div", "time", "strong", "b"]):
                 txt = p.get_text(strip=True)
-                if ("August" in txt or "July" in txt or "September" in txt or "2026" in txt) and len(txt) < 40:
+                # Проверяем наличие любого месяца или любого года формата 20XX
+                has_month = any(m.lower() in txt.lower() for m in months)
+                has_year = bool(re.search(r'\b20\d{2}\b', txt))
+                
+                if (has_month or has_year) and len(txt) < 40:
                     date_text = txt
                     break
-            # Затем получаем текущую реальную дату (день, месяц, год)
+
             now = datetime.now()
             current_day = now.strftime("%d")
             current_month = now.strftime("%B")
             current_year = now.strftime("%Y")
             
-            # Проверяем, совпадает ли дата на сайте с сегодняшней
             is_today = current_day in date_text and current_month in date_text
             
-            date_status_icon = "📅"
             if not is_today:
-                # Если дата отличается, добавляем предупреждение в текст даты
                 date_text = f"{date_text} ⚠️ (Рассинхрон с системной датой: {current_day} {current_month})"
                 logger.warning(f"⚠️ Внимание для {game_key}: дата на сайте ({date_text}) отличается от текущей системной ({current_day} {current_month} {current_year})!")
                 
@@ -977,11 +1015,9 @@ class MiningComboManager:
                     
             img_url = None
             if not is_searching:
-                # Специальный поиск для Doodle Jump или стандартных классов
                 if game_key == "doodle-jump":
                     target_img = soup.find("img", {"class": "wp-image-1"}) or soup.find("div", {"class": "entry-content"}).find("img") if soup.find("div", {"class": "entry-content"}) else None
                     if not target_img:
-                        # Берем первую подходящую картинку из контента статьи
                         images = content.find_all("img")
                         for img in images:
                             src = img.get("data-lazy-src") or img.get("src") or img.get("data-src")
@@ -1019,33 +1055,9 @@ class MiningComboManager:
             
         return None, "Ошибка парсинга"
 
-    def resize_img(self, url: str, game_key: str = ""):
-        try:
-            res = requests.get(url, timeout=5)
-            if res.status_code == 200:
-                img = Image.open(io.BytesIO(res.content))
-                if img.mode != 'RGB':
-                    img = img.convert('RGB')
-                
-                # Фиксируем удобную для Телеграма ширину и пропорциональную высоту, 
-                # но ограничиваем максимальную высоту, чтобы картинка не превращалась в длинную «колбасу»
-                target_width = 800
-                w_percent = (target_width / float(img.width))
-                target_height = int(float(img.height) * float(w_percent))
-                
-                # Изменяем размер с сохранением качества
-                img = img.resize((target_width, target_height), Image.Resampling.LANCZOS)
-                
-                out = io.BytesIO()
-                img.save(out, format="JPEG", quality=95)
-                return out.getvalue()
-        except Exception as e:
-            logger.error(f"Ошибка изменения размера: {e}")
-        return None
-        
-        
+# Инициализация менеджеров
+image_handler = ImageHandler(logger, target_width=800)
 manager = MiningComboManager()
-
 
 class ContentKeyboardManager:
     """Менеджер клавиатур для каталогов и детальных страниц с динамической проверкой и генерацией реферальных ссылок."""
