@@ -1477,7 +1477,7 @@ class BackgroundSchedulerManager:
 
                 run_check_now = False
 
-            # 3. Проверка и обновление игровых таймеров пользователей
+           # 3. Проверка и обновление игровых таймеров пользователей
             try:
                 for chat_id, timers in list(user_game_timers.items()):
                     for game_key, t_data in list(timers.items()):
