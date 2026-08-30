@@ -41,7 +41,11 @@ from config import (
     DANGEROUS_INJECTION_PATTERNS,
     BOT_COMMANDS,
     MAIN_MENU_BUTTONS,
-    WELCOME_MESSAGES,
+    SUPPORTED_LANGS,
+    MENU_LABELS,
+    LABEL_TO_CANON,
+    ALL_MENU_LABELS,
+    TR,
     PROFILE_KEYBOARD_DATA,
     REVIEWS_KEYBOARD_DATA,
     ADS_KEYBOARD_DATA,
@@ -1343,7 +1347,7 @@ def find_today_combo_fileid(game_key):
 BACKUP_FILES = [
     VERIFIED_FILE, USER_STATS_FILE, COMBO_HISTORY_FILE, REVIEWS_FILE,
     PROOFS_FILE, TIMERS_FILE, COMBO_SUBS_FILE, REFERRALS_FILE, GAMIFY_FILE,
-    "price_alerts.json", "digest_subs.json",
+    "price_alerts.json", "digest_subs.json", "user_langs.json",
     "banned_users.txt", "scam_domains.txt", "ai_knowledge.json",
     ACTIVE_ADS_FILE, "used_tx_hashes.txt",
 ]
@@ -1427,6 +1431,59 @@ def save_digest_subs():
         logger.error(f"Ошибка сохранения подписок дайджеста: {e}")
 
 digest_subs = load_digest_subs()
+
+# ── Мультиязычность: язык пользователя (RU/EN/FR) ─────────────────────────
+LANGS_FILE = "user_langs.json"
+
+def load_langs():
+    data = {}
+    if os.path.exists(LANGS_FILE):
+        try:
+            with open(LANGS_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            for k, v in raw.items():
+                try:
+                    data[int(k)] = v
+                except (ValueError, TypeError):
+                    data[k] = v
+        except Exception as e:
+            logger.error(f"Ошибка загрузки языков: {e}")
+    return data
+
+def save_langs():
+    try:
+        with open(LANGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(user_langs, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения языков: {e}")
+
+user_langs = load_langs()
+
+def get_lang(chat_id) -> str:
+    lang = user_langs.get(chat_id) or user_langs.get(str(chat_id))
+    return lang if lang in SUPPORTED_LANGS else "ru"
+
+def set_lang(chat_id, lang):
+    if lang in SUPPORTED_LANGS:
+        user_langs[chat_id] = lang
+        save_langs()
+
+def has_lang(chat_id) -> bool:
+    return chat_id in user_langs or str(chat_id) in user_langs
+
+def detect_lang(tg_code) -> str:
+    """Угадывает язык по коду Telegram (fr/en/ru), по умолчанию ru."""
+    c = (tg_code or "").lower()
+    if c.startswith("fr"):
+        return "fr"
+    if c.startswith("en"):
+        return "en"
+    return "ru"
+
+def t(key: str, lang: str) -> str:
+    """Перевод ключа на язык lang (фолбэк — RU, потом пустая строка)."""
+    d = TR.get(key, {})
+    return d.get(lang) or d.get("ru") or ""
 
 user_input_states = {}
 
@@ -2180,6 +2237,10 @@ class MessageProcessor:
         chat_id = message.chat.id
         user = message.from_user
 
+        # Определяем язык при первом контакте (по языку клиента Telegram).
+        if not has_lang(chat_id):
+            set_lang(chat_id, detect_lang(getattr(user, "language_code", None)))
+
         # 0) Забаненные (спам/скам/хакеры) — доступ закрыт.
         if account_guard.is_banned(user.id):
             try:
@@ -2229,15 +2290,15 @@ class MessageProcessor:
             question, markup = generate_advanced_captcha(chat_id)
             bot.send_message(chat_id, f"🛡️ **Проверка на человека**\n\n🧠 *{question}*", reply_markup=markup, parse_mode="Markdown")
             return
-        send_message_direct(chat_id, WELCOME_MESSAGES["main_menu"], reply_markup=MenuManager.get_reply_keyboard(MAIN_MENU_BUTTONS))
+        lang = get_lang(chat_id)
+        send_message_direct(chat_id, t("welcome", lang), reply_markup=main_menu_kb(chat_id))
         # 🎁 Ежедневный бонус за заход (очки + серия).
         try:
             claimed, streak, reward, total = daily_checkin(chat_id)
             if claimed:
                 send_message_direct(
                     chat_id,
-                    f"🎁 *Ежедневный бонус:* +{reward} очков!\n"
-                    f"🔥 Серия: *{streak}* дн. · 💰 Всего очков: *{total}*",
+                    t("daily_bonus", lang).format(reward=reward, streak=streak, total=total),
                     None, "Markdown"
                 )
         except Exception:
@@ -3036,7 +3097,7 @@ class MenuTextProcessor:
         """Основной обработчик текстовых запросов и меню пользователя."""
         chat_id = message.chat.id
         if chat_id not in self.verified_users:
-            self.sender.send_message_direct(chat_id, "⚠️ Сначала пройдите верификацию через /start.")
+            self.sender.send_message_direct(chat_id, t("verify_first", get_lang(chat_id)))
             return
 
         # Мгновенный визуальный отклик: показываем «печатает…», чтобы
@@ -3049,7 +3110,9 @@ class MenuTextProcessor:
         # Мини-уведомление об облегчённом режиме (не чаще раза в 30 мин).
         maybe_notify_degraded(self.sender, chat_id)
 
-        text = message.text
+        # Нормализуем локализованную кнопку меню → каноническая (RU) метка,
+        # чтобы вся маршрутизация ниже работала без изменений на любом языке.
+        text = LABEL_TO_CANON.get(message.text, message.text)
         if text in ["🚀 Меню комбо-игр"]:
             keyboard, total_count = get_combo_list_keyboard(page=0)
             self.sender.send_message_direct(chat_id, f"🎮 **Активные комбо-проекты**\nВсего доступно игр с комбо: **{total_count}**\n\nВыберите проект из списка ниже:", reply_markup=keyboard)
@@ -3133,28 +3196,20 @@ class MenuTextProcessor:
                 reply_markup=get_ads_keyboard(), parse_mode="Markdown"
             )
         elif text in ["👥 Друзья", "👥 Пригласить друзей", "/invite"]:
+            lang = get_lang(chat_id)
             link = f"https://t.me/{get_bot_username()}?start=ref_{chat_id}"
             self.sender.send_message_direct(
                 chat_id,
-                "👥 *Приглашай друзей — зарабатывай очки!* 🏆\n"
-                "━━━━━━━━━━━━━━━━━━\n"
-                "🔗 Твоя персональная ссылка:\n"
-                f"`{link}`\n\n"
-                f"👤 Приглашено: *{referral_count(chat_id)}* · 💰 Очки: *{get_points(chat_id)}*\n\n"
-                "🎁 За каждого друга (после проверки) — *+50 очков* и место в рейтинге /top",
+                t("invite", lang).format(link=link, count=referral_count(chat_id), points=get_points(chat_id)),
                 parse_mode="Markdown"
             )
+        elif text in ["🌐 Язык", "/lang"]:
+            self.sender.send_message_direct(chat_id, t("lang_choose", get_lang(chat_id)), reply_markup=lang_keyboard())
         elif text in ["💎 VIP", "/vip"]:
-            head = (f"👑 *VIP активен* — осталось *{vip_days_left(chat_id)}* дн.\n"
-                    if is_vip(chat_id) else "💎 *VIP-статус* пока не активен.\n")
+            lang = get_lang(chat_id)
+            head = t("vip_active", lang).format(days=vip_days_left(chat_id)) if is_vip(chat_id) else t("vip_inactive", lang)
             self.sender.send_message_direct(
-                chat_id,
-                head + "━━━━━━━━━━━━━━━━━━\n"
-                "Преимущества VIP:\n"
-                "• 🚫 Никакой рекламы\n"
-                "• 💎 Бейдж в профиле и топе\n"
-                "• 🎯 Поддержка проекта\n\n"
-                "👇 Выберите тариф:",
+                chat_id, head + t("vip_body", lang),
                 reply_markup=get_vip_tariffs_keyboard(), parse_mode="Markdown"
             )
         elif text in ["🌅 Дайджест", "/digest"]:
@@ -3206,24 +3261,7 @@ class MenuTextProcessor:
                     parse_mode="Markdown"
                 )
         elif text in ["❓ Помощь", "/help"]:
-            self.sender.send_message_direct(
-                chat_id,
-                "❓ *Как пользоваться ботом*\n"
-                "━━━━━━━━━━━━━━━━━━\n"
-                "🚀 *Комбо* — ежедневные связки. Жми 🔔 в меню игры, чтобы получать комбо *автоматически*.\n"
-                "📱 *Майнеры* · 🚰 *Краны* · 🌾 *Фермы* — каталоги проектов.\n"
-                "⏰ *Таймеры* — напоминания зайти в игру.\n"
-                "🧮 *Курс* — конвертер криптовалют.\n"
-                "👤 *Профиль* — очки, серия, VIP, твои игры.\n"
-                "🎁 Заходи каждый день (/start) — растёт серия и очки.\n"
-                "👥 *Друзья* — приглашай и получай +50 очков за друга (/top — рейтинг).\n"
-                "💎 *VIP* — отключи рекламу и получи бейдж.\n"
-                "🔔 */alert BTC > 70000* — уведомлю при достижении цены.\n"
-                "🌅 */digest* — утренняя сводка: комбо дня + твоя серия.\n"
-                "📢 *Реклама* — размести свой пост на всю базу.\n"
-                "🛡 Все ссылки проверяются на скам автоматически.",
-                parse_mode="Markdown"
-            )
+            self.sender.send_message_direct(chat_id, t("help", get_lang(chat_id)), parse_mode="Markdown")
         elif text in ["🏆 Топ пригласивших", "/top"]:
             top = points_leaderboard(10)
             if not top:
@@ -3808,7 +3846,7 @@ class CallbackQueryHandler:
                         self.bot.edit_message_text("✅ **Доступ открыт!**", chat_id, call.message.message_id, parse_mode="Markdown")
                     except:
                         pass
-                    self.sender.send_message_direct(chat_id, "👇 Главное меню:", reply_markup=MenuManager.get_reply_keyboard(self.main_menu_buttons))
+                    self.sender.send_message_direct(chat_id, t("main_menu_label", get_lang(chat_id)), reply_markup=main_menu_kb(chat_id))
                 else:
                     q, m = generate_advanced_captcha(chat_id)
                     try:
@@ -3826,6 +3864,17 @@ class CallbackQueryHandler:
                     self.bot.answer_callback_query(call.id, "Сначала пройдите верификацию через /start!", show_alert=True)
                 except:
                     pass
+                return
+
+            # Смена языка интерфейса (RU/EN/FR).
+            if data.startswith("langset_"):
+                lang = data.split("_")[1]
+                set_lang(chat_id, lang)
+                try:
+                    self.bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=None)
+                except Exception:
+                    pass
+                self.sender.send_message_direct(chat_id, t("lang_set", lang), reply_markup=main_menu_kb(chat_id))
                 return
 
             # Админские кнопки подтверждения оплаты рекламы
@@ -3940,8 +3989,8 @@ class CallbackQueryHandler:
                 return
 
             if data in ADS_TARIFFS:
-                t = ADS_TARIFFS[data]
-                tariff_name = f"{t['name']} ({t['price']})"
+                atinfo = ADS_TARIFFS[data]
+                tariff_name = f"{atinfo['name']} ({atinfo['price']})"
                 try:
                     self.bot.edit_message_text(
                         f"💎 Вы выбрали тариф: *{tariff_name}*.\n\n"
@@ -4565,6 +4614,20 @@ def get_crypto_currency_keyboard():
 def get_fiat_currency_keyboard(crypto_symbol):
     return MenuManager.get_fiat_currency_keyboard(crypto_symbol, FIAT_CURRENCIES, row_width=3)
 
+def main_menu_kb(chat_id):
+    """Reply-клавиатура главного меню на языке пользователя."""
+    return MenuManager.get_reply_keyboard(MENU_LABELS.get(get_lang(chat_id), MAIN_MENU_BUTTONS))
+
+def lang_keyboard():
+    """Инлайн-выбор языка."""
+    kb = types.InlineKeyboardMarkup()
+    kb.row(
+        types.InlineKeyboardButton(text="🇷🇺 Русский", callback_data="langset_ru"),
+        types.InlineKeyboardButton(text="🇬🇧 English", callback_data="langset_en"),
+        types.InlineKeyboardButton(text="🇫🇷 Français", callback_data="langset_fr"),
+    )
+    return kb
+
 def send_message_direct(chat_id, text, reply_markup=None, parse_mode="Markdown"):
     return sender.send_message_direct(chat_id, text, reply_markup, parse_mode)
 
@@ -4868,8 +4931,9 @@ manager = MiningComboManager()
 # 1. Сначала создаем экземпляр процессора
 message_processor = MessageProcessor(bot, logger, sender, manager)
 
-# 2. Передаем его в контроллер (с маленькой буквы)
-bot_controller = TelegramBotController(bot, message_processor, BOT_COMMANDS_LIST, MAIN_MENU_BUTTONS)
+# 2. Передаем его в контроллер (с маленькой буквы).
+# Передаём ВСЕ локализованные метки меню (RU/EN/FR), чтобы кнопки ловились на любом языке.
+bot_controller = TelegramBotController(bot, message_processor, BOT_COMMANDS_LIST, ALL_MENU_LABELS)
 
 # Инициализация процессора текстового меню
 menu_text_processor = MenuTextProcessor(bot, logger, sender, manager, verified_users, user_game_timers, cloud_proofs)
