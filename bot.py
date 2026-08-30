@@ -2708,6 +2708,7 @@ class BackgroundSchedulerManager:
 
         last_reset_day = None
         last_daily_day = None
+        was_degraded = False
         run_check_now = True
 
         while True:
@@ -2715,6 +2716,12 @@ class BackgroundSchedulerManager:
             now_struct = time.localtime(now_time)
             current_day = now_struct.tm_mday
             current_hour = now_struct.tm_hour
+
+            # Проба здоровья цен (обновляет prices_ok для точной детекции деградации).
+            try:
+                get_btc_usd_rate()
+            except Exception:
+                pass
 
             # 1. Сброс статусов в новый день
             if last_reset_day != current_day:
@@ -2904,6 +2911,24 @@ class BackgroundSchedulerManager:
                             save_price_alerts()
             except Exception as e:
                 self.logger.error(f"Ошибка проверки ценовых алертов: {e}")
+
+            # 5b. УВЕДОМЛЕНИЕ О ВОССТАНОВЛЕНИИ: если вышли из облегчённого режима —
+            # сообщаем ТОЛЬКО тем, кто ранее получил баннер о деградации.
+            try:
+                cur_degraded = is_degraded()
+                if was_degraded and not cur_degraded and _degraded_notified:
+                    for uid in list(_degraded_notified.keys()):
+                        self.sender.send_message_direct(
+                            uid,
+                            "✅ *Обычный режим восстановлен* — внешняя сеть снова доступна.\n"
+                            "Все функции работают в полном объёме.",
+                            parse_mode="Markdown"
+                        )
+                        time.sleep(0.05)
+                    _degraded_notified.clear()
+                was_degraded = cur_degraded
+            except Exception as e:
+                self.logger.error(f"Ошибка уведомления о восстановлении: {e}")
 
             # 6. ЕЖЕДНЕВНЫЕ АВТОНОМНЫЕ ЗАДАЧИ (раз в сутки, после DAILY_TASK_HOUR):
             #    авто-бэкап · отчёт о здоровье · утренний дайджест · уборка.
