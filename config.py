@@ -390,6 +390,7 @@ BOT_COMMANDS = [
     ("vip", "💎 VIP-статус"),
     ("alert", "🔔 Ценовой алерт (напр. /alert BTC > 70000)"),
     ("digest", "🌅 Утренний дайджест (вкл/выкл)"),
+    ("lang", "🌐 Язык / Language / Langue"),
     ("help", "❓ Помощь"),
     ("proofs", "Скрины выплат")
 ]
@@ -415,7 +416,7 @@ BOT_COMMANDS_LIST = [
     'profile', 'reviews', 'ads',
     'invite', 'top', 'stats', 'broadcast',
     'help', 'vip', 'backup', 'vipgrant',
-    'alert', 'alert_clear', 'digest'
+    'alert', 'alert_clear', 'digest', 'lang'
 ]
 
 WELCOME_MESSAGES = {
@@ -428,6 +429,193 @@ WELCOME_MESSAGES = {
         "━━━━━━━━━━━━━━━━━━\n"
         "👇 Выберите раздел в меню ниже"
     )
+}
+
+# ══════════════════════════════════════════════════════════════════════════
+# МУЛЬТИЯЗЫЧНОСТЬ (RU / EN / FR) — ядро интерфейса
+# ══════════════════════════════════════════════════════════════════════════
+SUPPORTED_LANGS = ("ru", "en", "fr")
+
+# Метки кнопок главного меню на каждом языке — ТОТ ЖЕ ПОРЯДОК, что MAIN_MENU_BUTTONS.
+MENU_LABELS = {
+    "ru": MAIN_MENU_BUTTONS,
+    "en": [
+        "🚀 Combo games", "👤 Profile & stats",
+        "📱 Phone miners", "🚰 Crypto faucets",
+        "🌾 Auto-farms (no combo)", "⚡ Check all combos",
+        "🧮 Crypto rate", "📊 Bot protection",
+        "⏰ My timers", "💬 Reviews",
+        "📢 Ads & monetization", "💎 Payment proofs",
+        "👥 Friends", "💎 VIP",
+        "❓ Help",
+    ],
+    "fr": [
+        "🚀 Jeux combo", "👤 Profil & stats",
+        "📱 Mineurs mobiles", "🚰 Robinets crypto",
+        "🌾 Auto-fermes (sans combo)", "⚡ Vérifier les combos",
+        "🧮 Cours crypto", "📊 Protection du bot",
+        "⏰ Mes minuteurs", "💬 Avis",
+        "📢 Pub & monétisation", "💎 Preuves de paiement",
+        "👥 Amis", "💎 VIP",
+        "❓ Aide",
+    ],
+}
+
+# Обратная карта: любая локализованная метка → каноническая (RU) метка.
+LABEL_TO_CANON = {}
+for _lang, _labels in MENU_LABELS.items():
+    for _canon, _loc in zip(MAIN_MENU_BUTTONS, _labels):
+        LABEL_TO_CANON[_loc] = _canon
+ALL_MENU_LABELS = set(LABEL_TO_CANON.keys())
+
+# Переводы ключевых поверхностей. {key: {lang: текст}}. RU — базовый/фолбэк.
+TR = {
+    "welcome": {
+        "ru": WELCOME_MESSAGES["main_menu"],
+        "en": (
+            "⚡️ *CRYPTO HUB* · Zero-Lag mode\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "🎯 Combo   ⛏ Miners   🚰 Faucets\n"
+            "🌾 Farms   ⏰ Timers   🧮 Rate\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "👇 Pick a section in the menu below"
+        ),
+        "fr": (
+            "⚡️ *CRYPTO HUB* · mode Zero-Lag\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "🎯 Combo   ⛏ Mineurs   🚰 Robinets\n"
+            "🌾 Fermes   ⏰ Minuteurs   🧮 Cours\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "👇 Choisis une rubrique dans le menu"
+        ),
+    },
+    "main_menu_label": {
+        "ru": "👇 Главное меню:", "en": "👇 Main menu:", "fr": "👇 Menu principal :",
+    },
+    "verify_first": {
+        "ru": "⚠️ Сначала пройдите верификацию через /start.",
+        "en": "⚠️ Please verify first via /start.",
+        "fr": "⚠️ Vérifie-toi d'abord via /start.",
+    },
+    "lang_choose": {
+        "ru": "🌐 Выберите язык:", "en": "🌐 Choose your language:", "fr": "🌐 Choisis ta langue :",
+    },
+    "lang_set": {
+        "ru": "✅ Язык переключён на Русский 🇷🇺",
+        "en": "✅ Language set to English 🇬🇧",
+        "fr": "✅ Langue réglée sur Français 🇫🇷",
+    },
+    "daily_bonus": {
+        "ru": "🎁 *Ежедневный бонус:* +{reward} очков!\n🔥 Серия: *{streak}* дн. · 💰 Всего очков: *{total}*",
+        "en": "🎁 *Daily bonus:* +{reward} points!\n🔥 Streak: *{streak}* days · 💰 Total: *{total}*",
+        "fr": "🎁 *Bonus quotidien :* +{reward} points !\n🔥 Série : *{streak}* j. · 💰 Total : *{total}*",
+    },
+    "invite": {
+        "ru": (
+            "👥 *Приглашай друзей — зарабатывай очки!* 🏆\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "🔗 Твоя персональная ссылка:\n`{link}`\n\n"
+            "👤 Приглашено: *{count}* · 💰 Очки: *{points}*\n\n"
+            "🎁 За каждого друга (после проверки) — *+50 очков* и место в рейтинге /top"
+        ),
+        "en": (
+            "👥 *Invite friends — earn points!* 🏆\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "🔗 Your personal link:\n`{link}`\n\n"
+            "👤 Invited: *{count}* · 💰 Points: *{points}*\n\n"
+            "🎁 For each friend (after verification) — *+50 points* and a spot on /top"
+        ),
+        "fr": (
+            "👥 *Invite tes amis — gagne des points !* 🏆\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "🔗 Ton lien personnel :\n`{link}`\n\n"
+            "👤 Invités : *{count}* · 💰 Points : *{points}*\n\n"
+            "🎁 Pour chaque ami (après vérif) — *+50 points* et une place au /top"
+        ),
+    },
+    "vip_active": {
+        "ru": "👑 *VIP активен* — осталось *{days}* дн.\n",
+        "en": "👑 *VIP active* — *{days}* days left\n",
+        "fr": "👑 *VIP actif* — *{days}* jours restants\n",
+    },
+    "vip_inactive": {
+        "ru": "💎 *VIP-статус* пока не активен.\n",
+        "en": "💎 *VIP* is not active yet.\n",
+        "fr": "💎 *VIP* pas encore actif.\n",
+    },
+    "vip_body": {
+        "ru": (
+            "━━━━━━━━━━━━━━━━━━\n"
+            "Преимущества VIP:\n"
+            "• 🚫 Никакой рекламы\n• 💎 Бейдж в профиле и топе\n• 🎯 Поддержка проекта\n\n"
+            "👇 Выберите тариф:"
+        ),
+        "en": (
+            "━━━━━━━━━━━━━━━━━━\n"
+            "VIP perks:\n"
+            "• 🚫 No ads\n• 💎 Badge in profile and leaderboard\n• 🎯 Support the project\n\n"
+            "👇 Choose a plan:"
+        ),
+        "fr": (
+            "━━━━━━━━━━━━━━━━━━\n"
+            "Avantages VIP :\n"
+            "• 🚫 Aucune pub\n• 💎 Badge au profil et au top\n• 🎯 Soutien au projet\n\n"
+            "👇 Choisis un tarif :"
+        ),
+    },
+    "help": {
+        "ru": (
+            "❓ *Как пользоваться ботом*\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "🚀 *Комбо* — ежедневные связки. Жми 🔔 в меню игры, чтобы получать комбо *автоматически*.\n"
+            "📱 *Майнеры* · 🚰 *Краны* · 🌾 *Фермы* — каталоги проектов.\n"
+            "⏰ *Таймеры* — напоминания зайти в игру.\n"
+            "🧮 *Курс* — конвертер криптовалют.\n"
+            "👤 *Профиль* — очки, серия, VIP, твои игры.\n"
+            "🎁 Заходи каждый день (/start) — растёт серия и очки.\n"
+            "👥 *Друзья* — приглашай и получай +50 очков за друга (/top — рейтинг).\n"
+            "💎 *VIP* — отключи рекламу и получи бейдж.\n"
+            "🔔 */alert BTC > 70000* — уведомлю при достижении цены.\n"
+            "🌅 */digest* — утренняя сводка: комбо дня + твоя серия.\n"
+            "🌐 */lang* — сменить язык.\n"
+            "📢 *Реклама* — размести свой пост на всю базу.\n"
+            "🛡 Все ссылки проверяются на скам автоматически."
+        ),
+        "en": (
+            "❓ *How to use the bot*\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "🚀 *Combo* — daily card combos. Tap 🔔 in a game menu to get them *automatically*.\n"
+            "📱 *Miners* · 🚰 *Faucets* · 🌾 *Farms* — project catalogs.\n"
+            "⏰ *Timers* — reminders to open a game.\n"
+            "🧮 *Rate* — crypto converter.\n"
+            "👤 *Profile* — points, streak, VIP, your games.\n"
+            "🎁 Come back daily (/start) — grow your streak and points.\n"
+            "👥 *Friends* — invite and earn +50 points per friend (/top — leaderboard).\n"
+            "💎 *VIP* — turn off ads and get a badge.\n"
+            "🔔 */alert BTC > 70000* — I'll notify you when the price is hit.\n"
+            "🌅 */digest* — morning summary: today's combos + your streak.\n"
+            "🌐 */lang* — change language.\n"
+            "📢 *Ads* — publish your post to the whole base.\n"
+            "🛡 All links are auto-checked for scam."
+        ),
+        "fr": (
+            "❓ *Comment utiliser le bot*\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "🚀 *Combo* — combos de cartes quotidiens. Appuie sur 🔔 dans le menu d'un jeu pour les recevoir *automatiquement*.\n"
+            "📱 *Mineurs* · 🚰 *Robinets* · 🌾 *Fermes* — catalogues de projets.\n"
+            "⏰ *Minuteurs* — rappels pour ouvrir un jeu.\n"
+            "🧮 *Cours* — convertisseur crypto.\n"
+            "👤 *Profil* — points, série, VIP, tes jeux.\n"
+            "🎁 Reviens chaque jour (/start) — fais grimper ta série et tes points.\n"
+            "👥 *Amis* — invite et gagne +50 points par ami (/top — classement).\n"
+            "💎 *VIP* — désactive la pub et obtiens un badge.\n"
+            "🔔 */alert BTC > 70000* — je te préviens quand le prix est atteint.\n"
+            "🌅 */digest* — résumé du matin : combos du jour + ta série.\n"
+            "🌐 */lang* — changer de langue.\n"
+            "📢 *Pub* — publie ton post à toute la base.\n"
+            "🛡 Tous les liens sont vérifiés anti-scam automatiquement."
+        ),
+    },
 }
 
 DANGEROUS_INJECTION_PATTERNS = [
@@ -490,8 +678,11 @@ ADS_TARIFFS_DATA = [
 # wallet_key ссылается на адрес в SAFEPAL_WALLETS (private_config.py).
 # network управляет способом авто-проверки: "bitcoin" или "tron".
 PAYMENT_METHODS = {
-    "speedwallet": {"label": "⚡ SpeedWallet (BTC)", "coin": "BTC", "network": "bitcoin", "wallet_key": "speedwallet_btc"},
-    "safepalton":  {"label": "💎 TON",              "coin": "TON", "network": "ton",     "wallet_key": "ton"},
+    "speedwallet": {"label": "⚡ SpeedWallet (BTC)",  "coin": "BTC",  "network": "bitcoin", "wallet_key": "speedwallet_btc"},
+    "safepalton":  {"label": "💎 TON",               "coin": "TON",  "network": "ton",     "wallet_key": "ton"},
+    # USDT-TRC20 (сеть Tron) — авто-проверка через verify_usdt_trc20.
+    # ⚠️ Требует TRON-адрес (T...) в SAFEPAL_WALLETS["safepal_usdttrc"] (private_config.py).
+    "safepalusdt": {"label": "💵 USDT (TRC20)",       "coin": "USDT", "network": "tron",    "wallet_key": "safepal_usdttrc"},
 }
 
 # Клавиатура выбора способа оплаты строится автоматически из PAYMENT_METHODS.
