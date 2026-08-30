@@ -47,6 +47,8 @@ from config import (
     ADS_KEYBOARD_DATA,
     ADS_TARIFFS_DATA,
     ADS_TARIFFS,
+    VIP_TARIFFS,
+    VIP_TARIFFS_DATA,
     CRYPTO_COINS_DATA,
     PAYMENT_METHODS,
     CRYPTO_CURRENCY_DATA,
@@ -1166,6 +1168,116 @@ def cached_json_get(url: str, ttl: int = PRICE_TTL):
     _price_cache[url] = (now, data)
     return data
 
+# ── Геймификация: очки, серии (streak) и VIP-статус ───────────────────────
+GAMIFY_FILE = "gamification.json"
+
+def load_gamify():
+    base = {"points": {}, "streak": {}, "vip_until": {}}
+    if os.path.exists(GAMIFY_FILE):
+        try:
+            with open(GAMIFY_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                base["points"] = data.get("points", {})
+                base["streak"] = data.get("streak", {})
+                base["vip_until"] = data.get("vip_until", {})
+        except Exception as e:
+            logger.error(f"Ошибка загрузки геймификации: {e}")
+    return base
+
+def save_gamify():
+    try:
+        with open(GAMIFY_FILE, "w", encoding="utf-8") as f:
+            json.dump(gamify_store, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения геймификации: {e}")
+
+gamify_store = load_gamify()
+
+def get_points(uid) -> int:
+    return int(gamify_store["points"].get(str(uid), 0))
+
+def add_points(uid, n: int):
+    gamify_store["points"][str(uid)] = get_points(uid) + int(n)
+    save_gamify()
+
+def get_streak(uid) -> int:
+    return int(gamify_store["streak"].get(str(uid), {}).get("count", 0))
+
+def daily_checkin(uid):
+    """Ежедневный бонус. Возвращает (claimed_now, streak, reward, total_points)."""
+    today = time.strftime("%Y-%m-%d", time.localtime())
+    yest = time.strftime("%Y-%m-%d", time.localtime(time.time() - 86400))
+    st = gamify_store["streak"].get(str(uid), {"count": 0, "last": ""})
+    if st.get("last") == today:
+        return False, st.get("count", 0), 0, get_points(uid)
+    st["count"] = st.get("count", 0) + 1 if st.get("last") == yest else 1
+    st["last"] = today
+    gamify_store["streak"][str(uid)] = st
+    reward = 10 + min(st["count"], 7) * 5      # база + бонус за серию (потолок)
+    gamify_store["points"][str(uid)] = get_points(uid) + reward
+    save_gamify()
+    return True, st["count"], reward, get_points(uid)
+
+def points_leaderboard(n: int = 10):
+    items = [(uid, p) for uid, p in gamify_store["points"].items() if p]
+    items.sort(key=lambda x: x[1], reverse=True)
+    return items[:n]
+
+def is_vip(uid) -> bool:
+    return gamify_store["vip_until"].get(str(uid), 0) > time.time()
+
+def vip_days_left(uid) -> int:
+    left = gamify_store["vip_until"].get(str(uid), 0) - time.time()
+    return max(0, int(left // 86400))
+
+def grant_vip(uid, days: int):
+    now = time.time()
+    cur = gamify_store["vip_until"].get(str(uid), 0)
+    base = cur if cur > now else now          # продлеваем, если VIP ещё активен
+    gamify_store["vip_until"][str(uid)] = base + days * 86400
+    save_gamify()
+
+# ── Комбо из кэша дня (мгновенно, без повторного скрейпинга) ───────────────
+def find_today_combo_fileid(game_key):
+    day_key = time.strftime("%Y-%m-%d", time.localtime())
+    for h in combo_history:
+        if h.get("key") == game_key and h.get("day") == day_key and h.get("file_id"):
+            return h["file_id"], h.get("date", "")
+    return None, None
+
+# ── Резервная копия всех данных (защита от потери телефона) ────────────────
+BACKUP_FILES = [
+    VERIFIED_FILE, USER_STATS_FILE, COMBO_HISTORY_FILE, REVIEWS_FILE,
+    PROOFS_FILE, TIMERS_FILE, COMBO_SUBS_FILE, REFERRALS_FILE, GAMIFY_FILE,
+    "banned_users.txt", "scam_domains.txt", "ai_knowledge.json",
+    ACTIVE_ADS_FILE, "used_tx_hashes.txt",
+]
+
+def backup_all_files(bot_instance, admin_chat_id):
+    """Отправляет все файлы данных админу (восстановление при потере телефона)."""
+    sent, missing = 0, []
+    for fname in BACKUP_FILES:
+        if os.path.exists(fname):
+            try:
+                with open(fname, "rb") as f:
+                    bot_instance.send_document(admin_chat_id, f, visible_file_name=fname)
+                sent += 1
+                time.sleep(0.3)
+            except Exception as e:
+                logger.error(f"Ошибка бэкапа {fname}: {e}")
+        else:
+            missing.append(fname)
+    try:
+        bot_instance.send_message(
+            admin_chat_id,
+            f"💾 *Бэкап завершён*\n✅ Отправлено файлов: *{sent}*\n"
+            f"➖ Ещё не создано: {', '.join(missing) if missing else '—'}",
+            parse_mode="Markdown"
+        )
+    except Exception:
+        pass
+
 user_input_states = {}
 
 class ActiveAdsManager:
@@ -1966,6 +2078,18 @@ class MessageProcessor:
             bot.send_message(chat_id, f"🛡️ **Проверка на человека**\n\n🧠 *{question}*", reply_markup=markup, parse_mode="Markdown")
             return
         send_message_direct(chat_id, WELCOME_MESSAGES["main_menu"], reply_markup=MenuManager.get_reply_keyboard(MAIN_MENU_BUTTONS))
+        # 🎁 Ежедневный бонус за заход (очки + серия).
+        try:
+            claimed, streak, reward, total = daily_checkin(chat_id)
+            if claimed:
+                send_message_direct(
+                    chat_id,
+                    f"🎁 *Ежедневный бонус:* +{reward} очков!\n"
+                    f"🔥 Серия: *{streak}* дн. · 💰 Всего очков: *{total}*",
+                    None, "Markdown"
+                )
+        except Exception:
+            pass
 
     @staticmethod
     def handle_menu_or_commands(message: types.Message):
@@ -2192,7 +2316,8 @@ class NotificationSender:
         """Рассылает рекламную карточку всем пользователям в фоне, с ограничением
         скорости (~20 сообщений/сек) и отчётом администратору по завершении."""
         card = build_ad_card(creative, tariff_name)
-        targets = list(recipients)  # снимок, чтобы не мутировать во время итерации
+        # VIP-пользователи не получают рекламу (одно из преимуществ VIP).
+        targets = [u for u in list(recipients) if not is_vip(u)]
 
         def _worker():
             sent = 0
@@ -2361,8 +2486,11 @@ class ProfileManager:
         )
         keyboard_markup.row(MenuManager.get_ai_button())
 
+        vip_line = f"👑 VIP активен ({vip_days_left(chat_id)} дн.)\n" if is_vip(chat_id) else ""
         profile_text = (
-            f"👤 **Профиль:** {user_name}\n\n"
+            f"👤 **Профиль:** {user_name}\n"
+            f"{vip_line}"
+            f"💰 Очки: **{get_points(chat_id)}** · 🔥 Серия: **{get_streak(chat_id)}** дн. · 👥 Друзей: **{referral_count(chat_id)}**\n\n"
             f"🏆 Игр с вашими статами: **{len(my_stats)}**\n\n"
             "👇 Нажмите на игру, чтобы посмотреть или добавить свой прогресс.\n"
             "✅ — стата уже добавлена, ➕ — пока нет."
@@ -2619,6 +2747,14 @@ class MenuTextProcessor:
         elif text in ["⚡ Проверить все комбо", "/all_combo"]:
             self.sender.send_message_direct(chat_id, "🔍 **Запущен массовый сбор комбо...**")
             for key, info in self.manager.combo_games.items():
+                # Сначала пробуем отдать комбо дня из кэша (мгновенно, без скрейпинга).
+                fid, dtext = find_today_combo_fileid(key)
+                if fid:
+                    try:
+                        self.bot.send_photo(chat_id, fid, caption=f"🎯 **{info.get('name', 'Комбо')}**\n📅 `{dtext}`", parse_mode="Markdown")
+                        continue
+                    except Exception:
+                        pass
                 img_url, date_text = self.manager.fetch_combo(key)
                 img_bytes = image_handler.resize_img(img_url) if img_url else None
                 send_combo_result(chat_id, info, img_bytes, date_text)
@@ -2669,29 +2805,75 @@ class MenuTextProcessor:
                 "💳 Оплата напрямую в крипте · запуск автоматом 👇",
                 reply_markup=get_ads_keyboard(), parse_mode="Markdown"
             )
-        elif text in ["👥 Пригласить друзей", "/invite"]:
+        elif text in ["👥 Друзья", "👥 Пригласить друзей", "/invite"]:
             link = f"https://t.me/{get_bot_username()}?start=ref_{chat_id}"
             self.sender.send_message_direct(
                 chat_id,
-                "👥 *Приглашай друзей — поднимайся в топе!* 🏆\n"
+                "👥 *Приглашай друзей — зарабатывай очки!* 🏆\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 "🔗 Твоя персональная ссылка:\n"
                 f"`{link}`\n\n"
-                f"👤 Уже приглашено: *{referral_count(chat_id)}*\n\n"
-                "Чем больше друзей пройдут проверку — тем выше ты в рейтинге /top",
+                f"👤 Приглашено: *{referral_count(chat_id)}* · 💰 Очки: *{get_points(chat_id)}*\n\n"
+                "🎁 За каждого друга (после проверки) — *+50 очков* и место в рейтинге /top",
+                parse_mode="Markdown"
+            )
+        elif text in ["💎 VIP", "/vip"]:
+            head = (f"👑 *VIP активен* — осталось *{vip_days_left(chat_id)}* дн.\n"
+                    if is_vip(chat_id) else "💎 *VIP-статус* пока не активен.\n")
+            self.sender.send_message_direct(
+                chat_id,
+                head + "━━━━━━━━━━━━━━━━━━\n"
+                "Преимущества VIP:\n"
+                "• 🚫 Никакой рекламы\n"
+                "• 💎 Бейдж в профиле и топе\n"
+                "• 🎯 Поддержка проекта\n\n"
+                "👇 Выберите тариф:",
+                reply_markup=get_vip_tariffs_keyboard(), parse_mode="Markdown"
+            )
+        elif text in ["❓ Помощь", "/help"]:
+            self.sender.send_message_direct(
+                chat_id,
+                "❓ *Как пользоваться ботом*\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                "🚀 *Комбо* — ежедневные связки. Жми 🔔 в меню игры, чтобы получать комбо *автоматически*.\n"
+                "📱 *Майнеры* · 🚰 *Краны* · 🌾 *Фермы* — каталоги проектов.\n"
+                "⏰ *Таймеры* — напоминания зайти в игру.\n"
+                "🧮 *Курс* — конвертер криптовалют.\n"
+                "👤 *Профиль* — очки, серия, VIP, твои игры.\n"
+                "🎁 Заходи каждый день (/start) — растёт серия и очки.\n"
+                "👥 *Друзья* — приглашай и получай +50 очков за друга (/top — рейтинг).\n"
+                "💎 *VIP* — отключи рекламу и получи бейдж.\n"
+                "📢 *Реклама* — размести свой пост на всю базу.\n"
+                "🛡 Все ссылки проверяются на скам автоматически.",
                 parse_mode="Markdown"
             )
         elif text in ["🏆 Топ пригласивших", "/top"]:
-            top = referral_top(10)
+            top = points_leaderboard(10)
             if not top:
-                self.sender.send_message_direct(chat_id, "🏆 Рейтинг пока пуст. Стань первым — команда /invite!")
+                self.sender.send_message_direct(chat_id, "🏆 Рейтинг пока пуст. Заходи каждый день и приглашай друзей — /invite!")
             else:
                 medals = ["🥇", "🥈", "🥉"]
-                lines = ["🏆 *ТОП пригласивших:*", "━━━━━━━━━━━━━━━━━━"]
-                for i, (uid, cnt) in enumerate(top):
+                lines = ["🏆 *ТОП игроков* (по очкам):", "━━━━━━━━━━━━━━━━━━"]
+                for i, (uid, pts) in enumerate(top):
                     badge = medals[i] if i < 3 else f"{i + 1}."
-                    lines.append(f"{badge} `{uid}` — *{cnt}* пригл.")
+                    vip = " 👑" if is_vip(uid) else ""
+                    lines.append(f"{badge} `{uid}`{vip} — *{pts}* очк. · 👥 {referral_count(uid)}")
                 self.sender.send_message_direct(chat_id, "\n".join(lines), parse_mode="Markdown")
+        elif text == "/backup" and str(chat_id) == str(ADMIN_CHAT_ID):
+            self.sender.send_message_direct(chat_id, "💾 Готовлю резервную копию всех данных...", parse_mode="Markdown")
+            backup_all_files(self.bot, chat_id)
+        elif text.startswith("/vipgrant") and str(chat_id) == str(ADMIN_CHAT_ID):
+            m = re.match(r'/vipgrant\s+(\d+)\s+(\d+)', text)
+            if m:
+                tuid, days = int(m.group(1)), int(m.group(2))
+                grant_vip(tuid, days)
+                self.sender.send_message_direct(chat_id, f"👑 VIP выдан `{tuid}` на *{days}* дн.", parse_mode="Markdown")
+                try:
+                    self.sender.send_message_direct(tuid, f"👑 Вам активирован VIP на *{days}* дн.! Спасибо.", parse_mode="Markdown")
+                except Exception:
+                    pass
+            else:
+                self.sender.send_message_direct(chat_id, "Формат: `/vipgrant <id> <дней>`", parse_mode="Markdown")
         elif text == "/stats" and str(chat_id) == str(ADMIN_CHAT_ID):
             active_timers = sum(len(t) for t in user_game_timers.values())
             subs_total = sum(len(v) for v in combo_subscribers.values())
@@ -2992,6 +3174,53 @@ class MessageInputHandler:
             )
             return
 
+        # 2b. Обработка оплаты VIP по хэшу транзакции
+        if chat_id in self.user_input_states and self.user_input_states[chat_id].get("step") == "waiting_vip_hash":
+            od = self.user_input_states.pop(chat_id, None)
+            vinfo = VIP_TARIFFS.get(od.get("vip_key"), {})
+            days = vinfo.get("days", 0)
+            network = od.get("network", "")
+            wallet_key = od.get("wallet_key", "")
+            expected_usd = parse_price_usd(vinfo.get("price", "0"))
+            our_addr = SAFEPAL_WALLETS.get(wallet_key, {}).get("address", "")
+            tx_hash = extract_ton_hash(raw_text) if network == "ton" else extract_tx_hash(raw_text)
+            verify_fn = {"bitcoin": verify_btc, "ton": verify_ton, "tron": verify_usdt_trc20}.get(network)
+
+            if verify_fn and tx_hash and our_addr:
+                ok, reason = verify_fn(tx_hash, expected_usd, our_addr)
+                if ok:
+                    canon = _ton_hash_to_hex(tx_hash) if network == "ton" else tx_hash
+                    mark_tx_used(canon or tx_hash)
+                    grant_vip(chat_id, days)
+                    self.sender.send_message_direct(
+                        chat_id,
+                        f"👑 **VIP активирован на {days} дн.!**\n{reason}\n\n"
+                        "🚫 Реклама отключена · 💎 бейдж выдан. Спасибо за поддержку!",
+                        parse_mode="Markdown"
+                    )
+                    self.sender.send_message_direct(
+                        self.admin_chat_id,
+                        f"👑 **Куплен VIP**\n👤 `{chat_id}`\n📋 {vinfo.get('name')}\n💰 {reason}",
+                        parse_mode="Markdown"
+                    )
+                    return
+
+            # Авто-проверка не прошла → на ручное подтверждение админом.
+            self.sender.send_message_direct(
+                self.admin_chat_id,
+                f"👑 **Заявка на VIP (ручная проверка)**\n"
+                f"👤 `{chat_id}`\n📋 {vinfo.get('name', '?')} · {days} дн.\n"
+                f"🧾 Сообщение: `{raw_text[:200]}`\n\n"
+                f"Выдать вручную: `/vipgrant {chat_id} {days}`",
+                parse_mode="Markdown"
+            )
+            self.sender.send_message_direct(
+                chat_id,
+                "🕒 Оплата отправлена на проверку. VIP активируют после подтверждения.",
+                parse_mode="Markdown"
+            )
+            return
+
         # 3. Обработка кастомного таймера
         if chat_id in self.user_input_states and self.user_input_states[chat_id].get("step") == "waiting_custom_timer":
             game_key = self.user_input_states[chat_id]["game_key"]
@@ -3184,11 +3413,12 @@ class CallbackQueryHandler:
                     # Реферал: кредитуем пригласившего (если был) после верификации.
                     ref = pending_ref.pop(chat_id, None)
                     if ref and record_referral(chat_id, ref):
+                        add_points(ref, 50)          # награда за приглашение
                         try:
                             self.sender.send_message_direct(
                                 ref,
                                 f"🎉 По вашей ссылке присоединился новый пользователь!\n"
-                                f"👥 Всего приглашено: *{referral_count(ref)}*",
+                                f"🎁 *+50 очков* · 👥 Всего приглашено: *{referral_count(ref)}* · 💰 Очки: *{get_points(ref)}*",
                                 parse_mode="Markdown"
                             )
                         except Exception:
@@ -3440,6 +3670,64 @@ class CallbackQueryHandler:
                     pass
                 return
 
+            # ── VIP-статус ──────────────────────────────────────────────
+            if data in ("vip_open", "vip_menu_back"):
+                head = (f"👑 *VIP активен* — осталось *{vip_days_left(chat_id)}* дн.\n"
+                        if is_vip(chat_id) else "💎 *VIP-статус* пока не активен.\n")
+                try:
+                    self.bot.edit_message_text(
+                        head + "━━━━━━━━━━━━━━━━━━\n"
+                        "Преимущества: 🚫 без рекламы · 💎 бейдж в профиле и топе.\n\n"
+                        "👇 Выберите тариф:",
+                        chat_id=chat_id, message_id=call.message.message_id,
+                        reply_markup=get_vip_tariffs_keyboard(), parse_mode="Markdown"
+                    )
+                except:
+                    pass
+                return
+
+            if data in VIP_TARIFFS:
+                v = VIP_TARIFFS[data]
+                try:
+                    self.bot.edit_message_text(
+                        f"💎 Тариф: *{v['name']} ({v['price']})*\n\n👇 Выберите способ оплаты:",
+                        chat_id=chat_id, message_id=call.message.message_id,
+                        reply_markup=get_vip_coins_keyboard(data), parse_mode="Markdown"
+                    )
+                except:
+                    pass
+                return
+
+            if data.startswith("vippay_"):
+                parts = data.split("_")
+                method_key = parts[-1]
+                vip_key = parts[1]
+                vinfo = VIP_TARIFFS.get(vip_key)
+                method = PAYMENT_METHODS.get(method_key)
+                if not vinfo or not method:
+                    try:
+                        self.bot.answer_callback_query(call.id, "Тариф/способ не найден", show_alert=True)
+                    except:
+                        pass
+                    return
+                wallet_info = SAFEPAL_WALLETS.get(method["wallet_key"], {"address": "ADRESS_NOT_SET"})
+                self.user_input_states[chat_id] = {
+                    "step": "waiting_vip_hash", "vip_key": vip_key,
+                    "network": method["network"], "wallet_key": method["wallet_key"],
+                    "coin": method["coin"],
+                }
+                self.sender.send_message_direct(
+                    chat_id,
+                    f"🧾 *Покупка VIP: {vinfo['name']}*\n"
+                    f"💳 Способ: *{method['label']}*\n\n"
+                    f"📌 *Адрес для оплаты* (нажмите, чтобы скопировать):\n"
+                    f"`{wallet_info['address']}`\n\n"
+                    f"1️⃣ Оплатите *{vinfo['price']}* в {method['coin']}.\n"
+                    f"2️⃣ Пришлите *хэш транзакции* одним сообщением — VIP активируется автоматически.",
+                    parse_mode="Markdown"
+                )
+                return
+
             if data.startswith("timer_game_"):
                 key = data.replace("timer_game_", "")
                 game_name = self.manager.combo_games[key]["name"] if key in self.manager.combo_games else self.manager.independent_farms[key]["name"]
@@ -3689,6 +3977,14 @@ class CallbackQueryHandler:
                         self.bot.answer_callback_query(call.id, "Загрузка...")
                     except:
                         pass
+                    # Комбо дня из кэша — мгновенно, без повторного скрейпинга.
+                    fid, dtext = find_today_combo_fileid(key)
+                    if fid:
+                        try:
+                            self.bot.send_photo(chat_id, fid, caption=f"🎯 **{self.manager.combo_games[key].get('name', 'Комбо')}**\n📅 `{dtext}`", parse_mode="Markdown")
+                            return
+                        except Exception:
+                            pass
                     img_url, date_text = self.manager.fetch_combo(key)
                     send_combo_result(chat_id, self.manager.combo_games[key], image_handler.resize_img(img_url) if img_url else None, date_text)
                 return
@@ -3817,6 +4113,16 @@ def get_ads_keyboard():
 
 def get_ads_tariffs_keyboard():
     return MenuManager.get_matrix_keyboard(ADS_TARIFFS_DATA)
+
+def get_vip_tariffs_keyboard():
+    return MenuManager.get_matrix_keyboard(VIP_TARIFFS_DATA)
+
+def get_vip_coins_keyboard(vip_key):
+    kb = types.InlineKeyboardMarkup()
+    for text, coin in CRYPTO_COINS_DATA:
+        kb.row(types.InlineKeyboardButton(text=text, callback_data=f"vippay_{vip_key}_{coin}"))
+    kb.row(types.InlineKeyboardButton(text="🔙 К тарифам VIP", callback_data="vip_open"))
+    return kb
 
 def get_safepal_coins_keyboard(tariff_key):
     return MenuManager.get_safepal_coins_keyboard(tariff_key, CRYPTO_COINS_DATA)
