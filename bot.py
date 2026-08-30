@@ -1153,20 +1153,113 @@ def get_bot_username() -> str:
             _bot_username_cache["name"] = None
     return _bot_username_cache["name"] or "bot"
 
-# ── Кэш цен CoinGecko (антибан 429): {url: (timestamp, json)} ─────────────
+# ── Здоровье внешних подсистем (деградация при сетевых проблемах) ──────────
+system_health = {"prices_ok": True, "combos_ok": True}
+
+def mark_subsystem(name: str, ok: bool):
+    system_health[f"{name}_ok"] = ok
+
+def is_degraded() -> bool:
+    return not (system_health.get("prices_ok", True) and system_health.get("combos_ok", True))
+
+def degraded_features():
+    feats = []
+    if not system_health.get("prices_ok", True):
+        feats.append("💱 Курс валют и ценовые алерты — данные из кэша")
+    if not system_health.get("combos_ok", True):
+        feats.append("🎯 Свежие комбо — только из истории (сайт недоступен)")
+    return feats
+
+# ── Очередь повторной отправки (не теряем уведомления при микро-обрывах) ───
+retry_queue = []
+_retry_lock = threading.Lock()
+RETRY_MAX = 5
+
+def _is_network_error(e) -> bool:
+    return isinstance(e, (requests.exceptions.ConnectionError, requests.exceptions.Timeout,
+                          requests.exceptions.RequestException, socket.gaierror,
+                          ConnectionError, OSError))
+
+def enqueue_retry(chat_id, text):
+    with _retry_lock:
+        if len(retry_queue) < 2000:
+            retry_queue.append({"chat_id": chat_id, "text": text, "tries": 0})
+
+def drain_retry_queue():
+    """Фоновая дорассылка накопленных сообщений после восстановления сети."""
+    while True:
+        time.sleep(60)
+        if not retry_queue:
+            continue
+        with _retry_lock:
+            batch = list(retry_queue)
+            retry_queue.clear()
+        for item in batch:
+            try:
+                bot.send_message(item["chat_id"], item["text"])
+            except apihelper.ApiTelegramException:
+                pass                          # 403/400 — получатель недоступен, отбрасываем
+            except Exception as e:
+                if _is_network_error(e):
+                    item["tries"] += 1
+                    if item["tries"] < RETRY_MAX:
+                        with _retry_lock:
+                            retry_queue.append(item)
+            time.sleep(0.05)
+
+# ── Мини-уведомление пользователю об облегчённом режиме (раз в 30 мин) ─────
+_degraded_notified = {}
+
+def maybe_notify_degraded(sender_obj, chat_id):
+    if not is_degraded():
+        return
+    now = time.time()
+    if now - _degraded_notified.get(chat_id, 0) < 1800:
+        return
+    feats = degraded_features()
+    if not feats:
+        return
+    _degraded_notified[chat_id] = now
+    try:
+        sender_obj.send_message_direct(
+            chat_id,
+            "⚠️ *Облегчённый режим* — проблемы с внешней сетью.\n"
+            "Временно ограничено:\n" + "\n".join(f"• {f}" for f in feats) +
+            "\n\n✅ Как обычно работает: меню, профиль, таймеры, ИИ-помощник, комбо из истории.",
+            parse_mode="Markdown"
+        )
+    except Exception:
+        pass
+
+# ── Последнее известное комбо (любой день) — для деградации ────────────────
+def find_last_combo_fileid(game_key):
+    for h in reversed(combo_history):
+        if h.get("key") == game_key and h.get("file_id"):
+            return h["file_id"], h.get("date", "")
+    return None, None
+
+# ── Кэш цен CoinGecko (антибан 429 + отдаём устаревшее при сбое сети) ──────
 _price_cache = {}
 PRICE_TTL = 60
 
 def cached_json_get(url: str, ttl: int = PRICE_TTL):
-    """GET JSON с кэшированием по URL на ttl секунд (меньше запросов → нет 429)."""
+    """GET JSON с кэшем. При сетевом сбое возвращает устаревшие данные из кэша
+    (если есть) и помечает подсистему цен как деградировавшую."""
     now = time.time()
     hit = _price_cache.get(url)
     if hit and now - hit[0] < ttl:
         return hit[1]
-    r = requests.get(url, timeout=8)
-    data = r.json()
-    _price_cache[url] = (now, data)
-    return data
+    try:
+        r = requests.get(url, timeout=8)
+        data = r.json()
+        _price_cache[url] = (now, data)
+        mark_subsystem("prices", True)
+        return data
+    except Exception:
+        mark_subsystem("prices", False)
+        if hit:
+            return hit[1]                     # устаревшие данные лучше, чем ничего
+        raise
 
 # ── Геймификация: очки, серии (streak) и VIP-статус ───────────────────────
 GAMIFY_FILE = "gamification.json"
@@ -1897,6 +1990,7 @@ class MiningComboManager:
         try:
             url = f"{self.base_url}{self.combo_games[game_key]['path']}"
             res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+            mark_subsystem("combos", res.status_code == 200)
             if res.status_code != 200:
                 return None, "Ошибка доступа"
                 
@@ -1976,8 +2070,9 @@ class MiningComboManager:
             return img_url, date_text
             
         except Exception as e:
+            mark_subsystem("combos", False)
             logger.error(f"Ошибка при парсинге {game_key}: {e}")
-            
+
         return None, "Ошибка парсинга"
 
 
@@ -2477,12 +2572,26 @@ class NotificationSender:
         threading.Thread(target=_worker, daemon=True).start()
 
     def send_message_direct(self, chat_id: int | str, text: str, reply_markup=None, parse_mode: str = "Markdown"):
-        """Прямая отправка сообщения с резервным вариантом без разметки при ошибке."""
+        """Отправка с резервом без разметки; при сетевом сбое — в очередь повтора."""
         try:
             return self.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        except apihelper.ApiTelegramException:
+            # Ошибка Telegram (обычно кривой Markdown) — пробуем без разметки.
+            try:
+                return self.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+            except Exception as e2:
+                if _is_network_error(e2):
+                    enqueue_retry(chat_id, text)
+                else:
+                    self.logger.error(f"Ошибка отправки сообщения: {e2}")
+                return None
         except Exception as e:
-            self.logger.error(f"Ошибка отправки сообщения: {e}")
-            return self.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+            # Сеть пропала — ставим в очередь и дошлём после восстановления.
+            if _is_network_error(e):
+                enqueue_retry(chat_id, text)
+            else:
+                self.logger.error(f"Ошибка отправки сообщения: {e}")
+            return None
 
     def send_combo_result(self, chat_id: int | str, info: dict, img_bytes, date_text: str):
         """Отправка результата комбо (фото с подписью или текст, если фото нет)."""
@@ -2912,6 +3021,9 @@ class MenuTextProcessor:
         except Exception:
             pass
 
+        # Мини-уведомление об облегчённом режиме (не чаще раза в 30 мин).
+        maybe_notify_degraded(self.sender, chat_id)
+
         text = message.text
         if text in ["🚀 Меню комбо-игр"]:
             keyboard, total_count = get_combo_list_keyboard(page=0)
@@ -2938,6 +3050,15 @@ class MenuTextProcessor:
                         pass
                 img_url, date_text = self.manager.fetch_combo(key)
                 img_bytes = image_handler.resize_img(img_url) if img_url else None
+                if not img_bytes:
+                    # Сайт недоступен → отдаём последнее известное комбо.
+                    lfid, ldate = find_last_combo_fileid(key)
+                    if lfid:
+                        try:
+                            self.bot.send_photo(chat_id, lfid, caption=f"🎯 **{info.get('name', 'Комбо')}**\n📅 `{ldate}` · _последнее известное (сайт недоступен)_", parse_mode="Markdown")
+                            continue
+                        except Exception:
+                            pass
                 send_combo_result(chat_id, info, img_bytes, date_text)
         elif text in ["🧮 Крипто-курс", "/calc"]:
             self.sender.send_message_direct(chat_id, "🧮 **Выберите криптовалюту:**", reply_markup=get_crypto_currency_keyboard())
@@ -3122,7 +3243,9 @@ class MenuTextProcessor:
                 f"💬 Отзывов: *{len(user_reviews_storage)}*\n"
                 f"💎 Скринов выплат: *{len(cloud_proofs)}*\n"
                 f"👥 Всего рефералов: *{total_ref}*\n"
-                f"✅ Проверено оплат: *{len(used_tx_hashes)}*",
+                f"✅ Проверено оплат: *{len(used_tx_hashes)}*\n"
+                f"📨 В очереди дорассылки: *{len(retry_queue)}*\n"
+                f"🌐 Внешняя сеть: {'⚠️ деградация' if is_degraded() else '✅ OK'}",
                 parse_mode="Markdown"
             )
         elif text == "/broadcast" and str(chat_id) == str(ADMIN_CHAT_ID):
@@ -3564,7 +3687,9 @@ class MessageInputHandler:
                     f"💵 Стоимость: **{total_sum:,.2f} {fiat.upper()}**\n"
                     f"📈 Тренд за 24ч: {trend_icon} **{change_sign}{change_24h:.2f}%**"
                 )
-                
+                if not system_health.get("prices_ok", True):
+                    report_text += "\n\n⚠️ _Данные из кэша: внешняя сеть временно недоступна._"
+
                 self.sender.send_message_direct(chat_id, report_text, parse_mode="Markdown")
                 self.user_calc_states.pop(chat_id, None)
                 return
@@ -4217,7 +4342,16 @@ class CallbackQueryHandler:
                         except Exception:
                             pass
                     img_url, date_text = self.manager.fetch_combo(key)
-                    send_combo_result(chat_id, self.manager.combo_games[key], image_handler.resize_img(img_url) if img_url else None, date_text)
+                    img_bytes = image_handler.resize_img(img_url) if img_url else None
+                    if not img_bytes:
+                        lfid, ldate = find_last_combo_fileid(key)
+                        if lfid:
+                            try:
+                                self.bot.send_photo(chat_id, lfid, caption=f"🎯 **{self.manager.combo_games[key].get('name', 'Комбо')}**\n📅 `{ldate}` · _последнее известное (сайт недоступен)_", parse_mode="Markdown")
+                                return
+                            except Exception:
+                                pass
+                    send_combo_result(chat_id, self.manager.combo_games[key], img_bytes, date_text)
                 return
 
         except Exception as e:
@@ -4786,6 +4920,10 @@ def thread_watchdog():
 threading.Thread(target=thread_watchdog, daemon=True).start()
 print("♻️ Watchdog запущен.", flush=True)
 
+# Фоновая дорассылка сообщений, не ушедших из-за микро-обрывов сети.
+threading.Thread(target=drain_retry_queue, daemon=True).start()
+print("📨 Очередь повторной отправки запущена.", flush=True)
+
 if __name__ == "__main__":
     # ========================================================
     # ОСНОВНАЯ ТОЧКА ЗАПУСКА TELEGRAM-БОТА
@@ -4807,6 +4945,7 @@ if __name__ == "__main__":
 
     retry_delay = 5            # стартовая пауза перед повтором
     max_delay = 300           # максимум 5 минут между попытками
+    outage_start = None       # засекаем начало простоя для отчёта о восстановлении
 
     # ========================================================
     # СУПЕРВАЙЗЕР: бот сам поднимается после обрывов сети/DNS.
@@ -4816,6 +4955,15 @@ if __name__ == "__main__":
             print("🌐 Проверка Telegram API...", flush=True)
             me = bot.get_me()
             print(f"✅ Telegram API отвечает. Бот: @{me.username} | ID: {me.id}", flush=True)
+            # Восстановились после простоя — уведомляем админа (если он был заметным).
+            if outage_start is not None:
+                downtime = int(time.time() - outage_start)
+                outage_start = None
+                if downtime > 120:
+                    try:
+                        bot.send_message(ADMIN_CHAT_ID, f"✅ Связь восстановлена. Бот был офлайн ~{downtime // 60} мин {downtime % 60} с.")
+                    except Exception:
+                        pass
 
             # Удаляем возможный вебхук — иначе getUpdates (polling) молчит.
             bot.remove_webhook()
@@ -4841,6 +4989,8 @@ if __name__ == "__main__":
 
         except NETWORK_ERRORS as e:
             # Временная потеря сети/DNS на телефоне — ждём и пробуем снова.
+            if outage_start is None:
+                outage_start = time.time()
             logger.warning("🌐 Нет сети/DNS (%s: %s). Повтор через %d c...", type(e).__name__, e, retry_delay)
             print(f"🌐 Сеть недоступна ({type(e).__name__}). Повтор через {retry_delay} c...", flush=True)
             time.sleep(retry_delay)
@@ -4848,6 +4998,8 @@ if __name__ == "__main__":
 
         except Exception as e:
             # Любая иная ошибка — логируем и перезапускаем цикл, НЕ выходя из процесса.
+            if outage_start is None:
+                outage_start = time.time()
             logger.exception("❌ Ошибка Telegram polling: %s", e)
             print(f"❌ Polling упал: {type(e).__name__}: {e}. Перезапуск через {retry_delay} c...", flush=True)
             time.sleep(retry_delay)
