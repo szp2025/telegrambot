@@ -1024,6 +1024,148 @@ def save_proofs():
 user_reviews_storage = load_reviews()
 cloud_proofs = load_proofs()
 
+# ── Персистентность таймеров пользователей ────────────────────────────────
+# Раньше таймеры жили только в памяти и терялись при каждом перезапуске
+# (а бот перезапускается каждые 2 часа). Теперь — переживают рестарт.
+TIMERS_FILE = "user_timers.json"
+
+def load_timers():
+    data = {}
+    if os.path.exists(TIMERS_FILE):
+        try:
+            with open(TIMERS_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            for k, v in raw.items():
+                try:
+                    data[int(k)] = v
+                except (ValueError, TypeError):
+                    data[k] = v
+        except Exception as e:
+            logger.error(f"Ошибка загрузки таймеров: {e}")
+    return data
+
+def save_timers():
+    try:
+        with open(TIMERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(user_game_timers, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения таймеров: {e}")
+
+user_game_timers = load_timers()
+
+# ── Подписки на авто-комбо: {game_key: [chat_id, ...]} ────────────────────
+COMBO_SUBS_FILE = "combo_subs.json"
+
+def load_combo_subs():
+    if os.path.exists(COMBO_SUBS_FILE):
+        try:
+            with open(COMBO_SUBS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return {k: list(v) for k, v in data.items()}
+        except Exception as e:
+            logger.error(f"Ошибка загрузки подписок на комбо: {e}")
+    return {}
+
+def save_combo_subs():
+    try:
+        with open(COMBO_SUBS_FILE, "w", encoding="utf-8") as f:
+            json.dump(combo_subscribers, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения подписок на комбо: {e}")
+
+combo_subscribers = load_combo_subs()
+
+def toggle_combo_sub(game_key: str, chat_id: int) -> bool:
+    """Переключает подписку на авто-комбо игры. True = теперь подписан."""
+    lst = combo_subscribers.setdefault(game_key, [])
+    if chat_id in lst:
+        lst.remove(chat_id)
+        if not lst:
+            combo_subscribers.pop(game_key, None)
+        save_combo_subs()
+        return False
+    lst.append(chat_id)
+    save_combo_subs()
+    return True
+
+def is_combo_subscribed(game_key: str, chat_id: int) -> bool:
+    return chat_id in combo_subscribers.get(game_key, [])
+
+# ── Реферальная система (deep-link /start ref_<id>) ───────────────────────
+REFERRALS_FILE = "referrals.json"
+
+def load_referrals():
+    base = {"ref_of": {}, "invited": {}}
+    if os.path.exists(REFERRALS_FILE):
+        try:
+            with open(REFERRALS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                base["ref_of"] = data.get("ref_of", {})
+                base["invited"] = data.get("invited", {})
+        except Exception as e:
+            logger.error(f"Ошибка загрузки рефералов: {e}")
+    return base
+
+def save_referrals():
+    try:
+        with open(REFERRALS_FILE, "w", encoding="utf-8") as f:
+            json.dump(referral_store, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения рефералов: {e}")
+
+referral_store = load_referrals()
+pending_ref = {}          # {chat_id: referrer_id} — до прохождения капчи
+
+def record_referral(new_user_id, referrer_id) -> bool:
+    """Кредитует пригласившего, если новичок ещё не был ничьим рефералом."""
+    nu, ref = str(new_user_id), str(referrer_id)
+    if nu == ref:
+        return False                              # сам себя не приглашает
+    if nu in referral_store["ref_of"]:
+        return False                              # уже был приглашён ранее
+    referral_store["ref_of"][nu] = ref
+    invited = referral_store["invited"].setdefault(ref, [])
+    if new_user_id not in invited and str(new_user_id) not in [str(x) for x in invited]:
+        invited.append(new_user_id)
+    save_referrals()
+    return True
+
+def referral_count(user_id) -> int:
+    return len(referral_store["invited"].get(str(user_id), []))
+
+def referral_top(n: int = 10):
+    items = [(uid, len(lst)) for uid, lst in referral_store["invited"].items() if lst]
+    items.sort(key=lambda x: x[1], reverse=True)
+    return items[:n]
+
+# Кэш имени бота (нужно для формирования реферальных ссылок).
+_bot_username_cache = {"name": None}
+
+def get_bot_username() -> str:
+    if not _bot_username_cache["name"]:
+        try:
+            _bot_username_cache["name"] = bot.get_me().username
+        except Exception:
+            _bot_username_cache["name"] = None
+    return _bot_username_cache["name"] or "bot"
+
+# ── Кэш цен CoinGecko (антибан 429): {url: (timestamp, json)} ─────────────
+_price_cache = {}
+PRICE_TTL = 60
+
+def cached_json_get(url: str, ttl: int = PRICE_TTL):
+    """GET JSON с кэшированием по URL на ttl секунд (меньше запросов → нет 429)."""
+    now = time.time()
+    hit = _price_cache.get(url)
+    if hit and now - hit[0] < ttl:
+        return hit[1]
+    r = requests.get(url, timeout=8)
+    data = r.json()
+    _price_cache[url] = (now, data)
+    return data
+
 user_input_states = {}
 
 class ActiveAdsManager:
@@ -1798,6 +1940,17 @@ class MessageProcessor:
             return
 
         if chat_id not in verified_users:
+            # Реферальный deep-link: /start ref_<id> — запоминаем пригласившего
+            # (кредитуется только ПОСЛЕ прохождения капчи — защита от накрутки).
+            try:
+                sp = (message.text or "").split(maxsplit=1)
+                if len(sp) > 1:
+                    mref = re.match(r'(?:ref_)?(\d{5,})', sp[1].strip())
+                    if mref:
+                        pending_ref[chat_id] = int(mref.group(1))
+            except Exception:
+                pass
+
             # Подозрительный, но не заблокированный аккаунт — уведомим админа.
             rscore, rreasons = account_guard.risk(user)
             if rscore >= 30:
@@ -2093,6 +2246,54 @@ class NotificationSender:
 
         threading.Thread(target=_worker, daemon=True).start()
 
+    def broadcast_message(self, text: str, recipients, admin_chat_id):
+        """Массовая рассылка админского объявления всем пользователям (в фоне,
+        с ограничением скорости и чисткой заблокировавших бота)."""
+        card = "📣 *ОБЪЯВЛЕНИЕ*\n━━━━━━━━━━━━━━━━━━\n\n" + (text or "").strip()
+        targets = list(recipients)
+
+        def _worker():
+            sent, failed, blocked = 0, 0, []
+            for uid in targets:
+                try:
+                    self.bot.send_message(uid, card, parse_mode="Markdown")
+                    sent += 1
+                except apihelper.ApiTelegramException as e:
+                    if getattr(e, "error_code", None) == 403:
+                        blocked.append(uid)
+                        failed += 1
+                    else:
+                        try:
+                            self.bot.send_message(uid, card)
+                            sent += 1
+                        except Exception:
+                            failed += 1
+                except Exception:
+                    try:
+                        self.bot.send_message(uid, card)
+                        sent += 1
+                    except Exception:
+                        failed += 1
+                time.sleep(0.05)
+            for uid in blocked:
+                try:
+                    remove_verified_user(uid)
+                except Exception:
+                    pass
+            try:
+                self.bot.send_message(
+                    admin_chat_id,
+                    "📣 *Объявление разослано*\n"
+                    f"✅ Доставлено: *{sent}*\n"
+                    f"⚠️ Не доставлено: *{failed}*\n"
+                    f"🚫 Удалено (заблокировали бота): *{len(blocked)}*",
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                self.logger.error(f"Ошибка отчёта об объявлении: {e}")
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def send_message_direct(self, chat_id: int | str, text: str, reply_markup=None, parse_mode: str = "Markdown"):
         """Прямая отправка сообщения с резервным вариантом без разметки при ошибке."""
         try:
@@ -2154,7 +2355,10 @@ class ProfileManager:
             keyboard_markup.row(types.InlineKeyboardButton(text=f"{mark} {nm}", callback_data=f"profgame_{nm}"))
         # Возможность добавить игру ВНЕ списка (ручной ввод «Название | Уровень»).
         keyboard_markup.row(types.InlineKeyboardButton(text="➕ Другая игра (вручную)", callback_data="prof_add"))
-        keyboard_markup.row(types.InlineKeyboardButton(text="📜 История комбо", callback_data="combo_hist"))
+        keyboard_markup.row(
+            types.InlineKeyboardButton(text="📜 История комбо", callback_data="combo_hist"),
+            types.InlineKeyboardButton(text="👥 Пригласить", callback_data="ref_invite")
+        )
         keyboard_markup.row(MenuManager.get_ai_button())
 
         profile_text = (
@@ -2220,7 +2424,33 @@ class BackgroundSchedulerManager:
                                     sent = self.bot.send_photo(self.admin_chat_id, photo=img_bytes, caption=caption[:1024], parse_mode="Markdown")
                                     # Фиксируем file_id (картинка живёт на серверах Telegram) в историю
                                     if sent and getattr(sent, "photo", None):
-                                        add_combo_to_history(key, info.get('name', key), date_text, sent.photo[-1].file_id)
+                                        file_id = sent.photo[-1].file_id
+                                        add_combo_to_history(key, info.get('name', key), date_text, file_id)
+                                        # 🔔 Авто-рассылка комбо подписчикам этой игры
+                                        # (переиспользуем file_id — без повторной загрузки картинки).
+                                        subs = list(combo_subscribers.get(key, []))
+                                        if subs:
+                                            sub_caption = (
+                                                f"🔔 **Комбо дня — {info.get('name', key)}**\n"
+                                                f"📅 `{date_text}`\n\n🎯 Успей ввести связку в игре!"
+                                            )
+                                            pushed, blocked = 0, []
+                                            for uid in subs:
+                                                try:
+                                                    self.bot.send_photo(uid, photo=file_id, caption=sub_caption[:1024], parse_mode="Markdown")
+                                                    pushed += 1
+                                                except apihelper.ApiTelegramException as e:
+                                                    if getattr(e, "error_code", None) == 403:
+                                                        blocked.append(uid)
+                                                except Exception:
+                                                    pass
+                                                time.sleep(0.05)
+                                            if blocked:
+                                                for uid in blocked:
+                                                    if uid in combo_subscribers.get(key, []):
+                                                        combo_subscribers[key].remove(uid)
+                                                save_combo_subs()
+                                            self.logger.info(f"🔔 Авто-комбо {key}: разослано {pushed}/{len(subs)} подписчикам.")
                                 except Exception as e:
                                     self.logger.error(f"Ошибка отправки авто-фото администратору: {e}")
                     except Exception as e:
@@ -2254,6 +2484,7 @@ class BackgroundSchedulerManager:
                                 )
                                 duration = t_data.get("duration_hours", 8)
                                 user_game_timers[chat_id][game_key]["target"] = time.time() + (duration * 3600)
+                                save_timers()
             except Exception as e:
                 self.logger.error(f"Ошибка в проверке таймеров: {e}")
                 
@@ -2438,6 +2669,57 @@ class MenuTextProcessor:
                 "💳 Оплата напрямую в крипте · запуск автоматом 👇",
                 reply_markup=get_ads_keyboard(), parse_mode="Markdown"
             )
+        elif text in ["👥 Пригласить друзей", "/invite"]:
+            link = f"https://t.me/{get_bot_username()}?start=ref_{chat_id}"
+            self.sender.send_message_direct(
+                chat_id,
+                "👥 *Приглашай друзей — поднимайся в топе!* 🏆\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                "🔗 Твоя персональная ссылка:\n"
+                f"`{link}`\n\n"
+                f"👤 Уже приглашено: *{referral_count(chat_id)}*\n\n"
+                "Чем больше друзей пройдут проверку — тем выше ты в рейтинге /top",
+                parse_mode="Markdown"
+            )
+        elif text in ["🏆 Топ пригласивших", "/top"]:
+            top = referral_top(10)
+            if not top:
+                self.sender.send_message_direct(chat_id, "🏆 Рейтинг пока пуст. Стань первым — команда /invite!")
+            else:
+                medals = ["🥇", "🥈", "🥉"]
+                lines = ["🏆 *ТОП пригласивших:*", "━━━━━━━━━━━━━━━━━━"]
+                for i, (uid, cnt) in enumerate(top):
+                    badge = medals[i] if i < 3 else f"{i + 1}."
+                    lines.append(f"{badge} `{uid}` — *{cnt}* пригл.")
+                self.sender.send_message_direct(chat_id, "\n".join(lines), parse_mode="Markdown")
+        elif text == "/stats" and str(chat_id) == str(ADMIN_CHAT_ID):
+            active_timers = sum(len(t) for t in user_game_timers.values())
+            subs_total = sum(len(v) for v in combo_subscribers.values())
+            total_ref = sum(len(v) for v in referral_store["invited"].values())
+            self.sender.send_message_direct(
+                chat_id,
+                "🎛 *Админ-панель — статистика*\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                f"👥 Пользователей: *{len(self.verified_users)}*\n"
+                f"🚫 Забанено: *{len(account_guard.banned)}*\n"
+                f"⏰ Активных таймеров: *{active_timers}*\n"
+                f"🔔 Подписок на комбо: *{subs_total}*\n"
+                f"📢 Активных реклам: *{len(ads_manager.storage)}*\n"
+                f"🧾 Заявок в ожидании: *{len(pending_ad_orders)}*\n"
+                f"💬 Отзывов: *{len(user_reviews_storage)}*\n"
+                f"💎 Скринов выплат: *{len(cloud_proofs)}*\n"
+                f"👥 Всего рефералов: *{total_ref}*\n"
+                f"✅ Проверено оплат: *{len(used_tx_hashes)}*",
+                parse_mode="Markdown"
+            )
+        elif text == "/broadcast" and str(chat_id) == str(ADMIN_CHAT_ID):
+            user_input_states[chat_id] = {"step": "waiting_admin_broadcast"}
+            self.sender.send_message_direct(
+                chat_id,
+                "📣 *Массовая рассылка.*\nПришлите текст объявления одним сообщением — "
+                "оно уйдёт ВСЕМ пользователям бота.",
+                parse_mode="Markdown"
+            )
         elif text in ["💎 Скрины выплат", "/proofs"]:
             if not self.cloud_proofs:
                 self.sender.send_message_direct(chat_id, "💎 Скринов пока нет.")
@@ -2540,6 +2822,13 @@ class MessageInputHandler:
         _pending = self.user_input_states.get(chat_id)
         if _pending and _pending.get("step") == "waiting_photo":
             self.user_input_states.pop(chat_id, None)
+
+        # 0. Админская массовая рассылка (объявление всем пользователям).
+        if chat_id == self.admin_chat_id and self.user_input_states.get(chat_id, {}).get("step") == "waiting_admin_broadcast":
+            self.user_input_states.pop(chat_id, None)
+            self.sender.broadcast_message(raw_text, self.verified_users, self.admin_chat_id)
+            self.sender.send_message_direct(chat_id, "📣 Рассылка запущена по всей базе. Отчёт придёт по завершении.", parse_mode="Markdown")
+            return
 
         # 1. Обработка ввода текста отзыва (с фильтрацией безопасности)
         if chat_id in self.user_input_states and self.user_input_states[chat_id].get("step") == "waiting_review_text":
@@ -2715,7 +3004,8 @@ class MessageInputHandler:
                 if chat_id not in self.user_game_timers:
                     self.user_game_timers[chat_id] = {}
                 self.user_game_timers[chat_id][game_key] = {"target": time.time() + (hours_val * 3600), "duration_hours": hours_val}
-                
+                save_timers()
+
                 game_name = (
                     self.manager.combo_games[game_key]["name"] if game_key in self.manager.combo_games 
                     else self.manager.independent_farms.get(game_key, {}).get("name", game_key)
@@ -2799,7 +3089,7 @@ class MessageInputHandler:
                 fiat = state['fiat']
                 
                 url = f"https://api.coingecko.com/api/v3/simple/price?ids={c_id}&vs_currencies={fiat}&include_24hr_change=true"
-                res_data = requests.get(url, timeout=3).json().get(c_id, {})
+                res_data = cached_json_get(url).get(c_id, {})
                 
                 rate = res_data.get(fiat, 0)
                 change_24h = res_data.get(fiat + "_24h_change", 0)
@@ -2891,6 +3181,18 @@ class CallbackQueryHandler:
                 if data.replace("advcap_", "") == self.advanced_captchas.get(chat_id):
                     save_verified_user(chat_id)
                     self.advanced_captchas.pop(chat_id, None)
+                    # Реферал: кредитуем пригласившего (если был) после верификации.
+                    ref = pending_ref.pop(chat_id, None)
+                    if ref and record_referral(chat_id, ref):
+                        try:
+                            self.sender.send_message_direct(
+                                ref,
+                                f"🎉 По вашей ссылке присоединился новый пользователь!\n"
+                                f"👥 Всего приглашено: *{referral_count(ref)}*",
+                                parse_mode="Markdown"
+                            )
+                        except Exception:
+                            pass
                     try:
                         self.bot.edit_message_text("✅ **Доступ открыт!**", chat_id, call.message.message_id, parse_mode="Markdown")
                     except:
@@ -3153,6 +3455,7 @@ class CallbackQueryHandler:
                 if chat_id not in self.user_game_timers:
                     self.user_game_timers[chat_id] = {}
                 self.user_game_timers[chat_id][parts[1]] = {"target": time.time() + (hours * 3600), "duration_hours": float(hours)}
+                save_timers()
                 try:
                     self.bot.answer_callback_query(call.id, f"✅ Таймер на {hours}ч установлен!")
                 except:
@@ -3171,6 +3474,7 @@ class CallbackQueryHandler:
             if data.startswith("canceltimer_"):
                 if chat_id in self.user_game_timers:
                     self.user_game_timers[chat_id].pop(data.replace("canceltimer_", ""), None)
+                    save_timers()
                 try:
                     self.bot.edit_message_text("❌ **Таймер отключен.**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_timers_games_keyboard(), parse_mode="Markdown")
                 except:
@@ -3220,6 +3524,21 @@ class CallbackQueryHandler:
 
             if data == "prof_view":
                 show_user_profile(chat_id)
+                return
+
+            # Реферальная ссылка пользователя (из профиля).
+            if data == "ref_invite":
+                link = f"https://t.me/{get_bot_username()}?start=ref_{chat_id}"
+                self.sender.send_message_direct(
+                    chat_id,
+                    "👥 *Приглашай друзей — поднимайся в топе!* 🏆\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "🔗 Твоя персональная ссылка:\n"
+                    f"`{link}`\n\n"
+                    f"👤 Уже приглашено: *{referral_count(chat_id)}*\n\n"
+                    "Смотри рейтинг: /top",
+                    parse_mode="Markdown"
+                )
                 return
 
             # Удаление конкретной строки статистики.
@@ -3298,10 +3617,37 @@ class CallbackQueryHandler:
                     pass
                 return
 
+            # Переключение подписки на авто-комбо игры.
+            if data.startswith("combosub_"):
+                parts = data.split("_")
+                key = parts[1]
+                page = parts[2] if len(parts) > 2 else "0"
+                if key in self.manager.combo_games:
+                    now_sub = toggle_combo_sub(key, chat_id)
+                    try:
+                        self.bot.answer_callback_query(call.id, "🔔 Вы подписаны на авто-комбо!" if now_sub else "🔕 Подписка отменена")
+                    except Exception:
+                        pass
+                    kb = get_single_game_keyboard(key, page)
+                    sub_text = "🔕 Отписаться от авто-комбо" if now_sub else "🔔 Подписаться на авто-комбо"
+                    kb.row(types.InlineKeyboardButton(text=sub_text, callback_data=f"combosub_{key}_{page}"))
+                    try:
+                        self.bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=kb)
+                    except Exception:
+                        pass
+                return
+
             if data.startswith("gamemenu_"):
                 parts = data.split("_")
                 if parts[1] in self.manager.combo_games:
-                    self.bot.edit_message_text(f"🕹 **Меню: {self.manager.combo_games[parts[1]]['name']}**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_single_game_keyboard(parts[1], parts[2]), parse_mode="Markdown")
+                    kb = get_single_game_keyboard(parts[1], parts[2])
+                    subbed = is_combo_subscribed(parts[1], chat_id)
+                    sub_text = "🔕 Отписаться от авто-комбо" if subbed else "🔔 Подписаться на авто-комбо"
+                    kb.row(types.InlineKeyboardButton(text=sub_text, callback_data=f"combosub_{parts[1]}_{parts[2]}"))
+                    try:
+                        self.bot.edit_message_text(f"🕹 **Меню: {self.manager.combo_games[parts[1]]['name']}**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=kb, parse_mode="Markdown")
+                    except Exception:
+                        pass
                 return
 
             if data == "ignore":
@@ -3633,13 +3979,10 @@ def verify_usdt_trc20(tx_hash: str, expected_usd: float, our_address: str):
 # АВТО-ПРОВЕРКА ОПЛАТЫ BTC ПО ХЭШУ (сеть Bitcoin, API Blockstream)
 # ============================================================
 def get_btc_usd_rate() -> float:
-    """Текущий курс BTC→USD через CoinGecko (0.0 при ошибке)."""
+    """Текущий курс BTC→USD через CoinGecko (кэш 60с, 0.0 при ошибке)."""
     try:
-        r = requests.get(
-            "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd",
-            timeout=8
-        )
-        return float(r.json()["bitcoin"]["usd"])
+        data = cached_json_get("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd")
+        return float(data["bitcoin"]["usd"])
     except Exception as e:
         logger.error(f"Ошибка получения курса BTC: {e}")
         return 0.0
@@ -3737,13 +4080,10 @@ def _ton_address_raw(addr: str) -> str:
     return ""
 
 def get_ton_usd_rate() -> float:
-    """Текущий курс TON→USD через CoinGecko (0.0 при ошибке)."""
+    """Текущий курс TON→USD через CoinGecko (кэш 60с, 0.0 при ошибке)."""
     try:
-        r = requests.get(
-            "https://api.coingecko.com/api/v3/simple/price?ids=the-open-network&vs_currencies=usd",
-            timeout=8
-        )
-        return float(r.json()["the-open-network"]["usd"])
+        data = cached_json_get("https://api.coingecko.com/api/v3/simple/price?ids=the-open-network&vs_currencies=usd")
+        return float(data["the-open-network"]["usd"])
     except Exception as e:
         logger.error(f"Ошибка получения курса TON: {e}")
         return 0.0
