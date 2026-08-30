@@ -1,3 +1,4 @@
+import sys
 import logging
 import io
 import random
@@ -9,14 +10,15 @@ import requests
 from bs4 import BeautifulSoup
 from PIL import Image
 import telebot
-from telebot import types
+from telebot import types, apihelper
+from PIL import Image
 import urllib.request
 import ast
+import base64
+import json
 from datetime import datetime
 import math
 import subprocess
-import asyncio
-from abc import ABC, abstractmethod
 from colorama import Fore
 import urllib.parse
 from typing import Tuple, Dict, List, Any
@@ -43,7 +45,9 @@ from config import (
     REVIEWS_KEYBOARD_DATA,
     ADS_KEYBOARD_DATA,
     ADS_TARIFFS_DATA,
+    ADS_TARIFFS,
     CRYPTO_COINS_DATA,
+    PAYMENT_METHODS,
     CRYPTO_CURRENCY_DATA,
     SINGLE_GAME_ACTIONS,
     PHONE_MINER_ACTIONS,
@@ -61,7 +65,23 @@ from private_config import (
     TOKEN,
 )
 
-# Целевой бот для авто-фермы Doodle Jump
+
+# ============================================================
+# НАСТРОЙКИ СОЕДИНЕНИЯ С TELEGRAM API
+# ============================================================
+
+# Максимальное время установления TCP-соединения.
+apihelper.CONNECT_TIMEOUT = 30
+
+# Максимальное время ожидания HTTP-ответа.
+apihelper.READ_TIMEOUT = 60
+
+# Периодическое пересоздание HTTP-сессии.
+# Помогает при ConnectionResetError после простоя соединения.
+apihelper.SESSION_TIME_TO_LIVE = 5 * 60
+
+
+# Исторический идентификатор (оставлен для совместимости конструктора).
 TARGET_GAME_BOT = "@DoodlePlayBot"
 # Настройка логирования для отслеживания запросов ИИ
 logging.basicConfig(level=logging.INFO)
@@ -125,293 +145,477 @@ def background_independent_updater(interval_seconds: int = 7200):
         else:
             print("⚡ [SKIP RESTART] Основной файл бота не обновлялся или содержал ошибки. Перезапуск пропущен.")
 
-# Запуск фонового потока (интервал: 2 часа = 7200 секунд)
-updater_thread = threading.Thread(target=background_independent_updater, args=(7200,), daemon=True)
-updater_thread.start()
+
+
+class ImageHandler:
+    """Менеджер для загрузки, изменения размеров и оптимизации изображений."""
+
+    def __init__(self, logger_instance, target_width: int = 800):
+        self.logger = logger_instance
+        self.target_width = target_width
+
+    def resize_img(self, url: str) -> bytes | None:
+        """
+        Готовит картинку под телефон:
+        1) уменьшает (без увеличения) в компактный бокс;
+        2) LETTERBOX — добавляет боковые поля до широкого формата 2:1, чтобы на
+           мобильном высота была ограничена (широкая картинка = низкая высота).
+        Поля берут цвет из угла картинки, чтобы сливаться с фоном.
+        """
+        try:
+            res = requests.get(url, timeout=5)
+            if res.status_code == 200:
+                img = Image.open(io.BytesIO(res.content))
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+
+                # 1) Только уменьшение в бокс.
+                max_w = self.target_width
+                max_h = int(self.target_width * 1.3)
+                w, h = img.width, img.height
+                scale = min(max_w / w, max_h / h, 1.0)
+                if scale < 1.0:
+                    img = img.resize(
+                        (max(1, int(w * scale)), max(1, int(h * scale))),
+                        Image.Resampling.LANCZOS
+                    )
+
+                # 2) Приводим к формату 2:1 (letterbox в ОБЕ стороны):
+                #    • широкие картинки Telegram больше НЕ обрезает — добавляем поля
+                #      сверху/снизу (весь комбо виден целиком);
+                #    • высокие/квадратные делаем широкими (поля по бокам) → низкая
+                #      высота на телефоне.
+                target_ratio = 2.0
+                cw, ch = img.width, img.height
+                cur = (cw / ch) if ch else target_ratio
+                if abs(cur - target_ratio) > 0.02:
+                    if cur < target_ratio:                       # слишком «высокая» → поля по бокам
+                        canvas_w, canvas_h = int(round(ch * target_ratio)), ch
+                    else:                                         # слишком «широкая» → поля сверху/снизу
+                        canvas_w, canvas_h = cw, int(round(cw / target_ratio))
+                    try:
+                        pad_color = img.getpixel((0, 0))
+                        if not (isinstance(pad_color, tuple) and len(pad_color) == 3):
+                            pad_color = (255, 255, 255)
+                    except Exception:
+                        pad_color = (255, 255, 255)
+                    canvas = Image.new("RGB", (canvas_w, canvas_h), pad_color)
+                    canvas.paste(img, ((canvas_w - cw) // 2, (canvas_h - ch) // 2))
+                    img = canvas
+                    # Ограничим итоговую ширину, чтобы файл не разрастался.
+                    if img.width > 900:
+                        r = 900 / img.width
+                        img = img.resize((900, max(1, int(img.height * r))),
+                                         Image.Resampling.LANCZOS)
+
+                out = io.BytesIO()
+                img.save(out, format="JPEG", quality=88)
+                return out.getvalue()
+        except Exception as e:
+            self.logger.error(f"Ошибка обработки изображения: {e}")
+        return None
 
 class BotVirtualAssistant:
-    def __init__(self, model_name: str = "Zero-Lag Pure Self-Learning AI"):
+    """
+    Локальный (офлайн) виртуальный интеллект — работает БЕЗ интернета и внешних API.
+
+    Возможности:
+    • Встроенная база знаний по теме бота (комбо, майнинг, краны, фарм, вывод,
+      кошельки, безопасность, таймеры, курс, реклама).
+    • Понимание вопроса по ключевым словам (нормализация + взвешенное сходство),
+      а не по точному совпадению.
+    • ОБУЧЕНИЕ прямо в диалоге: команда «запомни: вопрос = ответ» добавляет знание
+      и сохраняет его в файл (переживает перезапуск бота).
+    • Память контекста беседы по каждому пользователю.
+    """
+
+    KNOWLEDGE_FILE = "ai_knowledge.json"
+
+    STOP_WORDS = {
+        "и", "в", "во", "не", "что", "он", "на", "я", "с", "со", "как", "а", "то",
+        "все", "она", "так", "его", "но", "да", "ты", "к", "у", "же", "вы", "за",
+        "бы", "по", "только", "ее", "мне", "было", "вот", "от", "меня", "о", "из",
+        "для", "ну", "ли", "если", "или", "это", "эта", "этот", "мой", "есть",
+        "быть", "чем", "the", "a", "to", "is", "of", "мне", "мы", "нам",
+    }
+
+    # Встроенная база: (список ключевых слов/фраз-триггеров, ответ).
+    BASE_KNOWLEDGE = [
+        (["комбо", "combo", "daily combo", "связка", "карты"],
+         "🎯 Комбо (daily combo) — ежедневная связка карт/действий в tap-to-earn играх, "
+         "которая даёт большой бонус монет. Открой «🚀 Меню комбо-игр», выбери игру и "
+         "нажми «Открыть комбо» — увидишь актуальную комбинацию на сегодня."),
+        (["майнинг", "майнер", "добыча", "mining"],
+         "⛏️ Майнинг — пассивная добыча монет в приложении/боте. Раздел «📱 Телефонные "
+         "майнеры»: выбери проект, установи и собирай монеты по таймеру. Регулярно заходи "
+         "и смотри буст-видео, чтобы ускорить добычу."),
+        (["кран", "краны", "faucet", "краник", "фаусет"],
+         "🚰 Крипто-краны — сайты/боты, где дают маленькие суммы крипты за простые действия "
+         "(клики, капча, задания). Смотри «🚰 Крипто-краны». Выводи на сеть с низкой "
+         "комиссией (TON или USDT-TRC20)."),
+        (["ферма", "фарм", "farming", "фармить"],
+         "🌾 Фарм — регулярный сбор наград в игре. Настрой «⏰ Мои таймеры» — бот будет "
+         "напоминать, когда пора зайти собрать монеты и посмотреть видео."),
+        (["вывод", "вывести", "withdraw", "снять"],
+         "💸 Для вывода нужен криптокошелёк. Дождись минимальной суммы в проекте, укажи адрес "
+         "своей сети (TON, TRC20, BTC) и подтверди. ВСЕГДА проверяй сеть — при неверной сети "
+         "средства теряются безвозвратно."),
+        (["кошелек", "кошелёк", "wallet", "safepal", "seed", "фраза"],
+         "👛 Кошелёк хранит твою крипту. НИКОГДА и НИКОМУ не показывай seed-фразу (12/24 слова) "
+         "— это полный доступ к деньгам. Храни её офлайн, на бумаге."),
+        (["безопасность", "скам", "мошенник", "развод", "scam", "обман"],
+         "🛡️ Безопасность: не вводи seed-фразу на сайтах, не переходи по подозрительным ссылкам, "
+         "не отправляй крипту «для разблокировки вывода». Обещают лёгкие деньги за предоплату — "
+         "это скам."),
+        (["таймер", "напоминание", "timer", "напомнить"],
+         "⏰ Открой «⏰ Мои таймеры», выбери игру и интервал — бот будет присылать напоминание "
+         "со ссылкой прямо на игру каждые несколько часов."),
+        (["курс", "цена", "стоимость", "price", "конвертер", "сколько стоит"],
+         "🧮 Раздел «🧮 Крипто-курс»: выбери монету и валюту, введи количество — бот покажет "
+         "актуальную стоимость и тренд за 24 часа."),
+        (["реклама", "рекламу", "ads", "разместить"],
+         "📢 Раздел «📢 Реклама и монетизация» → выбери тариф → способ оплаты (BTC/TON) → "
+         "пришли текст объявления и хэш транзакции. Оплата проверяется автоматически по хэшу."),
+        (["привет", "здравствуй", "хай", "hello", "hi", "здарова", "прив"],
+         "👋 Привет! Я помощник по крипте, майнингу и комбо-играм. Спроси про комбо, фарм, "
+         "краны, вывод средств или безопасность."),
+        (["спасибо", "благодарю", "thanks", "спс"],
+         "🙌 Всегда пожалуйста! Будут вопросы по крипте или играм — пиши."),
+        (["кто ты", "что умеешь", "помощь", "help", "команды", "умеешь"],
+         "🧠 Я локальный ИИ-помощник бота. Объясняю про комбо, майнинг, краны, фарм, вывод и "
+         "безопасность, считаю по твоим числам, советую тактику по играм и проверяю ссылки на "
+         "скам. Меня можно обучать: напиши «запомни: вопрос = ответ»."),
+
+        # --- Криптовалюты и сети ---
+        (["биткоин", "bitcoin", "btc", "битка"],
+         "₿ Bitcoin (BTC) — первая и главная криптовалюта. Медленные подтверждения (~10–30 мин) "
+         "и заметная комиссия сети. Для мелких сумм лучше USDT-TRC20 или TON — быстрее и дешевле."),
+        (["тон", "ton", "toncoin", "the open network"],
+         "💎 TON (Toncoin) — быстрая и дешёвая сеть, тесно связана с Telegram. Удобна для мелких "
+         "выплат и внутриигровых наград. Кошелёк можно открыть прямо в Telegram (@wallet)."),
+        (["usdt", "тизер", "tether", "стейбл", "стейблкоин", "юсдт"],
+         "💵 USDT (Tether) — стейблкоин, ~1$ всегда. Есть в разных сетях: TRC20 (Tron) — дёшево и "
+         "быстро, ERC20 (Ethereum) — дорого. Всегда выбирай ту же сеть, что и получатель!"),
+        (["сеть", "network", "trc20", "erc20", "bep20", "какая сеть"],
+         "🌐 Сеть — это «дорога», по которой идёт перевод. TRC20 (Tron) и TON — дешёвые и быстрые; "
+         "ERC20 (Ethereum) — дорогой. КРИТИЧЕСКИ важно: отправитель и получатель должны быть в "
+         "ОДНОЙ сети, иначе средства теряются навсегда."),
+        (["комиссия", "комисия", "fee", "газ", "gas", "сколько комиссия"],
+         "⛽ Комиссия (fee/gas) — плата сети за перевод. В BTC/ERC20 она высокая, в TON и TRC20 — "
+         "копейки. Для частых мелких выводов выбирай TON или USDT-TRC20."),
+        (["купить крипту", "где купить", "p2p", "обмен", "обменник", "поменять"],
+         "🔁 Купить/обменять крипту можно на биржах (P2P) или в проверенных обменниках. Никогда "
+         "не переводи деньги «частнику» из ЛС без гаранта — это классический развод."),
+
+        # --- Безопасность (углублённо) ---
+        (["seed", "сид", "фраза", "мнемоника", "12 слов", "24 слова"],
+         "🔑 Seed-фраза (12/24 слова) = ПОЛНЫЙ доступ к кошельку. Кто её знает — заберёт все деньги. "
+         "Правила: записать на бумаге, хранить офлайн, НИКОМУ не показывать, НИКУДА не вводить, "
+         "кроме восстановления своего же кошелька. Поддержка НИКОГДА её не спрашивает."),
+        (["2fa", "двухфактор", "двухфакторная", "гугл аутентификатор", "authenticator"],
+         "🔐 2FA (двухфакторная аутентификация) — второй код при входе (Google Authenticator). "
+         "Обязательно включай на биржах и в кошельках. Не используй SMS, если есть приложение-"
+         "аутентификатор — SMS перехватывают."),
+        (["дрейнер", "drainer", "подключить кошелек", "connect wallet", "подпись", "approve"],
+         "🚱 Дрейнер — вредоносный сайт, который просит «подключить кошелёк» или подписать "
+         "транзакцию и опустошает баланс. Не подключай кошелёк к незнакомым сайтам, проверяй, "
+         "что именно подписываешь, отзывай лишние разрешения (revoke)."),
+        (["фейк", "поддержка", "support", "админ пишет", "написал админ", "техподдержка"],
+         "🎭 Настоящая поддержка НИКОГДА не пишет первой в ЛС и не просит seed-фразу, пароль или "
+         "предоплату «за разблокировку». Любой, кто это делает, — мошенник. Проверяй юзернеймы: "
+         "@s_upp0rt и подобные подмены — скам."),
+        (["предоплата", "разблокировка вывода", "комиссия за вывод", "заплати чтобы вывести"],
+         "🚨 Классический развод: «внеси предоплату/комиссию, чтобы разблокировать вывод». "
+         "Настоящий вывод НИКОГДА не требует сначала прислать деньги. Это 100% скам — не плати."),
+        (["холодный кошелек", "аппаратный", "ledger", "trezor", "hardware"],
+         "🧊 Холодный (аппаратный) кошелёк (Ledger/Trezor) хранит ключи офлайн — самый безопасный "
+         "способ для крупных сумм. Для мелких игровых наград достаточно обычного (горячего) "
+         "кошелька, но seed всё равно береги."),
+
+        # --- Заработок и механика бота ---
+        (["заработать", "доход", "сколько можно заработать", "как заработать", "профит"],
+         "💰 Честно: на кранах, комбо и tap-to-earn заработок небольшой и требует регулярности. "
+         "Реальные плюсы — из ретро-дропов (airdrop) и рефералов. Не вкладывай деньги в проекты, "
+         "которые обещают «иксы» — почти всегда это скам."),
+        (["airdrop", "аирдроп", "дроп", "раздача токенов"],
+         "🪂 Airdrop (дроп) — бесплатная раздача токенов за активность в проекте. Легитимные дропы "
+         "НЕ просят seed-фразу и предоплату. Делай задания заранее и жди листинга токена."),
+        (["реферал", "рефка", "реф", "пригласить", "referral"],
+         "👥 Реферальная программа — ты получаешь % от активности приглашённых. Делись своей "
+         "реф-ссылкой из проекта. Это один из самых стабильных способов заработка в таких ботах."),
+        (["минималка", "минимальная сумма", "минимум для вывода", "порог вывода"],
+         "📉 Минималка — наименьшая сумма, которую можно вывести. Пока не накопил её — вывод "
+         "недоступен. Копи, собирай ежедневно и подключай рефералов, чтобы дойти до порога быстрее."),
+        (["не приходит вывод", "вывод завис", "не пришли деньги", "где мои деньги"],
+         "⏳ Если вывод не пришёл: 1) проверь статус транзакции по хэшу в блокчейн-эксплорере; "
+         "2) убедись, что указал ВЕРНУЮ сеть и адрес; 3) иногда сеть перегружена — подожди. "
+         "Если проект просит доплатить «за разблокировку» — это скам."),
+        (["верификация", "капча", "не пройти", "start", "/start", "доступ"],
+         "✅ Чтобы получить доступ к боту, пройди простую капчу по команде /start (реши пример). "
+         "Это защита от ботов и спамеров. После верификации откроется главное меню."),
+        (["скрины выплат", "пруфы", "proofs", "доказательства", "выплаты реальные"],
+         "💎 Раздел «💎 Скрины выплат» показывает реальные скриншоты выводов. Это помогает "
+         "убедиться, что проекты платят. Но всегда перепроверяй актуальность сам."),
+        (["волатильность", "риск", "падение", "просадка", "risk"],
+         "📉 Крипта волатильна — цена может резко падать и расти. Никогда не вкладывай больше, чем "
+         "готов потерять, и не бери кредиты под крипту. Стейблкоины (USDT) не колеблются в цене."),
+        (["телеграм кошелек", "@wallet", "telegram wallet", "кошелек в телеграм"],
+         "📲 В Telegram есть встроенный кошелёк (@wallet) — удобно принимать TON и USDT прямо в "
+         "мессенджере, без отдельного приложения. Подходит для мелких игровых выплат."),
+    ]
+
+    def __init__(self, model_name: str = "Local Self-Learning AI"):
         self.model_name = model_name
-        self.session_memory = {}
-        self.learned_knowledge = []
-        self.is_offline_mode = False
+        self.session_memory = {}          # {chat_id: [последние реплики]}
+        self.is_offline_mode = True
+        self.learned = self._load_learned()   # [{"keys": [...], "answer": "..."}]
+
+    # ---------- Персистентность выученных знаний ----------
+    def _load_learned(self):
+        if os.path.exists(self.KNOWLEDGE_FILE):
+            try:
+                with open(self.KNOWLEDGE_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        return data
+            except Exception as e:
+                logger.error(f"Ошибка загрузки базы знаний ИИ: {e}")
+        return []
+
+    def _save_learned(self):
+        try:
+            with open(self.KNOWLEDGE_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.learned, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"Ошибка сохранения базы знаний ИИ: {e}")
 
     def set_offline_status(self, status: bool):
         self.is_offline_mode = status
 
-    def generate_response(self, userQuery: str, chat_id: int = 0) -> str:
-        query_lower = userQuery.lower().strip()
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        if chat_id not in self.session_memory:
-            self.session_memory[chat_id] = []
-        self.session_memory[chat_id].append(userQuery)
-        if len(self.session_memory[chat_id]) > 5:
-            self.session_memory[chat_id].pop(0)
+    # ---------- Обработка текста ----------
+    def _tokens(self, text: str):
+        words = re.findall(r'[a-zA-Zа-яА-ЯёЁ0-9]+', (text or "").lower())
+        return [w for w in words if w not in self.STOP_WORDS and len(w) > 2]
 
-        words = [w.strip(".,!?«»'\"") for w in userQuery.split() if len(w) > 3]
-        for word in words:
-            stop_words = ["для", "что", "как", "или", "это", "про", "при", "без"]
-            if word not in stop_words and word not in self.learned_knowledge:
-                self.learned_knowledge.append(word.lower())
-                if len(self.learned_knowledge) > 100:
-                    self.learned_knowledge.pop(0)
+    def _score(self, query_tokens, key_tokens) -> float:
+        """Мягкое сходство по пересечению множеств слов."""
+        qset, kset = set(query_tokens), set(key_tokens)
+        if not qset or not kset:
+            return 0.0
+        overlap = len(qset & kset)
+        if overlap == 0:
+            return 0.0
+        return overlap / (len(kset) ** 0.5) + overlap / (len(qset) ** 0.5)
 
-        matched_learned_tags = [item for item in self.learned_knowledge if item in query_lower]
+    def _best_answer(self, query: str):
+        q_tokens = self._tokens(query)
+        q_lower = query.lower()
+        best_answer, best_score = None, 0.0
 
-        gambit_keywords = ["перевод", "транзакция", "деньги", "счет", "вывод", "зарплата", "caf", "карт", "монет", "оплата"]
-        bank_gambit_triggered = any(w in query_lower for w in gambit_keywords)
-        
-        if self.is_offline_mode:
-            security_report = "⚠️ **ВНИМАНИЕ:** Интернет-соединение потеряно. Активирован **Offline Fallback контур** защиты счета."
-        else:
-            security_report = (
-                "🛡️ **Статус «Банковский Гамбит»:** АКТИВЕН. Потоки верифицированы."
-                if bank_gambit_triggered else 
-                f"⚡ **Метрика системы:** 'ghost' mode активен. Усвоено паттернов: {len(self.learned_knowledge)}."
-            )
+        # 1) Выученные знания — приоритет обучению пользователя.
+        for item in self.learned:
+            keys = item.get("keys", [])
+            score = self._score(q_tokens, self._tokens(" ".join(keys)))
+            for k in keys:
+                if k and k.lower() in q_lower:      # прямое попадание фразы
+                    score += 2.0
+            if score > best_score:
+                best_score, best_answer = score, item.get("answer")
 
-        numbers = re.findall(r'\d+', userQuery)
-        math_analysis = ""
-        asset_keywords = [
-            "монет", "золот", "серебр", "металл", "инвест", "сумм", "баланс", "фарм", "проц", 
-            "доллар", "рубл", "унц", "крипт", "токен", "койн", "coin", "token", "btc", "eth", "usdt", "ton", "блокчейн"
-        ]
-        
-        if numbers and any(w in query_lower for w in asset_keywords):
-            val = float(numbers[0])
-            daily_income = val * 0.05
-            math_analysis = f"\n📊 **ИИ-прогноз актива (База: {val}):** Расчет доходности (24ч): `+{daily_income:.2f}`"
+        # 2) Встроенная база знаний.
+        for keys, answer in self.BASE_KNOWLEDGE:
+            score = self._score(q_tokens, self._tokens(" ".join(keys)))
+            for k in keys:
+                if k in q_lower:                    # прямое попадание ключа
+                    score += 1.6
+            if score > best_score:
+                best_score, best_answer = score, answer
 
-        core_object = matched_learned_tags[-1].capitalize() if matched_learned_tags else "Адаптивный модуль"
-        query_hash = abs(hash(userQuery))
-        optimization_index = (query_hash % 75) + 25
+        return best_answer, best_score
 
-        response_text = (
-            f"🧠 **{self.model_name}** `[Time: {current_time}]`:\n\n"
-            f"⚙️ `Объект анализа: [{core_object}] | Оптимизация: {optimization_index}%`\n"
-            f"{math_analysis}\n"
-            f"{security_report}\n\n"
-            f"💡 *Локальная обработка данных завершена.*"
+    # ---------- Обучение прямо в диалоге ----------
+    def _try_learn(self, text: str, is_admin: bool):
+        """
+        Ловит команды обучения: «запомни: вопрос = ответ» (также научи/выучи,
+        разделители = => | — ::). Возвращает текст подтверждения или None.
+        """
+        m = re.match(r'^\s*(?:запомни|научи|выучи|обучись)\b\s*[:\-]?\s*(.+)$',
+                     text, re.IGNORECASE | re.DOTALL)
+        if not m:
+            return None
+        if not is_admin:
+            return ("🔒 Обучать ИИ может только администратор. "
+                    "Задай вопрос обычным текстом — я постараюсь ответить.")
+        body = m.group(1)
+        parts = re.split(r'\s*(?:=>|=|\||—|::)\s*', body, maxsplit=1)
+        if len(parts) < 2 or not parts[0].strip() or not parts[1].strip():
+            return ("⚠️ Формат обучения: «запомни: вопрос = ответ».\n"
+                    "Например: запомни: когда сброс комбо = каждый день в 09:00 UTC")
+        question, answer = parts[0].strip(), parts[1].strip()
+        keys = list(dict.fromkeys(self._tokens(question) + [question.lower()]))
+        self.learned.append({"keys": keys, "answer": answer})
+        self._save_learned()
+        return f"✅ Запомнил! Теперь на «{question}» я отвечу так:\n\n{answer}"
+
+    # ---------- Калькулятор (безопасный, без eval произвольного кода) ----------
+    def _safe_eval(self, expr: str):
+        """Безопасно вычисляет арифметическое выражение через ast (только числа и + - * / // % **)."""
+        try:
+            node = ast.parse(expr, mode="eval")
+        except Exception:
+            return None
+        allowed = (
+            ast.Expression, ast.BinOp, ast.UnaryOp, ast.Constant, ast.Num,
+            ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
+            ast.USub, ast.UAdd,
         )
+        for n in ast.walk(node):
+            if not isinstance(n, allowed):
+                return None
+            if isinstance(n, ast.Constant) and not isinstance(n.value, (int, float)):
+                return None
+            # Защита от гигантских степеней (2**999999 повесит бота).
+            if isinstance(n, ast.BinOp) and isinstance(n.op, ast.Pow):
+                r = n.right
+                if isinstance(r, ast.Constant) and isinstance(r.value, (int, float)) and r.value > 1000:
+                    return None
+        try:
+            val = eval(compile(node, "<calc>", "eval"), {"__builtins__": {}}, {})
+            if isinstance(val, (int, float)) and abs(val) < 1e15:
+                return val
+        except Exception:
+            return None
+        return None
 
-        return response_text
+    def _try_math(self, text: str):
+        """Считает по данным пользователя: проценты, сложный процент (прогноз) и обычную арифметику."""
+        t = text.lower().replace(",", ".").replace("^", "**").replace("×", "*").replace("÷", "/")
 
-# Инициализация виртуального помощника
-ai_assistant = BotVirtualAssistant()
+        # 1) «X% от Y»
+        m = re.search(r'(\d+(?:\.\d+)?)\s*%\s*(?:от|of|из)\s*(\d+(?:\.\d+)?)', t)
+        if m:
+            x, y = float(m.group(1)), float(m.group(2))
+            return f"🧮 {m.group(1)}% от {m.group(2)} = {x / 100 * y:g}"
+
+        # 2) Прогноз со сложным процентом: старт, ставка%/день, срок в днях.
+        if any(w in t for w in ["день", "дн", "days", "сут"]):
+            m = re.search(
+                r'(\d+(?:\.\d+)?)\D+?(\d+(?:\.\d+)?)\s*%\D+?(\d+(?:\.\d+)?)\s*(?:дн|день|дней|days|сут)',
+                t
+            )
+            if m:
+                base, rate, days = float(m.group(1)), float(m.group(2)), float(m.group(3))
+                if 0 < days <= 3650:
+                    total = base * (1 + rate / 100.0) ** days
+                    profit = total - base
+                    return (
+                        "📈 Прогноз (сложный процент):\n"
+                        f"Старт: {base:g} | ставка: {rate:g}%/день | срок: {int(days)} дн.\n"
+                        f"Итог: ≈ {total:,.2f} (прибыль ≈ {profit:,.2f})\n"
+                        "⚠️ Это оценка: реальные проценты в играх меняются."
+                    )
+
+        # 3) Обычное арифметическое выражение (если есть хотя бы один оператор).
+        math_only = re.sub(r'[^0-9+\-*/().\s]', ' ', t)
+        if re.search(r'\d', math_only) and re.search(r'[-+*/]', math_only):
+            expr = re.sub(r'\s+', ' ', math_only).strip()
+            val = self._safe_eval(expr)
+            if val is not None:
+                return f"🧮 {expr} = {val:g}"
+        return None
+
+    # ---------- Советник по тактике игр ----------
+    def _try_tactic(self, query: str):
+        """Подсказывает тактику по конкретной игре (берёт strategy из конфига)."""
+        q = query.lower()
+        tactic_words = ["тактик", "стратег", "совет", "гайд", "как играть",
+                        "как пройти", "как выигр", "как фарм", "что делать"]
+        wants_tactic = any(w in q for w in tactic_words)
+
+        mgr = globals().get("manager")
+        if mgr is None:
+            return None
+        games = {}
+        try:
+            games.update(mgr.combo_games)
+            games.update(mgr.independent_farms)
+        except Exception:
+            return None
+
+        # Ищем упомянутую в вопросе игру (по имени или ключу).
+        for key, data in games.items():
+            name_words = re.findall(r'[a-zа-яё0-9]+', str(data.get("name", "")).lower())
+            key_words = re.findall(r'[a-z0-9]+', key.lower())
+            if any(len(w) > 2 and w in q for w in name_words + key_words):
+                strat = data.get("strategy")
+                if strat:
+                    return f"🎮 Тактика — {data.get('name', key)}:\n\n{strat}"
+                return (f"🎮 По игре «{data.get('name', key)}» отдельной тактики пока нет. "
+                        "Общий принцип: собирай пассив по таймеру, смотри буст-видео, "
+                        "копи на апгрейды и не пропускай ежедневное комбо.")
+
+        # Тактика вообще, без конкретной игры.
+        if wants_tactic:
+            names = ", ".join(str(d.get("name", k)) for k, d in list(games.items())[:12])
+            return ("🎮 По какой игре нужна тактика? Доступные проекты: " + names + ".\n"
+                    "Общий совет: заходи по таймеру, собирай пассив, смотри буст-видео, "
+                    "копи на апгрейды и обязательно бери ежедневное комбо.")
+        return None
+
+    # ---------- Основной вход ----------
+    def generate_response(self, userQuery: str, chat_id: int = 0) -> str:
+        userQuery = (userQuery or "").strip()
+        if not userQuery:
+            return "🤔 Задай вопрос словами — и я постараюсь помочь."
+
+        # Память диалога (последние 8 реплик пользователя).
+        hist = self.session_memory.setdefault(chat_id, [])
+        hist.append(userQuery)
+        if len(hist) > 8:
+            del hist[:len(hist) - 8]
+
+        # 1) Обучение (запись в базу — только для админа).
+        is_admin = str(chat_id) == str(ADMIN_CHAT_ID)
+        taught = self._try_learn(userQuery, is_admin)
+        if taught:
+            return taught
+
+        # 2) Калькулятор по данным пользователя.
+        calc = self._try_math(userQuery)
+        if calc:
+            return calc
+
+        # 3) Советник по тактике игр.
+        tactic = self._try_tactic(userQuery)
+        if tactic:
+            return tactic
+
+        # 4) База знаний (встроенная + выученная).
+        answer, score = self._best_answer(userQuery)
+        if answer and score >= 1.2:
+            return answer
+
+        # 5) Не знаем — честно говорим и предлагаем научить.
+        topics = "комбо, майнинг, краны, фарм, вывод, кошелёк, безопасность, таймеры, курс, реклама, расчёты, тактика игр"
+        base = (
+            "🤔 Пока не знаю точного ответа на это.\n\n"
+            f"Я умею: отвечать по темам ({topics}), считать по твоим числам "
+            "и советовать тактику по играм."
+        )
+        if is_admin:
+            base += ("\n\nНаучи меня: «запомни: вопрос = ответ», "
+                     "и в следующий раз я отвечу правильно.")
+        return base
 
 
 logger = logging.getLogger(__name__)
 
-
-
-# ==================== МОДУЛЬ АВТОМАТИЗАЦИИ ИГР ====================
-
-class BaseGameAutomation(ABC):
-    def __init__(self, name: str, interval_seconds: int):
-        self.name = name
-        self.interval_seconds = interval_seconds
-        self.is_running = False
-
-    @abstractmethod
-    async def collect_rewards(self) -> bool:
-        pass
-
-    @abstractmethod
-    async def watch_videos(self) -> bool:
-        pass
-
-    async def run_routine(self) -> None:
-        self.is_running = True
-        logger.info(f"[{self.name}] Запуск автоматизированного цикла фермы...")
-        while self.is_running:
-            try:
-                await self.collect_rewards()
-                await self.watch_videos()
-            except Exception as e:
-                logger.error(f"[{self.name}] Ошибка в цикле: {e}")
-            await asyncio.sleep(self.interval_seconds)
-
-    def stop(self) -> None:
-        self.is_running = False
-
-class GoldMinerGame(BaseGameAutomation):
-    """Модуль автоматизации для Gold Miner (сбор золота и клики по таймеру)"""
-    def __init__(self):
-        super().__init__(name="Gold Miner", interval_seconds=3600)  # Интервал 1 час
-
-    async def collect_rewards(self) -> bool:
-        logger.info(Fore.GREEN + "[Gold Miner] Запуск сессии сбора руды и монет...")
-        await asyncio.sleep(3)
-        logger.info(Fore.GREEN + "[Gold Miner] Ресурсы успешно собраны!")
-        return True
-
-    async def watch_videos(self) -> bool:
-        logger.info(Fore.BLUE + "[Gold Miner] Проверка доступности рекламных роликов...")
-        await asyncio.sleep(2)
-        logger.info(Fore.GREEN + "[Gold Miner] Реклама просмотрена, бонус зачислен.")
-        return True
-
-
-class HoneyFarmGame(BaseGameAutomation):
-    """Модуль автоматизации для Honey Farm (сбор меда с ульев)"""
-    def __init__(self):
-        super().__init__(name="Honey Farm", interval_seconds=1800)  # Интервал 30 минут
-
-    async def collect_rewards(self) -> bool:
-        logger.info(Fore.GREEN + "[Honey Farm] Проверка ульев и сбор меда...")
-        await asyncio.sleep(2)
-        logger.info(Fore.GREEN + "[Honey Farm] Мед успешно собран на склад!")
-        return True
-
-    async def watch_videos(self) -> bool:
-        logger.info(Fore.BLUE + "[Honey Farm] Запуск просмотра видео для ускорения производства...")
-        await asyncio.sleep(3)
-        logger.info(Fore.GREEN + "[Honey Farm] Видео бонус активирован.")
-        return True
-
-
-class DogsHouseMinerGame(BaseGameAutomation):
-    """Модуль автоматизации для Dogs House Miner (майнинг монет в домике собакена)"""
-    def __init__(self):
-        super().__init__(name="Dogs House Miner", interval_seconds=7200)  # Интервал 2 часа
-
-    async def collect_rewards(self) -> bool:
-        logger.info(Fore.GREEN + "[Dogs House Miner] Подключение к майнеру, сбор добытых монет...")
-        await asyncio.sleep(3)
-        logger.info(Fore.GREEN + "[Dogs House Miner] Баланс успешно обновлен!")
-        return True
-
-    async def watch_videos(self) -> bool:
-        logger.info(Fore.BLUE + "[Dogs House Miner] Просмотр рекламного блока для бустом майнинга...")
-        await asyncio.sleep(4)
-        logger.info(Fore.GREEN + "[Dogs House Miner] Буст успешно применен.")
-        return True
-
-
-class GrowTeaGame(BaseGameAutomation):
-    """Модуль автоматизации для Grow Tea (выращивание и сбор чая)"""
-    def __init__(self):
-        super().__init__(name="Grow Tea", interval_seconds=14400)  # Интервал 4 часа
-
-    async def collect_rewards(self) -> bool:
-        logger.info(Fore.GREEN + "[Grow Tea] Проверка кустов, сбор готового урожая чая...")
-        await asyncio.sleep(2)
-        logger.info(Fore.GREEN + "[Grow Tea] Чай собран, посадка новых ростков...")
-        return True
-
-    async def watch_videos(self) -> bool:
-        logger.info(Fore.BLUE + "[Grow Tea] Просмотр видео для полива и ускорения роста...")
-        await asyncio.sleep(3)
-        logger.info(Fore.GREEN + "[Grow Tea] Ускорение роста применено.")
-        return True
-
-
-class SignalDoodleJumpGame(BaseGameAutomation):
-    """Модуль автоматизации для Doodle Jump (сбор, авто-прокачка за 150 монет и просмотр рекламы с паузой 4 мин)"""
-    def __init__(self):
-        super().__init__(name="Signal Doodle Jump", interval_seconds=1800)  # Общий цикл проверки каждые 30 минут
-        self.max_hourly_videos = 5
-        self.max_daily_videos = 25
-        self.video_cooldown_seconds = 240  # Пауза между видео 4 минуты
-
-    async def collect_rewards(self) -> bool:
-        logger.info(Fore.GREEN + f"[{self.name}] Переход на главную страницу...")
-        
-        # 1. Клик по кнопке «Собрать» пассивный доход
-        # await page.click('text=Собрать')
-        await asyncio.sleep(2)
-        logger.info(Fore.GREEN + f"[{self.name}] Пассивные монеты собраны.")
-
-        # 2. Безопасная проверка баланса перед покупкой «Тройной прокачки» (требуется 150 монет)
-        # Считываем текущий баланс со страницы (например, из элемента с монетами)
-        # current_coins_text = await page.locator('.coin-balance-selector').inner_text()
-        # current_coins = float(current_coins_text.replace(',', '.'))
-        
-        current_coins = 49.34  # Значение для примера (как на вашем скриншоте баланс 49.34)
-        upgrade_cost = 150
-
-        if current_coins >= upgrade_cost:
-            logger.info(Fore.MAGENTA + f"[{self.name}] Баланс ({current_coins}) достаточно для аппа ({upgrade_cost}). Нажимаем прокачку...")
-            # await page.click('text=150')  # Кликаем только если точно хватает
-            await asyncio.sleep(2)
-            logger.info(Fore.GREEN + f"[{self.name}] Прокачка успешно куплена!")
-        else:
-            logger.info(Fore.YELLOW + f"[{self.name}] Баланс ({current_coins}) ниже требуемого ({upgrade_cost}). Пропускаем апгрейд во избежание ошибки.")
-
-        return True
-
-    async def watch_videos(self) -> bool:
-        logger.info(Fore.BLUE + f"[{self.name}] Переход во вкладку «Задания»...")
-        
-        # Клик на вкладку «Задания» внизу
-        # await page.click('text=Задания')
-        await asyncio.sleep(2)
-
-        current_hourly_watched = 0
-        # Пауза между видео: ваши 4 минуты + 5 минут запаса = 9 минут (540 секунд)
-        safe_video_cooldown = 540  
-
-        while current_hourly_watched < self.max_hourly_videos:
-            logger.info(Fore.BLUE + f"[{self.name}] Кликаем «смотреть видео» ({current_hourly_watched + 1}/{self.max_hourly_videos})...")
-            
-            # Клик по кнопке просмотра рекламы
-            # await page.click('.task-item button')
-            
-            # Длительность самого ролика
-            await asyncio.sleep(5)
-            
-            current_hourly_watched += 1
-            logger.info(Fore.GREEN + f"[{self.name}] Видео просмотрено и засчитано.")
-
-            # Если посмотрели меньше 5 видео, выдерживаем паузу с запасом
-            if current_hourly_watched < self.max_hourly_videos:
-                logger.info(Fore.CYAN + f"[{self.name}] Пауза 9 минут (с учетом запаса) перед следующим видео...")
-                await asyncio.sleep(safe_video_cooldown)
-            else:
-                logger.info(Fore.MAGENTA + f"[{self.name}] Лимит 5 видео исчерпан. Включается таймер (~36 минут).")
-
-        return True
-
-
-
-
-class BotGameFarmManager:
-    """Менеджер для управления списком игр и их фоновыми задачами"""
-    def __init__(self):
-        self.games = {}
-        self.tasks = {}
-
-    def register_game(self, game: BaseGameAutomation):
-        self.games[game.name.lower()] = game
-
-    def stop_all_games(self):
-        for game in self.games.values():
-            game.stop()
-        for task in self.tasks.values():
-            if not task.done():
-                task.cancel()
-        self.tasks.clear()
-
-
-# Инициализация менеджера и всех игровых модулей фермы
-game_farm_manager = BotGameFarmManager()
-game_farm_manager.register_game(GoldMinerGame())
-game_farm_manager.register_game(HoneyFarmGame())
-game_farm_manager.register_game(DogsHouseMinerGame())
-game_farm_manager.register_game(GrowTeaGame())
-game_farm_manager.register_game(SignalDoodleJumpGame())
-
+# (Модуль автоматизации игр удалён: реальная авто-ферма третьих ботов не ведётся,
+#  вместо неё — напоминания в «⏰ Мои таймеры».)
 
 
 class AdvancedSecurityGuard:
-    """
-    /**
-     * @apiEndpoint /Internal/AdvancedSecurityGuard
-     * @apiMethod INTERNAL
-     * @apiDescription Динамический эвристический модуль комплексной защиты и скоринга угроз.
-     */
-    """
+   
     def __init__(self):
         # 1. Анти-Флуд (динамический Rate Limiting с адаптивным окном)
         self.flood_storage: Dict[int, List[float]] = {}
@@ -623,8 +827,6 @@ class AdvancedSecurityGuard:
             
         return {"action": "allow", "sanitized_text": sanitized_text, "trust_score": self._get_user_trust(chat_id)}
 
-# Инициализация усиленного защитного модуля
-sec_guard = AdvancedSecurityGuard()
 
 
 # --- ЦВЕТНОЕ И ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ДЛЯ TERMUX ---
@@ -661,16 +863,116 @@ try:
 except Exception as e:
     print(f"[⚠️ WARNING] Команды не зарегистрированы (проблема сети/таймаут): {e}")
     print("[🛡️ SECURITY CORE] Бот продолжает запуск в автономном режиме обхода...")
+    
+# Хранилища данных
+user_game_timers = {}
+cloud_proofs = []
+user_calc_states = {}
+advanced_captchas = {} 
+user_reviews_storage = [] 
+pending_ad_orders = {}
+active_farm_threads = {}  # {chat_id: thread_object}
 
+def load_verified_users():
+    users = set()
+    if os.path.exists(VERIFIED_FILE):
+        try:
+            with open(VERIFIED_FILE, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.isdigit():
+                        users.add(int(line))
+        except Exception as e:
+            logger.error(f"Ошибка загрузки верифицированных пользователей: {e}")
+    return users
+
+def save_verified_user(user_id):
+    try:
+        verified_users.add(user_id)
+        with open(VERIFIED_FILE, "a", encoding="utf-8") as f:
+            f.write(f"{user_id}\n")
+    except Exception as e:
+        logger.error(f"Ошибка сохранения пользователя в файл: {e}")
+
+verified_users = load_verified_users()
+
+# ── Персистентность статов профиля ────────────────────────────────────────
+# На телефоне лежит лишь крошечный JSON: ссылки Telegram (file_id) + текст
+# уровня. САМИ картинки хранятся на серверах Telegram, НЕ на телефоне.
+USER_STATS_FILE = "user_game_stats.json"
+
+def load_user_stats():
+    data = {}
+    if os.path.exists(USER_STATS_FILE):
+        try:
+            with open(USER_STATS_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            for k, v in raw.items():
+                try:
+                    data[int(k)] = v          # ключи-чаты в JSON — строки → int
+                except (ValueError, TypeError):
+                    data[k] = v
+        except Exception as e:
+            logger.error(f"Ошибка загрузки статов профиля: {e}")
+    return data
+
+def save_user_stats():
+    try:
+        with open(USER_STATS_FILE, "w", encoding="utf-8") as f:
+            json.dump(user_game_stats, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения статов профиля: {e}")
+
+user_game_stats = load_user_stats()
+
+# ── История найденных комбо (общая для всех) ──────────────────────────────
+# Тоже только file_id Telegram + дата; картинки — на серверах Telegram.
+COMBO_HISTORY_FILE = "combo_history.json"
+COMBO_HISTORY_MAX = 60           # держим последние N записей
+
+def load_combo_history():
+    if os.path.exists(COMBO_HISTORY_FILE):
+        try:
+            with open(COMBO_HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Ошибка загрузки истории комбо: {e}")
+    return []
+
+def save_combo_history():
+    try:
+        with open(COMBO_HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(combo_history[-COMBO_HISTORY_MAX:], f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения истории комбо: {e}")
+
+def add_combo_to_history(game_key, name, date_text, file_id):
+    """Добавляет комбо в историю (одна запись на игру в день)."""
+    day_key = time.strftime("%Y-%m-%d", time.localtime())
+    for h in combo_history:
+        if h.get("key") == game_key and h.get("day") == day_key:
+            return                            # за сегодня уже записано
+    combo_history.append({
+        "key": game_key, "name": name, "date": date_text,
+        "file_id": file_id, "day": day_key
+    })
+    if len(combo_history) > COMBO_HISTORY_MAX:
+        del combo_history[:-COMBO_HISTORY_MAX]
+    save_combo_history()
+
+combo_history = load_combo_history()
+
+user_input_states = {}
 
 class ActiveAdsManager:
-    def __init__(self, file_path):
-        self.file_path = file_path
-        # Логика загрузки теперь вызывается здесь при создании объекта
-        self.storage = self.load_from_file()
+    """Менеджер для управления активной рекламой с автоматической синхронизацией с файлом."""
 
-    def load_from_file(self):
-        """Бывшая функция load_active_ads, ставшая методом класса."""
+    def __init__(self, file_path: str):
+        self.file_path = file_path
+        self.storage: dict = self._load_ads()
+
+    def _load_ads(self) -> dict:
+        """Загрузка активных объявлений из файла."""
         ads = {}
         if os.path.exists(self.file_path):
             try:
@@ -685,7 +987,7 @@ class ActiveAdsManager:
         return ads
 
     def save_to_file(self):
-        """Бывшая функция save_active_ads_to_file, ставшая методом класса."""
+        """Сохранение текущего состояния активных объявлений в файл."""
         try:
             with open(self.file_path, "w", encoding="utf-8") as f:
                 for oid, data in self.storage.items():
@@ -693,120 +995,26 @@ class ActiveAdsManager:
         except Exception as e:
             logger.error(f"Ошибка сохранения активной рекламы в файл: {e}")
 
-    def add_ad(self, order_id, user_id, expire_time):
+    def add_ad(self, order_id: str, user_id: int, expire_time: float):
+        """Добавление новой рекламы с автоматическим сохранением."""
         self.storage[order_id] = {"user_id": user_id, "expire_time": expire_time}
         self.save_to_file()
-        
-class VerifiedUsersManager:
-    def __init__(self, file_path):
-        self.file_path = file_path
-        # Множество верифицированных пользователей хранится внутри объекта
-        self.verified_users = self.load_from_file()
 
-    def load_from_file(self):
-        users = set()
-        if os.path.exists(self.file_path):
-            try:
-                with open(self.file_path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line.isdigit():
-                            users.add(int(line))
-            except Exception as e:
-                logger.error(f"Ошибка загрузки верифицированных пользователей: {e}")
-        return users
-
-    def save_user(self, user_id):
-        try:
-            self.verified_users.add(user_id)
-            with open(self.file_path, "a", encoding="utf-8") as f:
-                f.write(f"{user_id}\n")
-        except Exception as e:
-            logger.error(f"Ошибка сохранения пользователя в файл: {e}")
-
-    def is_verified(self, user_id):
-        """Удобный метод для проверки, верифицирован ли пользователь."""
-        return user_id in self.verified_users
-
-
-# Хранилища данных
-user_game_timers = {}
-cloud_proofs = []
-user_calc_states = {}
-advanced_captchas = {} 
-user_reviews_storage = [] 
-pending_ad_orders = {}
-active_farm_threads = {}  # {chat_id: thread_object}
-
-# Инициализация менеджера верификации
-verified_manager = VerifiedUsersManager(VERIFIED_FILE)
-                                        
-verified_users = load_verified_users()  
-user_game_stats = {}  
-user_input_states = {} 
-
-# Создаем менеджер рекламы (он сам внутри вызовет загрузку из файла)
+    def remove_ad(self, order_id: str):
+        """Удаление рекламы по идентификатору с обновлением файла."""
+        if order_id in self.storage:
+            del self.storage[order_id]
+            self.save_to_file()
+            
+# Создаем глобальный объект менеджера рекламы
 ads_manager = ActiveAdsManager(ACTIVE_ADS_FILE)
 
-# Передаем его в обработчик колбэков
-callback_handler = CallbackQueryHandler(bot, ads_manager)
 
 # Словарь для отслеживания состояния запусков (ключ - ID пользователя или общая ферма)
 active_farms_state = {}  # Например: {chat_id: {"doodle": True/False, "all": True/False}}
 
-class FarmsStateManager:
-    def __init__(self):
-        # Глобальный словарь теперь становится защищенным атрибутом объекта
-        self.states = {}
-
-    def get_state(self, chat_id):
-        """Получение текущего состояния пользователя (по умолчанию всё выключено)."""
-        return self.states.get(chat_id, {"doodle": False, "all": False})
-
-    def update_state(self, chat_id, key, value):
-        """Обновление конкретного параметра состояния пользователя."""
-        if chat_id not in self.states:
-            self.states[chat_id] = {"doodle": False, "all": False}
-        self.states[chat_id][key] = value
-
-
-def get_farms_menu_keyboard(self, chat_id):
-        # Получаем текущие состояния через метод менеджера вместо глобальной переменной
-        user_state = self.farms_manager.get_state(chat_id)
-        
-        keyboard = types.InlineKeyboardMarkup()
-        
-        # Динамический текст для Doodle Jump
-        doodle_text = "🛑 Остановить Doodle Jump" if user_state["doodle"] else "🕹 Запустить Doodle Jump"
-        doodle_callback = "toggle_doodle_stop" if user_state["doodle"] else "toggle_doodle_start"
-        keyboard.row(types.InlineKeyboardButton(text=doodle_text, callback_data=doodle_callback))
-        
-        # Динамический текст для кнопки «Запустить всё» / «Остановить всё»
-        all_text = "🛑 Остановить всё" if user_state["all"] else "🟢 Запустить всё"
-        all_callback = "toggle_all_stop" if user_state["all"] else "toggle_all_start"
-        keyboard.row(types.InlineKeyboardButton(text=all_text, callback_data=all_callback))
-        
-        # Кнопка статуса
-        keyboard.row(types.InlineKeyboardButton(text="📊 Статус игр", callback_data="farm_status"))
-        
-        return keyboard
-
-
- # Создаем экземпляр менеджера состояний ферм
-farms_manager = FarmsStateManager()
-
-# Передаем его в обработчики вместе с остальными менеджерами
-menu_handler = MenuHandler(bot, farms_manager)
-
 class UltimateSecurityCore:
-    """
-    /**
-     * @apiEndpoint /Internal/UltimateSecurityCore
-     * @apiMethod INTERNAL
-     * @apiDescription Динамический эвристический модуль комплексной защиты трафика 
-     * с поддержкой скоринга угроз, анализа энтропии, детекции омоглифов и Leetspeak.
-     */
-    """
+   
     def __init__(self):
         self.network_core_blacklist = NETWORK_CORE_BLACKLIST
         self.ghost_mode_domains = GHOST_MODE_DOMAINS
@@ -949,7 +1157,338 @@ class UltimateSecurityCore:
 
         return False, "✅ **Sterile Channel [95]:** Канал абсолютно чист."
 
-security_core = UltimateSecurityCore()
+
+class LinkScamGuard:
+    """
+    Анализатор ссылок (офлайн): скоринг риска, эвристика скама/фишинга и
+    вредоносных файлов («вирус»). Возвращает вердикт clean/suspicious/scam
+    и аннотированный текст, где опасные ссылки ЗАБЛОКИРОВАНЫ и помечены 🚨.
+    """
+
+    SHORTENERS = {
+        "bit.ly", "tinyurl.com", "cutt.ly", "t.co", "is.gd", "goo.gl", "ow.ly",
+        "rb.gy", "shorturl.at", "clck.ru", "vk.cc", "tiny.cc", "rebrand.ly", "surl.li",
+    }
+    SUSPICIOUS_TLDS = (
+        ".xyz", ".top", ".cc", ".cfd", ".tk", ".ml", ".gq", ".ga", ".click", ".link",
+        ".live", ".online", ".site", ".club", ".rest", ".buzz", ".monster", ".lol",
+        ".sbs", ".autos", ".cyou", ".quest", ".bond",
+    )
+    MALWARE_EXT = (".exe", ".apk", ".scr", ".bat", ".msi", ".dll", ".jar", ".vbs", ".cmd", ".apk")
+    SCAM_URL_WORDS = (
+        "airdrop", "claim", "free", "bonus", "giveaway", "double", "verify", "connect",
+        "wallet", "seed", "drain", "mint", "presale", "gift", "reward", "unlock",
+        "recovery", "validate", "халяв", "бонус", "розыгрыш", "подарок", "кошел", "верифи",
+    )
+    SCAM_FILE = "scam_domains.txt"
+
+    def __init__(self, phishing_domains=None, ghost_domains=None, scam_patterns=None, blacklist=None):
+        self.phishing_domains = [str(d).lower() for d in (phishing_domains or [])]
+        self.ghost_domains = [str(d).lower() for d in (ghost_domains or [])]
+        self.scam_patterns = scam_patterns or []
+        self.blacklist_core = [str(d).lower() for d in (blacklist or [])]
+        self.scam_domains = self._load_scam_domains()
+
+    # ---- Чёрный список доменов (обучаемый админом) ----
+    def _load_scam_domains(self):
+        s = set()
+        if os.path.exists(self.SCAM_FILE):
+            try:
+                with open(self.SCAM_FILE, "r", encoding="utf-8") as f:
+                    for line in f:
+                        d = line.strip().lower()
+                        if d:
+                            s.add(d)
+            except Exception as e:
+                logger.error(f"Ошибка загрузки scam_domains: {e}")
+        return s
+
+    def add_scam_domain(self, domain: str) -> bool:
+        d = (domain or "").strip().lower()
+        d = re.sub(r'^https?://', '', d).split("/")[0].split("?")[0]
+        if not d or "." not in d:
+            return False
+        self.scam_domains.add(d)
+        try:
+            with open(self.SCAM_FILE, "a", encoding="utf-8") as f:
+                f.write(d + "\n")
+        except Exception as e:
+            logger.error(f"Ошибка сохранения scam-домена: {e}")
+        return True
+
+    @staticmethod
+    def _entropy(s: str) -> float:
+        if not s:
+            return 0.0
+        probs = [s.count(c) / len(s) for c in set(s)]
+        return -sum(p * math.log2(p) for p in probs)
+
+    def _score_url(self, url: str):
+        reasons, score = [], 0
+        try:
+            parsed = urllib.parse.urlparse(url if "//" in url else "http://" + url)
+        except Exception:
+            return 40, ["Не удалось разобрать ссылку"]
+
+        host = (parsed.netloc or "").lower()
+        if "@" in host:                       # трюк с userinfo: real@fake
+            score += 50
+            reasons.append("Скрытый адрес через символ '@'")
+            host = host.split("@")[-1]
+        host_only = host.split(":")[0]
+        full = url.lower()
+        path = (parsed.path or "").lower()
+
+        # Чёрные списки
+        if any(host_only == d or host_only.endswith("." + d) or d in host_only for d in self.scam_domains):
+            score += 100
+            reasons.append("Домен в чёрном списке скама")
+        if any(d and d in host_only for d in self.blacklist_core):
+            score += 90
+            reasons.append("Домен в базовом блэклисте")
+        if any(d and d in full for d in self.phishing_domains):
+            score += 90
+            reasons.append("Совпадение с фишинг-базой")
+        if any(g and (host_only.endswith(g) or g in host_only) for g in self.ghost_domains):
+            score += 60
+            reasons.append("Подозрительный домен/префикс (ghost)")
+
+        # Эвристики
+        if re.match(r'^\d{1,3}(\.\d{1,3}){3}$', host_only):
+            score += 45
+            reasons.append("IP-адрес вместо домена")
+        if "xn--" in host_only:
+            score += 45
+            reasons.append("Punycode (возможен омоглиф-обман)")
+        if re.search(r'[а-яё]', host_only):
+            score += 50
+            reasons.append("Кириллица в домене (омоглиф-атака)")
+        if any(host_only.endswith(t) for t in self.SUSPICIOUS_TLDS):
+            score += 30
+            reasons.append("Подозрительная доменная зона")
+        if host_only in self.SHORTENERS:
+            score += 30
+            reasons.append("Сокращатель ссылок (скрыт реальный адрес)")
+        if host_only.count(".") >= 3:
+            score += 20
+            reasons.append("Слишком много поддоменов")
+        main = host_only.split(".")[0]
+        if len(main) >= 10 and self._entropy(main) > 3.6:
+            score += 25
+            reasons.append("Случайно сгенерированный (DGA) домен")
+        if any(full.split("?")[0].endswith(ext) for ext in self.MALWARE_EXT) or any(ext in path for ext in self.MALWARE_EXT):
+            score += 50
+            reasons.append("Прямая загрузка файла (возможен вирус)")
+        hits = [w for w in self.SCAM_URL_WORDS if w in full]
+        if hits:
+            score += min(40, 12 * len(hits))
+            reasons.append("Скам-слова в ссылке: " + ", ".join(hits[:4]))
+        for pat in self.scam_patterns:
+            try:
+                if re.search(pat, full, re.IGNORECASE):
+                    score += 25
+                    reasons.append("Совпадение со скам-паттерном")
+                    break
+            except Exception:
+                continue
+
+        return min(score, 100), reasons
+
+    @staticmethod
+    def _verdict(score: int) -> str:
+        if score >= 90:
+            return "scam"
+        if score >= 45:
+            return "suspicious"
+        return "clean"
+
+    def analyze(self, text: str):
+        text = text or ""
+        md = re.findall(r'\[([^\]]+)\]\((https?://[^\s)]+)\)', text)
+        urls = re.findall(r'(?:https?://|www\.)[^\s<>()\]]+', text)
+        urls += re.findall(r'\bt\.me/[^\s<>()\]]+', text, re.IGNORECASE)
+        for _anchor, u in md:
+            urls.append(u)
+
+        seen, links = set(), []
+        for u in urls:
+            u = u.rstrip('.,!?)»"\'')
+            key = u.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            score, reasons = self._score_url(u)
+            for anchor, mu in md:                 # подмена текста ссылки
+                if mu.startswith(u) and "." in anchor and anchor.lower() not in u.lower():
+                    score = min(100, score + 40)
+                    reasons.append("Текст ссылки не совпадает с реальным адресом")
+            links.append({"url": u, "score": score, "verdict": self._verdict(score), "reasons": reasons})
+
+        if not links:
+            return {"links": [], "worst": "clean", "max_score": 0, "message": ""}
+
+        worst = max(links, key=lambda l: l["score"])
+        worst_v = self._verdict(worst["score"])
+        return {
+            "links": links,
+            "worst": worst_v,
+            "max_score": worst["score"],
+            "message": self._build_message(text, links, worst, worst_v),
+        }
+
+    def _annotate(self, text: str, links: list) -> str:
+        out = text
+        for l in links:
+            if l["verdict"] == "scam":
+                out = out.replace(l["url"], "🚨[СКАМ-ССЫЛКА ЗАБЛОКИРОВАНА]")
+            elif l["verdict"] == "suspicious":
+                out = out.replace(l["url"], "⚠️[ПОДОЗРИТЕЛЬНАЯ ССЫЛКА]")
+        return out
+
+    def _build_message(self, text, links, worst, worst_v) -> str:
+        annotated = self._annotate(text, links)
+        reasons = "\n".join(f"• {r}" for r in worst["reasons"][:5]) or "• эвристика безопасности"
+        if worst_v == "scam":
+            return (
+                f"🚨 ВНИМАНИЕ: ссылка заблокирована как СКАМ! (риск {worst['score']}/100)\n\n"
+                f"{annotated}\n\nПричины:\n{reasons}\n\n"
+                "❌ Не переходите по ссылке, не подключайте кошелёк и НЕ вводите seed-фразу."
+            )
+        if worst_v == "suspicious":
+            return (
+                f"⚠️ Подозрительная ссылка (риск {worst['score']}/100). Будьте осторожны.\n\n"
+                f"{annotated}\n\nПричины:\n{reasons}"
+            )
+        return (
+            f"🔗 Явных признаков скама не найдено (риск {worst['score']}/100).\n"
+            "Всё равно проверяйте проект сами и никогда не вводите seed-фразу."
+        )
+
+
+class AccountGuard:
+    """
+    Проверка Telegram-аккаунта пользователя + чёрный список (спамеры/хакеры/скамеры).
+
+    Что умеет офлайн через Bot API:
+    • блокирует ботов;
+    • ловит скам-юзернеймы (@s_upp0rt и т.п.) и поддельные имена (ссылки/омоглифы);
+    • оценивает риск свежих/пустых аккаунтов;
+    • копит «страйки» за флуд и банит рецидивистов (бан хранится в файле).
+
+    Ограничение: официальный флаг «scam/fake» Telegram ботам недоступен —
+    поэтому используются эвристики.
+    """
+
+    BAN_FILE = "banned_users.txt"
+    # Порог «свежести» аккаунта по ID (эвристика: чем выше ID, тем новее аккаунт).
+    NEW_ACCOUNT_ID = 7_500_000_000
+
+    def __init__(self, bot_instance, scam_username_markers=None, admin_chat_id=None):
+        self.bot = bot_instance
+        self.scam_markers = [str(m).lower() for m in (scam_username_markers or [])]
+        self.admin_chat_id = admin_chat_id
+        self.banned = self._load_banned()
+        self.strikes = {}
+
+    # ---- Чёрный список ----
+    def _load_banned(self):
+        s = set()
+        if os.path.exists(self.BAN_FILE):
+            try:
+                with open(self.BAN_FILE, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.isdigit():
+                            s.add(int(line))
+            except Exception as e:
+                logger.error(f"Ошибка загрузки banned_users: {e}")
+        return s
+
+    def is_banned(self, user_id) -> bool:
+        try:
+            return int(user_id) in self.banned
+        except Exception:
+            return False
+
+    def ban(self, user_id, reason: str = ""):
+        try:
+            user_id = int(user_id)
+        except Exception:
+            return
+        if user_id in self.banned:
+            return
+        self.banned.add(user_id)
+        try:
+            with open(self.BAN_FILE, "a", encoding="utf-8") as f:
+                f.write(f"{user_id}\n")
+        except Exception as e:
+            logger.error(f"Ошибка сохранения бана: {e}")
+        logger.warning(Fore.RED + f"🚫 Забанен пользователь {user_id}: {reason}")
+
+    def unban(self, user_id):
+        try:
+            user_id = int(user_id)
+        except Exception:
+            return
+        if user_id in self.banned:
+            self.banned.discard(user_id)
+            try:
+                with open(self.BAN_FILE, "w", encoding="utf-8") as f:
+                    for uid in self.banned:
+                        f.write(f"{uid}\n")
+            except Exception as e:
+                logger.error(f"Ошибка обновления banned_users: {e}")
+
+    def strike(self, user_id, reason: str, limit: int = 3) -> bool:
+        """Добавляет страйк за нарушение; при достижении лимита банит. True = забанен."""
+        try:
+            user_id = int(user_id)
+        except Exception:
+            return False
+        self.strikes[user_id] = self.strikes.get(user_id, 0) + 1
+        if self.strikes[user_id] >= limit:
+            self.ban(user_id, reason)
+            return True
+        return False
+
+    # ---- Анализ аккаунта ----
+    @staticmethod
+    def _full_name(user) -> str:
+        return f"{getattr(user, 'first_name', '') or ''} {getattr(user, 'last_name', '') or ''}".strip()
+
+    def hard_block(self, user):
+        """Жёсткие блокировки. Возвращает (blocked: bool, reason: str)."""
+        if getattr(user, "is_bot", False):
+            return True, "аккаунт является ботом"
+
+        uname = (getattr(user, "username", "") or "").lower()
+        for m in self.scam_markers:
+            if m and m in uname:
+                return True, f"скам-маркер в юзернейме ({m})"
+
+        name = self._full_name(user).lower()
+        # Ссылки/приглашения прямо в имени профиля — типичный спам/скам.
+        if re.search(r'(https?://|t\.me/|@[a-z0-9_]{4,})', name):
+            return True, "ссылка/приглашение в имени профиля"
+        # Смешение кириллицы и латиницы в одном слове имени (омоглиф-подделка).
+        for w in name.split():
+            if len(w) >= 4 and re.search(r'[а-яё]', w) and re.search(r'[a-z]', w):
+                return True, "смешение алфавитов в имени (омоглиф)"
+        return False, ""
+
+    def risk(self, user):
+        """Мягкая оценка риска (0-100) для доп. подозрения (без блокировки)."""
+        score, reasons = 0, []
+        if not getattr(user, "username", None):
+            score += 15
+            reasons.append("нет юзернейма")
+        if not getattr(user, "is_premium", False):
+            score += 5
+        uid = getattr(user, "id", 0) or 0
+        if uid > self.NEW_ACCOUNT_ID:
+            score += 25
+            reasons.append("очень новый аккаунт")
+        return score, reasons
 
 
 class MiningComboManager:
@@ -979,24 +1518,30 @@ class MiningComboManager:
             
             date_text = "Дата не указана"
 
+            months = [
+                "January", "February", "March", "April", "May", "June", 
+                "July", "August", "September", "October", "November", "December",
+                "Jan", "Feb", "Mar", "Apr", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+            ]
             
             for p in content.find_all(["p", "span", "div", "time", "strong", "b"]):
                 txt = p.get_text(strip=True)
-                if ("August" in txt or "July" in txt or "September" in txt or "2026" in txt) and len(txt) < 40:
+                # Проверяем наличие любого месяца или любого года формата 20XX
+                has_month = any(m.lower() in txt.lower() for m in months)
+                has_year = bool(re.search(r'\b20\d{2}\b', txt))
+                
+                if (has_month or has_year) and len(txt) < 40:
                     date_text = txt
                     break
-            # Затем получаем текущую реальную дату (день, месяц, год)
+
             now = datetime.now()
             current_day = now.strftime("%d")
             current_month = now.strftime("%B")
             current_year = now.strftime("%Y")
             
-            # Проверяем, совпадает ли дата на сайте с сегодняшней
             is_today = current_day in date_text and current_month in date_text
             
-            date_status_icon = "📅"
             if not is_today:
-                # Если дата отличается, добавляем предупреждение в текст даты
                 date_text = f"{date_text} ⚠️ (Рассинхрон с системной датой: {current_day} {current_month})"
                 logger.warning(f"⚠️ Внимание для {game_key}: дата на сайте ({date_text}) отличается от текущей системной ({current_day} {current_month} {current_year})!")
                 
@@ -1008,11 +1553,9 @@ class MiningComboManager:
                     
             img_url = None
             if not is_searching:
-                # Специальный поиск для Doodle Jump или стандартных классов
                 if game_key == "doodle-jump":
                     target_img = soup.find("img", {"class": "wp-image-1"}) or soup.find("div", {"class": "entry-content"}).find("img") if soup.find("div", {"class": "entry-content"}) else None
                     if not target_img:
-                        # Берем первую подходящую картинку из контента статьи
                         images = content.find_all("img")
                         for img in images:
                             src = img.get("data-lazy-src") or img.get("src") or img.get("data-src")
@@ -1050,1033 +1593,2141 @@ class MiningComboManager:
             
         return None, "Ошибка парсинга"
 
-    def resize_img(self, url: str, game_key: str = ""):
-        try:
-            res = requests.get(url, timeout=5)
-            if res.status_code == 200:
-                img = Image.open(io.BytesIO(res.content))
+
+class ContentKeyboardManager:
+    """Менеджер клавиатур для каталогов и детальных страниц с динамической проверкой и генерацией реферальных ссылок."""
+
+    @staticmethod
+    def _get_dynamic_ref_buttons(data: dict, actions_config: dict) -> list:
+        """Автоматически находит все ref_link_X, проверяет их на наличие и создает кнопки."""
+        buttons = []
+        # Находим все ключи, начинающиеся с ref_link_, и сортируем их по индексу (1, 2, 3...)
+        ref_keys = sorted(
+            [k for k in data.keys() if k.startswith("ref_link_")],
+            key=lambda x: int(x.split("_")[-1]) if x.split("_")[-1].isdigit() else 0
+        )
+        
+        for key in ref_keys:
+            link = data.get(key)
+            if link:  # Проверяем, что ссылка существует и не пустая строка/None
+                index = key.split("_")[-1]
+                action_key = f"play_{index}"
+                action_text_key = f"play_{index}_text"
                 
-                # Для Grow Tea делаем размер компактным (280px), для остальных — 600px
-                max_width = 280 if game_key == "grow-tea" else 600
+                # Ищем подходящий текст для кнопки в конфигурации
+                text = f"Ссылка {index}"
+                if action_key in actions_config:
+                    text, *_ = actions_config[action_key]
+                elif action_text_key in actions_config:
+                    text = actions_config[action_text_key]
                 
-                if img.width > max_width:
-                    w_percent = (max_width / float(img.width))
-                    h_size = int(float(img.height) * float(w_percent))
-                    img = img.resize((max_width, h_size), Image.Resampling.LANCZOS)
-                    
-                out = io.BytesIO()
-                # Повышаем качество до 95 для кристальной четкости текста и мелких деталей
-                img.convert("RGB").save(out, format="JPEG", quality=95)
-                return out.getvalue()
-        except Exception as e:
-            logger.error(f"Ошибка изменения размера: {e}")
-        return None
+                buttons.append(types.InlineKeyboardButton(text=text, url=link))
+                
+        return buttons
+
+    @classmethod
+    def get_single_game_keyboard(cls, key: str, page: int, data: dict, actions_config: dict) -> types.InlineKeyboardMarkup:
+        """Генерация клавиатуры для детальной страницы игры с динамическими ссылками."""
+        keyboard = types.InlineKeyboardMarkup()
+        row_buttons = []
         
-        
-manager = MiningComboManager()
-
-def get_main_keyboard():
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    # Создаем кнопки из списка в конфиге в один подход
-    buttons = [types.KeyboardButton(btn_text) for btn_text in MAIN_MENU_BUTTONS]
-    markup.add(*buttons)
-    return markup
-
-def get_profile_keyboard():
-    keyboard = types.InlineKeyboardMarkup()
-    
-    # Ваши существующие строки кнопок из PROFILE_KEYBOARD_DATA
-    for row in PROFILE_KEYBOARD_DATA:
-        buttons = [types.InlineKeyboardButton(text=text, callback_data=cb) for text, cb in row]
-        keyboard.row(*buttons)
-        
-    # Добавляем кнопку Виртуального Интеллекта отдельной строкой в самый низ
-    ai_button = types.InlineKeyboardButton(
-        text="🧠 Задать вопрос Виртуальному Интеллекту", 
-        callback_data="start_ai_chat"
-    )
-    keyboard.row(ai_button)
-    
-    return keyboard
-
-# Функция генерации клавиатуры с кнопкой вызова ИИ для telebot
-def get_ai_profile_keyboard() -> types.InlineKeyboardMarkup:
-    keyboard = types.InlineKeyboardMarkup()
-    ai_button = types.InlineKeyboardButton(
-        text="🧠 Задать вопрос Виртуальному Интеллекту", 
-        callback_data="start_ai_chat"
-    )
-    keyboard.add(ai_button)
-    return keyboard
-
-
-# Обработчик нажатия на кнопку "Задать вопрос Виртуальному Интеллекту"
-@bot.callback_query_handler(func=lambda call: call.data == "start_ai_chat")
-def handle_start_ai_chat(call):
-    # Отправляем сообщение пользователю с предложением задать вопрос
-    bot.answer_callback_query(call.id) # Убираем часики загрузки с кнопки
-    bot.send_message(
-        call.message.chat.id,
-        "🧠 **Виртуальный Интеллект активирован!**\n\n"
-        "Напишите ваш вопрос следующим сообщением, и я проанализирую вашу стратегию или отвечу на любые вопросы по игре.",
-        parse_mode="Markdown"
-    )
-    # Здесь можно также включить состояние ожидания ввода, если у вас используется FSM для telebot
-
-# Активный флаг или словарь для отслеживания режима ИИ у пользователей
-AI_CHAT_ACTIVE = set()
-
-# Обработчик нажатия на инлайн-кнопку "Задать вопрос Виртуальному Интеллекту"
-@bot.callback_query_handler(func=lambda call: call.data == "start_ai_chat")
-def handle_start_ai_chat(call):
-    bot.answer_callback_query(call.id)
-    # Включаем режим ИИ для этого пользователя
-    AI_CHAT_ACTIVE.add(call.from_user.id)
-    bot.send_message(
-        call.message.chat.id,
-        "🧠 **Виртуальный Интеллект активирован!**\n\n"
-        "Напишите ваш вопрос следующим сообщением, и я проанализирую вашу стратегию. "
-        "(Чтобы выйти из режима ИИ, просто отправьте любую команду, например /start)",
-        parse_mode="Markdown"
-    )
-
-# Безопасный обработчик текстовых сообщений для ИИ
-@bot.message_handler(func=lambda message: message.from_user.id in AI_CHAT_ACTIVE, content_types=['text'])
-def handle_ai_text_messages(message):
-    # Если пользователь написал команду, выключаем режим ИИ и пропускаем ее дальше
-    if message.text.startswith('/'):
-        AI_CHAT_ACTIVE.discard(message.from_user.id)
-        return
-        
-    
-    # Генерация ответа через наш класс ИИ с передачей ID чата для памяти и защиты
-    ai_response = ai_assistant.generate_response(message.text, chat_id=message.chat.id)
-    
-    # Отправка ответа пользователю
-    bot.reply_to(message, ai_response, parse_mode="Markdown")
-
-
-def get_reviews_keyboard():
-    keyboard = types.InlineKeyboardMarkup()
-    for row in REVIEWS_KEYBOARD_DATA:
-        buttons = [types.InlineKeyboardButton(text=text, callback_data=cb) for text, cb in row]
-        keyboard.row(*buttons)
-    return keyboard
-
-def get_ads_keyboard():
-    keyboard = types.InlineKeyboardMarkup()
-    for row in ADS_KEYBOARD_DATA:
-        buttons = [types.InlineKeyboardButton(text=text, callback_data=cb) for text, cb in row]
-        keyboard.row(*buttons)
-    return keyboard
-
-def get_ads_tariffs_keyboard():
-    keyboard = types.InlineKeyboardMarkup()
-    for row in ADS_TARIFFS_DATA:
-        buttons = [types.InlineKeyboardButton(text=text, callback_data=cb) for text, cb in row]
-        keyboard.row(*buttons)
-    return keyboard
-
-def get_safepal_coins_keyboard(tariff_key):
-    keyboard = types.InlineKeyboardMarkup()
-    for text, coin in CRYPTO_COINS_DATA:
-        keyboard.row(types.InlineKeyboardButton(text=text, callback_data=f"pay_{tariff_key}_{coin}"))
-    keyboard.row(types.InlineKeyboardButton(text="🔙 К выбору тарифов", callback_data="ads_buy"))
-    return keyboard
-
-def get_combo_list_keyboard(page=0):
-    keyboard = types.InlineKeyboardMarkup()
-    combo_keys = list(manager.combo_games.keys())
-    total_games = len(combo_keys)
-    ITEMS_PER_PAGE = 5
-    total_pages = (total_games + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
-    start_idx = page * ITEMS_PER_PAGE
-    end_idx = start_idx + ITEMS_PER_PAGE
-    for key in combo_keys[start_idx:end_idx]:
-        data = manager.combo_games[key]
-        keyboard.row(types.InlineKeyboardButton(text=f"🎮 {data['name']}", callback_data=f"gamemenu_{key}_{page}"))
-    nav_buttons = []
-    if page > 0:
-        nav_buttons.append(types.InlineKeyboardButton(text="⬅️ Назад", callback_data=f"combopage_{page-1}"))
-    nav_buttons.append(types.InlineKeyboardButton(text=f"📄 {page + 1}/{total_pages}", callback_data="ignore"))
-    if page < total_pages - 1:
-        nav_buttons.append(types.InlineKeyboardButton(text="Вперед ➡️", callback_data=f"combopage_{page+1}"))
-    if nav_buttons:
-        keyboard.row(*nav_buttons)
-    return keyboard, total_games
-
-def get_single_game_keyboard(key, page):
-    data = manager.combo_games.get(key, {})
-    keyboard = types.InlineKeyboardMarkup()
-    
-    # 1. Первый ряд: Основные действия (Комбо и Тактика)
-    combo_text, combo_prefix = SINGLE_GAME_ACTIONS["combo"]
-    tactics_text, tactics_prefix = SINGLE_GAME_ACTIONS["tactics"]
-    
-    row_buttons = [
-        types.InlineKeyboardButton(text=combo_text, callback_data=f"{combo_prefix}{key}"),
-        types.InlineKeyboardButton(text=tactics_text, callback_data=f"{tactics_prefix}{key}")
-    ]
-    
-    # 2. Добавляем ссылки прямо в этот же ряд, если они есть в данных
-    if data.get("ref_link_1"):
-        play1_text, *_ = SINGLE_GAME_ACTIONS["play_1"]
-        row_buttons.append(types.InlineKeyboardButton(text=play1_text, url=data["ref_link_1"]))
-        
-    if data.get("ref_link_2"):
-        play2_text, *_ = SINGLE_GAME_ACTIONS["play_2"]
-        row_buttons.append(types.InlineKeyboardButton(text=play2_text, url=data["ref_link_2"]))
-    
-    # Складываем все активные кнопки в первую строку
-    keyboard.row(*row_buttons)
-    
-    # 3. Второй ряд: Кнопка возврата назад (на отдельной строке внизу)
-    back_text, back_prefix = SINGLE_GAME_ACTIONS["back"]
-    keyboard.row(
-        types.InlineKeyboardButton(text=back_text, callback_data=f"{back_prefix}{page}")
-    )
-    
-    return keyboard
-    
-def get_phone_miners_keyboard():
-    keyboard = types.InlineKeyboardMarkup()
-    
-    info_prefix = PHONE_MINER_ACTIONS["info_prefix"]
-    play_text = PHONE_MINER_ACTIONS["play_text"]
-    p1_text = PHONE_MINER_ACTIONS["play_1_text"]
-    p2_text = PHONE_MINER_ACTIONS["play_2_text"]
-    
-    for key, data in manager.phone_miners.items():
-        keyboard.row(
-            types.InlineKeyboardButton(text=data["name"], callback_data=f"{info_prefix}{key}"),
-            types.InlineKeyboardButton(text=play_text, url=data["play_market"])
-        )
-        keyboard.row(
-            types.InlineKeyboardButton(text=p1_text, url=data["ref_link_1"]),
-            types.InlineKeyboardButton(text=p2_text, url=data["ref_link_2"])
-        )
-    return keyboard
-
-def get_faucets_keyboard():
-    keyboard = types.InlineKeyboardMarkup()
-    
-    info_prefix = FAUCETS_ACTIONS["info_prefix"]
-    p1_text = FAUCETS_ACTIONS["play_1_text"]
-    p2_text = FAUCETS_ACTIONS["play_2_text"]
-    
-    for key, data in manager.crypto_faucets.items():
-        keyboard.row(types.InlineKeyboardButton(text=data["name"], callback_data=f"{info_prefix}{key}"))
-        keyboard.row(
-            types.InlineKeyboardButton(text=p1_text, url=data["ref_link_1"]),
-            types.InlineKeyboardButton(text=p2_text, url=data["ref_link_2"])
-        )
-    return keyboard
-
-def get_farms_keyboard():
-    keyboard = types.InlineKeyboardMarkup()
-    
-    strat_prefix = FARMS_ACTIONS["strat_prefix"]
-    template = FARMS_ACTIONS["strat_suffix_template"]
-    p1_text = FARMS_ACTIONS["play_1_text"]
-    p2_text = FARMS_ACTIONS["play_2_text"]
-    
-    for key, data in manager.independent_farms.items():
-        btn_text = template.format(name=data['name'])
-        keyboard.row(types.InlineKeyboardButton(text=btn_text, callback_data=f"{strat_prefix}{key}"))
-        keyboard.row(
-            types.InlineKeyboardButton(text=p1_text, url=data["ref_link_1"]),
-            types.InlineKeyboardButton(text=p2_text, url=data["ref_link_2"])
-        )
-    return keyboard
-    
-
-def get_timers_games_keyboard():
-    keyboard = types.InlineKeyboardMarkup()
-    all_games = {}
-    all_games.update({k: v["name"] for k, v in manager.combo_games.items()})
-    all_games.update({k: v["name"] for k, v in manager.independent_farms.items()})
-    for key, name in all_games.items():
-        keyboard.row(types.InlineKeyboardButton(text=f"⏰ Таймер: {name}", callback_data=f"timer_game_{key}"))
-    return keyboard
-
-def get_timer_duration_keyboard(key):
-    keyboard = types.InlineKeyboardMarkup()
-    
-    set_prefix = TIMER_ACTIONS["set_prefix"]
-    
-    # Первая строка: 1, 3, 6 часов
-    row1 = [
-        types.InlineKeyboardButton(text=f"⏱ {h} час" if h == 1 else f"⏱ {h} часа" if h in [3, 4] else f"⏱ {h} часов", callback_data=f"{set_prefix}{key}_{h}")
-        for h in TIMER_DURATIONS[:3]
-    ]
-    keyboard.row(*row1)
-    
-    # Вторая строка: 8, 12, 24 часа
-    row2 = [
-        types.InlineKeyboardButton(text=f"⏱ {h} часов", callback_data=f"{set_prefix}{key}_{h}")
-        for h in TIMER_DURATIONS[3:]
-    ]
-    keyboard.row(*row2)
-    
-    # Дополнительные кнопки (Свое время, Отключить, Назад)
-    keyboard.row(
-        types.InlineKeyboardButton(text=TIMER_ACTIONS["custom_text"], callback_data=f"{TIMER_ACTIONS['custom_prefix']}{key}")
-    )
-    keyboard.row(
-        types.InlineKeyboardButton(text=TIMER_ACTIONS["cancel_text"], callback_data=f"{TIMER_ACTIONS['cancel_prefix']}{key}")
-    )
-    keyboard.row(
-        types.InlineKeyboardButton(text=TIMER_ACTIONS["back_text"], callback_data=TIMER_ACTIONS["back_callback"])
-    )
-    
-    return keyboard
-    
-
-def get_crypto_currency_keyboard():
-    keyboard = types.InlineKeyboardMarkup(row_width=2)
-    buttons = [
-        types.InlineKeyboardButton(text=text, callback_data=cb) 
-        for text, cb in CRYPTO_CURRENCY_DATA
-    ]
-    keyboard.add(*buttons)
-    return keyboard
-
-def get_fiat_currency_keyboard(crypto_symbol):
-    keyboard = types.InlineKeyboardMarkup(row_width=3)
-    buttons = [
-        types.InlineKeyboardButton(text=text, callback_data=f"fiat_{crypto_symbol}_{code}")
-        for text, code in FIAT_CURRENCIES
-    ]
-    keyboard.add(*buttons)
-    return keyboard
-
-def send_message_direct(chat_id, text, reply_markup=None, parse_mode="Markdown"):
-    try:
-        return bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup, parse_mode=parse_mode)
-    except Exception as e:
-        logger.error(f"Ошибка отправки сообщения: {e}")
-        return bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
-
-def send_combo_result(chat_id, info, img_bytes, date_text):
-    caption = f"🎯 **{info['name']}**\n📅 `{date_text}`"
-    if img_bytes:
-        try:
-            bot.send_photo(chat_id, photo=img_bytes, caption=caption[:1024], parse_mode="Markdown")
-        except Exception as e:
-            logger.error(f"Ошибка отправки фото: {e}")
-            send_message_direct(chat_id, caption, parse_mode="Markdown")
-    else:
-        full_text = f"🎯 **{info['name']}**\n📅 `{date_text}`\n\n❌ Комбо еще не найдено"
-        send_message_direct(chat_id, full_text, parse_mode="Markdown")
-
-def show_user_profile(chat_id):
-    try:
-        chat_info = bot.get_chat(chat_id)
-        user_name = chat_info.first_name or "Игрок"
-    except:
-        user_name = "Игрок"
-    profile_text = f"👤 **Профиль пользователя:** {user_name}\n\n🏆 **Ваш игровой прогресс и статы:**\n"
-    if chat_id in user_game_stats and user_game_stats[chat_id]:
-        send_message_direct(chat_id, profile_text, parse_mode="Markdown")
-        for game, info in user_game_stats[chat_id].items():
-            caption = f"🎮 *{game}*\n📊 Стат / Уровень: `{info['stat']}`"
-            if info.get("photo"):
-                try:
-                    bot.send_photo(chat_id, photo=info["photo"], caption=caption, parse_mode="Markdown")
-                except:
-                    send_message_direct(chat_id, caption, parse_mode="Markdown")
-            else:
-                send_message_direct(chat_id, caption, parse_mode="Markdown")
-        send_message_direct(chat_id, "⚙️ Управление профилем:", reply_markup=get_profile_keyboard())
-    else:
-        profile_text += "_Список игр пуст. Нажмите кнопку ниже, чтобы добавить свой прогресс и скриншот._"
-        send_message_direct(chat_id, profile_text, reply_markup=get_profile_keyboard(), parse_mode="Markdown")
-
-def daily_auto_checker():
-    last_reset_day = None
-    # Флаг для принудительного запуска проверки сразу при старте бота
-    run_check_now = True 
-
-    while True:
-        now_time = time.time()
-        now_struct = time.localtime(now_time)
-        current_day = now_struct.tm_mday
-        current_hour = now_struct.tm_hour
-
-        # Сброс статусов в новый день
-        if last_reset_day != current_day:
-            manager.reset_daily_status()
-            last_reset_day = current_day
-            run_check_now = True  # Разрешаем внеплановый запуск при смене дня, если нужно
-
-        # Условия запуска проверки: либо сразу при старте (run_check_now), либо наступило 9:00 или позже
-        # И проверяем, остались ли игры, по которым сегодня еще не нашли картинку
-        has_unfound_games = any(not found for found in manager.found_today.values())
-
-        if (run_check_now or current_hour >= 9) and has_unfound_games:
-            logger.info("🛡️ [AUTO-CHECKER] Запуск проверки комбо-картинок...")
+        if "combo" in actions_config:
+            combo_text, combo_prefix = actions_config["combo"]
+            row_buttons.append(types.InlineKeyboardButton(text=combo_text, callback_data=f"{combo_prefix}{key}"))
             
-            for key, info in manager.combo_games.items():
-                # Если на сегодня картинка для этой игры уже найдена, пропускаем её
-                if manager.found_today.get(key, False):
-                    continue
-
-                try:
-                    img_url, date_text = manager.fetch_combo(key)
-                    if img_url:
-                        img_bytes = manager.resize_img(img_url, game_key=key)
-                        if img_bytes:
-                            # Отмечаем, что на сегодня картинка найдена
-                            manager.found_today[key] = True
-                            logger.info(f"✅ [AUTO-CHECKER] Картинка для {key} успешно найдена и зафиксирована!")
-                            
-                            # Отправляем результат администратору (или в чат с админом)
-                            caption = f"🎯 **[Авто-комбо] {info['name']}**\n📅 `{date_text}`"
-                            try:
-                                bot.send_photo(ADMIN_CHAT_ID, photo=img_bytes, caption=caption[:1024], parse_mode="Markdown")
-                            except Exception as e:
-                                logger.error(f"Ошибка отправки авто-фото администратору: {e}")
-                except Exception as e:
-                    logger.error(f"Ошибка авто-проверки игры {key}: {e}")
-
-            # После первой попытки сбрасываем флаг старта, чтобы дальше работать по расписанию
-            run_check_now = False
-
-        # Проверка и обновление игровых таймеров пользователей
-        try:
-            for chat_id, timers in list(user_game_timers.items()):
-                for game_key, t_data in list(timers.items()):
-                    if t_data and isinstance(t_data, dict):
-                        target_time = t_data.get("target")
-                        if target_time and now_time >= target_time:
-                            game_name = manager.combo_games[game_key]["name"] if game_key in manager.combo_games else manager.independent_farms[game_key]["name"]
-                            send_message_direct(chat_id, f"⏰ **Напоминание!** Пора заходить в игру: **{game_name}** 🚀")
-                            duration = t_data.get("duration_hours", 8)
-                            user_game_timers[chat_id][game_key]["target"] = time.time() + (duration * 3600)
-        except Exception as e:
-            logger.error(f"Ошибка в проверке таймеров: {e}")
-
-        # Проверка истечения срока активной рекламы из файла
-        # Проверка истечения срока активной рекламы через менеджер
-        try:
-            expired_ads = []
-            # Используем ads_manager.storage 
-            for oid, ad_data in list(ads_manager.storage.items()):
-                if now_time >= ad_data["expire_time"]:
-                    expired_ads.append(oid)
-                    send_message_direct(
-                        ad_data["user_id"],
-                        "⏱ **Срок размещения вашей рекламы истек.** Рекламный пост был автоматически снят. Спасибо за сотрудничество!",
-                        parse_mode="Markdown"
-                    )
-                    send_message_direct(
-                        ADMIN_CHAT_ID,
-                        f"📢 **Рекламная кампания завершена по таймеру!**\nЗаказчик: `{ad_data['user_id']}` (ID заказа: `{oid}`)",
-                        parse_mode="Markdown"
-                    )
-            if expired_ads:
-                for oid in expired_ads:
-                    # Вызываем метод удаления из менеджера (он сам удалит из словаря и сохранит файл)
-                    ads_manager.remove_ad(oid)
-        except Exception as e:
-            logger.error(f"Ошибка проверки рекламных таймеров: {e}")
+        if "tactics" in actions_config:
+            tactics_text, tactics_prefix = actions_config["tactics"]
+            row_buttons.append(types.InlineKeyboardButton(text=tactics_text, callback_data=f"{tactics_prefix}{key}"))
             
-        # Пауза 10 минут (600 секунд) перед следующим циклом опроса
-        time.sleep(600)
+        # Добавляем только те реф-ссылки, которые реально заполнены
+        row_buttons.extend(cls._get_dynamic_ref_buttons(data, actions_config))
         
-def generate_advanced_captcha(chat_id):
-    a = random.randint(2, 9)
-    b = random.randint(2, 9)
-    ans = str(a + b)
-    variants = [ans, str(ans + "1" if int(ans) < 10 else "5"), str(max(1, int(ans) - 2)), str(int(ans) + 3)]
-    variants = list(set(variants))[:4]
-    advanced_captchas[chat_id] = ans
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    random.shuffle(variants)
-    buttons = [types.InlineKeyboardButton(text=v, callback_data=f"advcap_{v}") for v in variants]
-    markup.add(*buttons)
-    return f"Сколько будет {a} + {b}?", markup
+        if row_buttons:
+            keyboard.row(*row_buttons)
+            
+        if "back" in actions_config:
+            back_text, back_prefix = actions_config["back"]
+            keyboard.row(types.InlineKeyboardButton(text=back_text, callback_data=f"{back_prefix}{page}"))
+            
+        return keyboard
 
-@bot.message_handler(commands=['start'])
-def handle_start(message: types.Message):
-    chat_id = message.chat.id
-    if chat_id not in verified_users:
-        question, markup = generate_advanced_captcha(chat_id)
-        bot.send_message(chat_id, f"🛡️ **Проверка на человека**\n\n🧠 *{question}*", reply_markup=markup, parse_mode="Markdown")
-        return
-    send_message_direct(chat_id, WELCOME_MESSAGES["zero_lag"])
-    send_message_direct(chat_id, WELCOME_MESSAGES["main_menu"], reply_markup=get_main_keyboard())
-
-@bot.message_handler(commands=BOT_COMMANDS_LIST)
-@bot.message_handler(func=lambda msg: msg.text in MAIN_MENU_BUTTONS)
-
-
-def handle_menu_text(message: types.Message):
-    chat_id = message.chat.id
-    if chat_id not in verified_users:
-        send_message_direct(chat_id, "⚠️ Сначала пройдите верификацию через /start.")
-        return
-
-    text = message.text
-    if text in ["🚀 Меню комбо-игр"]:
-        keyboard, total_count = get_combo_list_keyboard(page=0)
-        send_message_direct(chat_id, f"🎮 **Активные комбо-проекты**\nВсего доступно игр с комбо: **{total_count}**\n\nВыберите проект из списка ниже:", reply_markup=keyboard)
+    @classmethod
+    def get_catalog_keyboard(
+        cls, 
+        items_dict: dict, 
+        info_prefix: str, 
+        actions_config: dict, 
+        name_template: str = None, 
+        extra_url_key: str = None
+    ) -> types.InlineKeyboardMarkup:
+        """Универсальный метод для генерации списков (майнеры, краны, фармы) с динамическими ссылками."""
+        keyboard = types.InlineKeyboardMarkup()
         
-    elif text in ["🤖 Авто-ферма игр"]:
-        keyboard = get_farms_menu_keyboard(chat_id)  # Вызываем нашу динамическую клавиатуру
-        send_message_direct(
-            chat_id,
-            "🤖 **Управление авто-фермой игр**\n\nВыберите нужную игру из списка для управления:",
-            reply_markup=keyboard,
-            parse_mode="Markdown"
-        )
-         
-    elif text in ["👤 Профиль и статы", "/profile"]:
-        show_user_profile(chat_id)
-    elif text in ["📱 Телефонные майнеры", "/miners"]:
-        send_message_direct(chat_id, "📱 **Мобильные и облачные майнеры:**", reply_markup=get_phone_miners_keyboard())
-    elif text in ["🚰 Крипто-краны", "/faucets"]:
-        send_message_direct(chat_id, "🚰 **Крипто-краны:**", reply_markup=get_faucets_keyboard())
-    elif text in ["🌾 Авто-фермы (без комбо)"]:
-        send_message_direct(chat_id, "🌾 **Отдельные фермерские проекты:**", reply_markup=get_farms_keyboard())
-    elif text in ["⚡ Проверить все комбо", "/all_combo"]:
-        send_message_direct(chat_id, "🔍 **Запущен массовый сбор комбо...**")
-        for key, info in manager.combo_games.items():
-            img_url, date_text = manager.fetch_combo(key)
-            img_bytes = manager.resize_img(img_url, game_key=key) if img_url else None
-            send_combo_result(chat_id, info, img_bytes, date_text)
-    elif text in ["🧮 Крипто-курс", "/calc"]:
-        send_message_direct(chat_id, "🧮 **Выберите криптовалюту:**", reply_markup=get_crypto_currency_keyboard())
-    elif text in ["📊 Защита фермы", "/farm"]:
-        send_message_direct(chat_id, "📊 **Статус:** Сеть работает на максимальной скорости.")
-    elif text in ["⏰ Мои таймеры", "/timers"]:
-        report = "⏰ **Ваши персональные таймеры сбора:**\n\n"
-        user_timers_dict = user_game_timers.get(chat_id, {})
-        all_games = {}
-        all_games.update({k: v["name"] for k, v in manager.combo_games.items()})
-        all_games.update({k: v["name"] for k, v in manager.independent_farms.items()})
-        for k, name in all_games.items():
-            t_info = user_timers_dict.get(k)
-            t_target = t_info.get("target") if t_info else None
-            if t_target and t_target > time.time():
-                left_sec = int(t_target - time.time())
-                report += f"• *{name}*: через **{left_sec // 3600}ч {(left_sec % 3600) // 60}м**\n"
-            else:
-                report += f"• *{name}*: ❌ Не установлен\n"
-        send_message_direct(chat_id, report + "\n👇 Выберите игру для настройки:", reply_markup=get_timers_games_keyboard(), parse_mode="Markdown")
-    elif text in ["💬 Отзывы", "/reviews"]:
-        send_message_direct(chat_id, "💬 **Секция отзывов и предложений (Laysi🐾):**", reply_markup=get_reviews_keyboard(), parse_mode="Markdown")
-    elif text in ["📢 Реклама и монетизация", "/ads"]:
-        send_message_direct(chat_id, "📢 **Размещение рекламы :**\n\nВыкупите рекламное место в закрепе или рассылке, оплатив его напрямую через кошелек SafePal.", reply_markup=get_ads_keyboard(), parse_mode="Markdown")
-    elif text in ["💎 Скрины выплат", "/proofs"]:
-        if not cloud_proofs:
-            send_message_direct(chat_id, "💎 Скринов пока нет.")
-        else:
-            for p in cloud_proofs[-3:]:
-                try: bot.send_photo(chat_id, p)
-                except: pass
+        for key, data in items_dict.items():
+            item_name = data.get("name", "")
+            btn_text = name_template.format(name=item_name) if name_template else item_name
+            
+            main_row = [types.InlineKeyboardButton(text=btn_text, callback_data=f"{info_prefix}{key}")]
+            
+            # Если передана дополнительная внешняя ссылка (например, play_market)
+            if extra_url_key and data.get(extra_url_key):
+                play_text = actions_config.get("play_text", "Играть")
+                main_row.append(types.InlineKeyboardButton(text=play_text, url=data[extra_url_key]))
+                
+            keyboard.row(*main_row)
+            
+            # Динамические реф-ссылки (если есть хотя бы одна заполненная)
+            ref_buttons = cls._get_dynamic_ref_buttons(data, actions_config)
+            if ref_buttons:
+                keyboard.row(*ref_buttons)
+                
+        return keyboard
 
-@bot.message_handler(content_types=['photo'])
-def handle_photo(message: types.Message):
-    chat_id = message.chat.id
-    if chat_id not in verified_users:
-        return
-    if chat_id in user_input_states and user_input_states[chat_id].get("step") == "waiting_photo":
-        state_data = user_input_states[chat_id]
-        if chat_id not in user_game_stats:
-            user_game_stats[chat_id] = {}
-        user_game_stats[chat_id][state_data["game"]] = {"stat": state_data["stat"], "photo": message.photo[-1].file_id}
-        user_input_states.pop(chat_id, None)
-        bot.reply_to(message, f"✅ Игра *{state_data['game']}* добавлена в профиль!", reply_markup=get_profile_keyboard(), parse_mode="Markdown")
-        return
-    if chat_id == ADMIN_CHAT_ID:
-        cloud_proofs.append(message.photo[-1].file_id)
-        try: bot.reply_to(message, "✅ Скрин сохранен в облачном хранилище!")
-        except: pass
 
-@bot.message_handler(func=lambda m: True)
-def handle_text_all(message: types.Message):
-    chat_id = message.chat.id
-    raw_text = message.text.strip()
-    if chat_id not in verified_users:
-        send_message_direct(chat_id, "⚠️ Пожалуйста, пройдите верификацию через /start.")
-        return
+class MessageProcessor:
+    """Класс для обработки входящих сообщений и команд бота."""
+    def __init__(self, bot, logger, sender, manager, *args, **kwargs):
+        self.bot = bot
+        self.logger = logger
+        self.sender = sender
+        self.manager = manager
+        # сохраните остальные переменные, которые передаете при вызове
+    
+    @staticmethod
+    def handle_start(message: types.Message):
+        chat_id = message.chat.id
+        user = message.from_user
 
-    if chat_id in user_input_states and user_input_states[chat_id].get("step") == "waiting_review_text":
-        user_input_states.pop(chat_id, None)
-        try: user_name = bot.get_chat(chat_id).first_name or "Аноним"
-        except: user_name = "Аноним"
-        user_reviews_storage.append({"user": user_name, "text": raw_text, "date": time.strftime("%d.%m.%Y %H:%M")})
-        send_message_direct(ADMIN_CHAT_ID, f"💬 **Новый отзыв от {user_name}:**\n\n`{raw_text}`", parse_mode="Markdown")
-        send_message_direct(chat_id, "✅ **Спасибо за ваш отзыв!**", reply_markup=get_reviews_keyboard(), parse_mode="Markdown")
-        return
-
-    if chat_id in user_input_states and user_input_states[chat_id].get("step") == "waiting_review_text":
-        user_input_states.pop(chat_id, None)
-        
-        # --- НОВАЯ ПРОВЕРКА АНТИСПАМА И БЕЗОПАСНОСТИ ---
-        clean_review_text = security_core.sanitize_input(raw_text)
-        is_threat, security_msg = security_core.analyze_traffic(raw_text)
-        
-        if is_threat or clean_review_text == "[BLOCKED_INJECTION_ATTEMPT]" or "http://" in raw_text.lower() or "https://" in raw_text.lower() or "t.me/" in raw_text.lower():
-            send_message_direct(chat_id, "⚠️ **Ваш отзыв отклонен системой безопасности!** Обнаружены запрещенные ссылки или потенциальная угроза спама.", parse_mode="Markdown")
-            return
-        # -----------------------------------------------
-
-        try: user_name = bot.get_chat(chat_id).first_name or "Аноним"
-        except: user_name = "Аноним"
-        
-        user_reviews_storage.append({"user": user_name, "text": clean_review_text, "date": time.strftime("%d.%m.%Y %H:%M")})
-        send_message_direct(ADMIN_CHAT_ID, f"💬 **Новый отзыв от {user_name}:**\n\n`{clean_review_text}`", parse_mode="Markdown")
-        send_message_direct(chat_id, "✅ **Спасибо за ваш отзыв!**", reply_markup=get_reviews_keyboard(), parse_mode="Markdown")
-        return
-
-    if chat_id in user_input_states and user_input_states[chat_id].get("step") == "waiting_ad_content":
-        order_data = user_input_states.pop(chat_id, None)
-        tariff = order_data["tariff"]
-        coin = order_data["coin"]
-        
-        order_id = f"ord_{chat_id}_{int(time.time())}"
-        pending_data = {
-            "user_id": chat_id,
-            "tariff": tariff,
-            "coin": coin,
-            "content": raw_text
-        }
-        pending_ad_orders[order_id] = pending_data
-
-        admin_markup = types.InlineKeyboardMarkup()
-        admin_markup.row(types.InlineKeyboardButton(text="✅ Оплата поступила (Запустить рекламу)", callback_data=f"adm_pay_ok_{order_id}"))
-        admin_markup.row(types.InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm_pay_no_{order_id}"))
-
-        send_message_direct(
-            ADMIN_CHAT_ID,
-            f"📢 **Заявка на рекламу ожидает подтверждения оплаты!**\n"
-            f"👤 Заказчик: `{chat_id}`\n"
-            f"📋 Тариф: `{tariff}`\n"
-            f"💰 Оплата через: `{coin.upper()}`\n\n"
-            f"📝 **Креатив:**\n{raw_text}",
-            reply_markup=admin_markup,
-            parse_mode="Markdown"
-        )
-        send_message_direct(
-            chat_id,
-            "✅ **Ваш рекламный креатив и чек приняты!**\nЗаявка отправлена администратору на проверку поступления средств на SafePal.",
-            reply_markup=get_ads_keyboard(),
-            parse_mode="Markdown"
-        )
-        return
-
-    if chat_id in user_input_states and user_input_states[chat_id].get("step") == "waiting_custom_timer":
-        game_key = user_input_states[chat_id]["game_key"]
-        user_input_states.pop(chat_id, None)
-        try:
-            cleaned = raw_text.lower().replace(",", ".")
-            hours_val = float(re.sub(r'[^0-9.]', '', cleaned)) / 60.0 if "м" in cleaned else float(cleaned)
-            if hours_val <= 0: raise ValueError()
-            if chat_id not in user_game_timers: user_game_timers[chat_id] = {}
-            user_game_timers[chat_id][game_key] = {"target": time.time() + (hours_val * 3600), "duration_hours": hours_val}
-            game_name = manager.combo_games[game_key]["name"] if game_key in manager.combo_games else manager.independent_farms[game_key]["name"]
-            send_message_direct(chat_id, f"✅ Успешно! Таймер для *{game_name}* установлен на **{hours_val} ч.**", reply_markup=get_timers_games_keyboard(), parse_mode="Markdown")
-            return
-        except:
-            send_message_direct(chat_id, "⚠️ Неверный формат! Введите число (например: `2.5`):", parse_mode="Markdown")
+        # 0) Забаненные (спам/скам/хакеры) — доступ закрыт.
+        if account_guard.is_banned(user.id):
+            try:
+                bot.send_message(chat_id, "🚫 Доступ заблокирован (подозрение на спам/скам).")
+            except Exception:
+                pass
             return
 
-    text = security_core.sanitize_input(raw_text)
-    is_threat, security_msg = security_core.analyze_traffic(text)
-    if is_threat or any(x in text.lower() for x in ["http://", "https://", "t.me/", "@"]):
-        send_message_direct(chat_id, security_msg)
-        return
-
-    if chat_id in user_calc_states:
-        state = user_calc_states[chat_id]
-        try:
-            amt = float(text.replace(",", "."))
-            c_id = {"btc": "bitcoin", "eth": "ethereum", "usdt": "tether", "gram": "the-open-network"}.get(state["crypto"], "bitcoin")
-            fiat = state['fiat']
-            
-            # Запрашиваем цену и изменение за 24 часа
-            url = f"https://api.coingecko.com/api/v3/simple/price?ids={c_id}&vs_currencies={fiat}&include_24hr_change=true"
-            res_data = requests.get(url, timeout=3).json().get(c_id, {})
-            
-            rate = res_data.get(fiat, 0)
-            change_24h = res_data.get(fiat + "_24h_change", 0)
-            
-            total_sum = rate * amt
-            
-            # Иконка и знак в зависимости от роста или падения
-            trend_icon = "🟢" if change_24h >= 0 else "🔴"
-            change_sign = "+" if change_24h > 0 else ""
-            
-            report_text = (
-                f"💎 **Крипто-конвертер [Zero-Lag]**\n\n"
-                f"🔹 Количество: **{amt} {state['crypto'].upper()}**\n"
-                f"💵 Стоимость: **{total_sum:,.2f} {fiat.upper()}**\n"
-                f"📈 Тренд за 24ч: {trend_icon} **{change_sign}{change_24h:.2f}%**"
-            )
-            
-            send_message_direct(chat_id, report_text, parse_mode="Markdown")
-            user_calc_states.pop(chat_id, None)
-            return
-        except Exception as e:
-            logger.error(f"Ошибка конвертера: {e}")
-            send_message_direct(chat_id, "⚠️ Ошибка получения данных с API. Введите корректное число:")
-            return
-
-   # Если пользователь пишет текст, а калькулятор неактивен — передаем запрос нашему ИИ!    
-    ai_response = ai_assistant.generate_response(text, chat_id=chat_id)
-    send_message_direct(chat_id, ai_response, parse_mode="Markdown", reply_markup=get_main_keyboard())
-
-@bot.callback_query_handler(func=lambda call: True)
-def handle_callbacks(call: types.CallbackQuery):
-    # 1. Мгновенно гасим анимацию загрузки кнопки (защита от таймаута Telegram)
-    try:
-        bot.answer_callback_query(call.id)
-    except Exception:
-        pass
-
-    # 2. Глобальный защитный блок от любых непредвиденных падений
-    try:
-        chat_id = call.message.chat.id
-        data = call.data
-
-        if data.startswith("advcap_"):
-            if data.replace("advcap_", "") == advanced_captchas.get(chat_id):
-                save_verified_user(chat_id)
-                advanced_captchas.pop(chat_id, None)
-                try: bot.edit_message_text("✅ **Доступ открыт!**", chat_id, call.message.message_id, parse_mode="Markdown")
-                except: pass
-                send_message_direct(chat_id, "👇 Главное меню:", reply_markup=get_main_keyboard())
-            else:
-                q, m = generate_advanced_captcha(chat_id)
-                try: bot.answer_callback_query(call.id, "❌ Неверно!", show_alert=True)
-                except: pass
-                try: bot.edit_message_text(f"❌ **Неверно!**\n🧠 *{q}*", chat_id, call.message.message_id, reply_markup=m, parse_mode="Markdown")
-                except: pass
+        # 1) Проверка аккаунта: боты, скам-юзернеймы, поддельные имена (омоглифы/ссылки).
+        blocked, reason = account_guard.hard_block(user)
+        if blocked:
+            account_guard.ban(user.id, reason)
+            try:
+                bot.send_message(chat_id, f"🚫 Доступ запрещён: {reason}.")
+            except Exception:
+                pass
+            try:
+                # parse_mode=None: имя/юзернейм пользователя не должны ломать/инъектировать разметку.
+                send_message_direct(ADMIN_CHAT_ID, f"🚫 Заблокирован аккаунт {user.id} (@{user.username}): {reason}", None, None)
+            except Exception:
+                pass
             return
 
         if chat_id not in verified_users:
-            try: bot.answer_callback_query(call.id, "Сначала пройдите верификацию через /start!", show_alert=True)
-            except: pass
+            # Подозрительный, но не заблокированный аккаунт — уведомим админа.
+            rscore, rreasons = account_guard.risk(user)
+            if rscore >= 30:
+                try:
+                    send_message_direct(
+                        ADMIN_CHAT_ID,
+                        f"⚠️ Подозрительный вход {user.id} (@{user.username}), риск {rscore}: {', '.join(rreasons)}",
+                        None, None
+                    )
+                except Exception:
+                    pass
+            question, markup = generate_advanced_captcha(chat_id)
+            bot.send_message(chat_id, f"🛡️ **Проверка на человека**\n\n🧠 *{question}*", reply_markup=markup, parse_mode="Markdown")
             return
+        send_message_direct(chat_id, WELCOME_MESSAGES["zero_lag"])
+        send_message_direct(chat_id, WELCOME_MESSAGES["main_menu"], reply_markup=MenuManager.get_reply_keyboard(MAIN_MENU_BUTTONS))
 
-        # Админские кнопки подтверждения оплаты рекламы
-        if data.startswith("adm_pay_ok_") or data.startswith("adm_pay_no_"):
-            if chat_id != ADMIN_CHAT_ID:
-                try: bot.answer_callback_query(call.id, "Только для администратора!", show_alert=True)
-                except: pass
-                return
-            
-            parts = data.split("_")
-            action = parts[2] 
-            order_id = f"{parts[3]}_{parts[4]}_{parts[5]}"
-            
-            order = pending_ad_orders.get(order_id)
-            if not order:
-                try: bot.answer_callback_query(call.id, "Заказ не найден или уже обработан", show_alert=True)
-                except: pass
-                return
+    @staticmethod
+    def handle_menu_or_commands(message: types.Message):
+        # Маршрутизация кнопок главного меню и текстовых команд
+        # в реальный обработчик MenuTextProcessor.handle_menu_text.
+        handle_menu_text(message)
 
-            target_user_id = order["user_id"]
-            pending_ad_orders.pop(order_id, None)
 
-        if action == "ok":
-             if "24" in order["tariff"]:
-                 expire_timestamp = time.time() + 86400
-                 ads_manager.add_ad(order_id, target_user_id, expire_timestamp)
+class MenuManager:
+    """Универсальный менеджер клавиатур для генерации Reply и Inline интерфейсов."""
+    @staticmethod
+    def get_matrix_keyboard(keyboard_data: list) -> types.InlineKeyboardMarkup:
+        """Универсальный метод для создания клавиатур по матрице строк и кнопок."""
+        keyboard = types.InlineKeyboardMarkup()
+        for row in keyboard_data:
+            buttons = [types.InlineKeyboardButton(text=text, callback_data=cb) for text, cb in row]
+            keyboard.row(*buttons)
+        return keyboard
 
-             send_message_direct(
-                 target_user_id,
-                 "🎉 **Оплата получена! Ваша реклама успешно запущена в боте.**\nБлагодарим за сотрудничество!",
-                 parse_mode="Markdown"
-             )
-             try:
-                 bot.edit_message_text(f"✅ **Заказ успешно подтвержден и запущен!** (Клиент: `{target_user_id}`)", chat_id, call.message.message_id, parse_mode="Markdown")
-             except Exception:
-                 pass
-        else:
-             send_message_direct(
-                 target_user_id,
-                 "❌ **Оплата не подтверждена администратором.** Свяжитесь с поддержкой для уточнения деталей.",
-                 parse_mode="Markdown"
-             )
-             try:
-                 bot.edit_message_text(f"❌ **Заказ отклонен.** (Клиент: `{target_user_id}`)", chat_id, call.message.message_id, parse_mode="Markdown")
-             except Exception:
-                 pass
-        return
-                
-        # Секция отзывов
-        if data == "review_add":
-            user_input_states[chat_id] = {"step": "waiting_review_text"}
-            send_message_direct(chat_id, "✍️ **Напишите ваш отзыв одним сообщением:**", parse_mode="Markdown")
-            return
+    @staticmethod
+    def get_crypto_currency_keyboard(currency_data: list, row_width: int = 2) -> types.InlineKeyboardMarkup:
+        """Генерация клавиатуры выбора криптовалюты с фиксированной шириной строк."""
+        keyboard = types.InlineKeyboardMarkup(row_width=row_width)
+        buttons = [
+            types.InlineKeyboardButton(text=text, callback_data=cb) 
+            for text, cb in currency_data
+        ]
+        keyboard.add(*buttons)
+        return keyboard
 
-        if data == "review_read":
-            if not user_reviews_storage:
-                send_message_direct(chat_id, "💬 Пока что отзывов нет.")
-            else:
-                rev_text = "💬 **Последние отзывы:**\n\n" + "\n".join([f"👤 *{r['user']}* (`{r['date']}`):\n{r['text']}\n" for r in user_reviews_storage[-5:]])
-                send_message_direct(chat_id, rev_text, parse_mode="Markdown")
-            return
+    @staticmethod
+    def get_fiat_currency_keyboard(crypto_symbol: str, fiat_data: list, row_width: int = 3) -> types.InlineKeyboardMarkup:
+        """Генерация клавиатуры выбора фиатной валюты для конкретной крипты."""
+        keyboard = types.InlineKeyboardMarkup(row_width=row_width)
+        buttons = [
+            types.InlineKeyboardButton(text=text, callback_data=f"fiat_{crypto_symbol}_{code}")
+            for text, code in fiat_data
+        ]
+        keyboard.add(*buttons)
+        return keyboard
 
-        # Монетизация и SafePal
-        if data == "ads_buy":
-            try:
-                bot.edit_message_text(
-                    "💰 **Выберите тариф для размещения рекламы:**\nОплата поступает напрямую на ваш кошелек SafePal.",
-                    chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_ads_tariffs_keyboard(), parse_mode="Markdown"
-                )
-            except: pass
-            return
-
-        if data == "ads_stats":
-            send_message_direct(chat_id, f"📊 **Статистика:** Активных пользователей: **~{len(verified_users) + 120}**", parse_mode="Markdown")
-            return
-
-        if data in ["adtariff_24h", "adtariff_broadcast"]:
-            tariff_name = "Закреп на 24 часа ($15)" if data == "adtariff_24h" else "Рассылка по всей базе ($30)"
-            try:
-                bot.edit_message_text(
-                    f"💎 Вы выбрали тариф: *{tariff_name}*.\n\n"
-                    "👇 **Выберите криптовалюту для оплаты через SafePal:**",
-                    chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_safepal_coins_keyboard(data), parse_mode="Markdown"
-                )
-            except: pass
-            return
-
-        if data.startswith("pay_"):
-            parts = data.split("_")
-            tariff_key = parts[1]
-            coin_key = parts[2]
-            
-            tariff_name = "Закреп на 24 часа ($15)" if tariff_key == "adtariff_24h" else "Рассылка по всей базе ($30)"
-            wallet_info = SAFEPAL_WALLETS.get(coin_key, {"name": coin_key.upper(), "address": "ADRESS_NOT_SET"})
-            
-            user_input_states[chat_id] = {"step": "waiting_ad_content", "tariff": tariff_name, "coin": coin_key}
-            
-            send_message_direct(
-                chat_id,
-                f"💳 **Реквизиты для оплаты:**\n\n"
-                f"📋 Тариф: *{tariff_name}*\n"
-                f"🪙 Монета: *{wallet_info['name']}*\n\n"
-                f"📌 **Адрес кошелька SafePal:**\n`{wallet_info['address']}`\n\n"
-                f"⚠️ **Инструкция:** Переведите точную сумму на указанный адрес SafePal, после чего **отправьте текстом креатив вашей рекламы** (и хэш транзакции/скрин), чтобы администратор мог подтвердить платеж.",
-                parse_mode="Markdown"
-            )
-            return
-
-        if data == "ads_menu_back":
-            try:
-                bot.edit_message_text("📢 **Размещение рекламы через SafePal:**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_ads_keyboard(), parse_mode="Markdown")
-            except: pass
-            return
-
-        if data.startswith("timer_game_"):
-            key = data.replace("timer_game_", "")
-            game_name = manager.combo_games[key]["name"] if key in manager.combo_games else manager.independent_farms[key]["name"]
-            try: bot.edit_message_text(f"⏰ Настройка таймера для: **{game_name}**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_timer_duration_keyboard(key), parse_mode="Markdown")
-            except: pass
-            return
-
-        if data.startswith("settimer_"):
-            parts = data.split("_")
-            hours = int(parts[2])
-            if chat_id not in user_game_timers: user_game_timers[chat_id] = {}
-            user_game_timers[chat_id][parts[1]] = {"target": time.time() + (hours * 3600), "duration_hours": float(hours)}
-            try: bot.answer_callback_query(call.id, f"✅ Таймер на {hours}ч установлен!")
-            except: pass
-            try: bot.edit_message_text(f"✅ **Таймер установлен на {hours} ч.!**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_timers_games_keyboard(), parse_mode="Markdown")
-            except: pass
-            return
-
-        if data.startswith("customtimer_"):
-            user_input_states[chat_id] = {"step": "waiting_custom_timer", "game_key": data.replace("customtimer_", "")}
-            send_message_direct(chat_id, "✏️ **Введите свое время таймера** (например: `2.5` или `90м`):", parse_mode="Markdown")
-            return
-
-        if data.startswith("canceltimer_"):
-            if chat_id in user_game_timers: user_game_timers[chat_id].pop(data.replace("canceltimer_", ""), None)
-            try: bot.edit_message_text("❌ **Таймер отключен.**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_timers_games_keyboard(), parse_mode="Markdown")
-            except: pass
-            return
-
-        if data == "timers_menu_back":
-            try: bot.edit_message_text("⏰ **Выберите игру для таймера:**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_timers_games_keyboard(), parse_mode="Markdown")
-            except: pass
-            return
-
-        if data == "prof_add":
-            user_input_states[chat_id] = {"step": "waiting_game_info"}
-            send_message_direct(chat_id, "✍️ **Введите данные в формате:**\n`Название игры | Уровень`", parse_mode="Markdown")
-            return
-
-        if data == "prof_view":
-            show_user_profile(chat_id)
-            return
-
-        if data.startswith("combopage_"):
-            page = int(data.replace("combopage_", ""))
-            keyboard, total_count = get_combo_list_keyboard(page=page)
-            try: bot.edit_message_text(f"🎮 **Комбо-проекты ({total_count})**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=keyboard, parse_mode="Markdown")
-            except: pass
-            return
-
-        if data.startswith("gamemenu_"):
-            parts = data.split("_")
-            if parts[1] in manager.combo_games:
-                bot.edit_message_text(f"🕹 **Меню: {manager.combo_games[parts[1]]['name']}**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_single_game_keyboard(parts[1], parts[2]), parse_mode="Markdown")
-            return
-
-        if data == "ignore":
-            return
-
-        if data.startswith("pinfo_"):
-            info = manager.phone_miners[data.replace("pinfo_", "")]
-            send_message_direct(chat_id, f"📱 **{info['name']}**\n\n{info['description']}\n\n🔑 Код: `{info['code']}`", parse_mode="Markdown")
-            return
-
-        if data.startswith("finfo_"):
-            info = manager.crypto_faucets[data.replace("finfo_", "")]
-            send_message_direct(chat_id, f"🚰 **{info['name']}**\n\n{info['description']}", parse_mode="Markdown")
-            return
-
-        if data.startswith("cur_"):
-            crypto = data.replace("cur_", "")
-            bot.edit_message_text(f"🧮 Вы выбрали **{crypto.upper()}**. Выберите валюту:", chat_id, call.message.message_id, reply_markup=get_fiat_currency_keyboard(crypto), parse_mode="Markdown")
-            return
-
-        if data.startswith("fiat_"):
-            parts = data.split("_")
-            user_calc_states[chat_id] = {"crypto": parts[1], "fiat": parts[2]}
-            bot.edit_message_text(f"🧮 Введите количество {parts[1].upper()}:", chat_id, call.message.message_id, parse_mode="Markdown")
-            return
-
-        if data.startswith("strat_"):
-            send_message_direct(chat_id, manager.combo_games[data.replace("strat_", "")]["strategy"])
-            return
-
-        if data.startswith("farm_strat_"):
-            send_message_direct(chat_id, manager.independent_farms[data.replace("farm_strat_", "")]["strategy"])
-            return
-
-        if data.startswith("game_"):
-            key = data.replace("game_", "")
-            if key in manager.combo_games:
-                try: bot.answer_callback_query(call.id, "Загрузка...")
-                except: pass
-                img_url, date_text = manager.fetch_combo(key)
-                send_combo_result(chat_id, manager.combo_games[key], manager.resize_img(img_url, key) if img_url else None, date_text)
-            return
-
-        # Управление Doodle Jump (динамическое переключение)
-        # Управление Doodle Jump (динамическое переключение)
-        if data in ["toggle_doodle_start", "toggle_doodle_stop"]:
-            if chat_id not in active_farms_state:
-                active_farms_state[chat_id] = {"doodle": False, "all": False}
-            
-            is_running = (data == "toggle_doodle_start")
-            active_farms_state[chat_id]["doodle"] = is_running
-            
-        if is_running:
-            logger.info(Fore.GREEN + f"[User {chat_id}] Пользователь запустил Signal Doodle Jump!")
-            # Подставьте имя вашей существующей функции вместо run_doodle_loop
-            thread = threading.Thread(target=run_doodle_loop, args=(chat_id, TARGET_GAME_BOT))
-            thread.daemon = True
-            thread.start()
-            active_farm_threads[chat_id] = thread
-        else:
-            logger.info(Fore.RED + f"[User {chat_id}] Пользователь остановил Signal Doodle Jump.")
-                
-            # Обязательно обновляем клавиатуру, чтобы текст кнопки поменялся
-            try:
-                bot.edit_message_reply_markup(
-                    chat_id=chat_id,
-                    message_id=call.message.message_id,
-                    reply_markup=get_farms_menu_keyboard(chat_id)
-                )
-            except Exception:
-                pass
-            
-            status_msg = "🟢 Doodle Jump успешно запущен в фоновом режиме!" if is_running else "🛑 Doodle Jump остановлен."
-            try:
-                bot.answer_callback_query(call.id, status_msg)
-            except:
-                pass
-        return
+    @staticmethod
+    def get_safepal_coins_keyboard(tariff_key: str, coins_data: list) -> types.InlineKeyboardMarkup:
+        """Генерация клавиатуры выбора криптовалюты с кнопкой возврата."""
+        keyboard = types.InlineKeyboardMarkup()
+        for text, coin in coins_data:
+            keyboard.row(types.InlineKeyboardButton(text=text, callback_data=f"pay_{tariff_key}_{coin}"))
+        keyboard.row(types.InlineKeyboardButton(text="🔙 К выбору тарифов", callback_data="ads_buy"))
+        return keyboard
         
-        # Управление «Запустить всё» / «Остановить всё»
-        if data in ["toggle_all_start", "toggle_all_stop"]:
-            if chat_id not in active_farms_state:
-                active_farms_state[chat_id] = {"doodle": False, "all": False}
+    @staticmethod
+    def get_reply_keyboard(buttons_data: list, row_width: int = 2) -> types.ReplyKeyboardMarkup:
+        """Универсальная генерация обычной Reply-клавиатуры из списка строк."""
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=row_width)
+        buttons = [types.KeyboardButton(btn_text) for btn_text in buttons_data]
+        markup.add(*buttons)
+        return markup
+
+    @staticmethod
+    def get_inline_keyboard(rows_data: list, extra_button=None) -> types.InlineKeyboardMarkup:
+        """
+        Универсальная генерация Inline-клавиатуры по матрице строк 
+        с опциональным добавлением дополнительной кнопки (или строки) вниз.
+        """
+        keyboard = types.InlineKeyboardMarkup()
+        
+        for row in rows_data:
+            buttons = [types.InlineKeyboardButton(text=text, callback_data=cb) for text, cb in row]
+            keyboard.row(*buttons)
             
-            is_running = (data == "toggle_all_start")
-            active_farms_state[chat_id]["all"] = is_running
-            # Также синхронизируем отдельную игру для наглядности
-            active_farms_state[chat_id]["doodle"] = is_running
+        if extra_button:
+            if isinstance(extra_button, list):
+                buttons = [types.InlineKeyboardButton(text=t, callback_data=c) for t, c in extra_button]
+                keyboard.row(*buttons)
+            else:
+                keyboard.row(extra_button)
+                
+        return keyboard
+
+    @staticmethod
+    def get_paginated_list_keyboard(
+        items_dict: dict, 
+        page: int = 0, 
+        items_per_page: int = 5, 
+        callback_prefix: str = "gamemenu_", 
+        page_prefix: str = "combopage_",
+        icon: str = "🎮"
+    ) -> tuple[types.InlineKeyboardMarkup, int]:
+        """Универсальный метод для генерации пагинированного списка инлайн-кнопок."""
+        keyboard = types.InlineKeyboardMarkup()
+        keys = list(items_dict.keys())
+        total_items = len(keys)
+        
+        total_pages = max(1, (total_items + items_per_page - 1) // items_per_page)
+        page = max(0, min(page, total_pages - 1))
+        
+        start_idx = page * items_per_page
+        end_idx = start_idx + items_per_page
+        
+        for key in keys[start_idx:end_idx]:
+            data = items_dict[key]
+            name = data.get("name", key)
+            keyboard.row(types.InlineKeyboardButton(text=f"{icon} {name}", callback_data=f"{callback_prefix}{key}_{page}"))
             
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(types.InlineKeyboardButton(text="⬅️ Назад", callback_data=f"{page_prefix}{page-1}"))
+        nav_buttons.append(types.InlineKeyboardButton(text=f"📄 {page + 1}/{total_pages}", callback_data="ignore"))
+        if page < total_pages - 1:
+            nav_buttons.append(types.InlineKeyboardButton(text="Вперед ➡️", callback_data=f"{page_prefix}{page+1}"))
+            
+        if nav_buttons:
+            keyboard.row(*nav_buttons)
+            
+        return keyboard, total_items
+
+    @staticmethod
+    def get_timers_games_keyboard(dictionaries: list[dict], callback_prefix: str = "timer_game_", icon: str = "⏰ Таймер:") -> types.InlineKeyboardMarkup:
+        """Универсальный метод для генерации списка таймеров игр из нескольких словарей."""
+        keyboard = types.InlineKeyboardMarkup()
+        all_games = {}
+        for d in dictionaries:
+            all_games.update({k: v.get("name", k) for k, v in d.items()})
+            
+        for key, name in all_games.items():
+            keyboard.row(types.InlineKeyboardButton(text=f"{icon} {name}", callback_data=f"{callback_prefix}{key}"))
+        return keyboard
+
+    @staticmethod
+    def get_timer_duration_keyboard(key: str, durations: list[int], actions_config: dict) -> types.InlineKeyboardMarkup:
+        """Генерация клавиатуры выбора длительности таймера с настраиваемыми часами и действиями."""
+        keyboard = types.InlineKeyboardMarkup()
+        set_prefix = actions_config.get("set_prefix", "set_timer_")
+        
+        def format_hour(h: int) -> str:
+            if h == 1:
+                return f"⏱ {h} час"
+            elif h in [2, 3, 4]:
+                return f"⏱ {h} часа"
+            return f"⏱ {h} часов"
+
+        # Первая строка (первые 3 элемента)
+        if len(durations) >= 3:
+            row1 = [
+                types.InlineKeyboardButton(text=format_hour(h), callback_data=f"{set_prefix}{key}_{h}")
+                for h in durations[:3]
+            ]
+            keyboard.row(*row1)
+            
+        # Вторая строка (оставшиеся элементы)
+        if len(durations) > 3:
+            row2 = [
+                types.InlineKeyboardButton(text=format_hour(h), callback_data=f"{set_prefix}{key}_{h}")
+                for h in durations[3:]
+            ]
+            keyboard.row(*row2)
+            
+        # Дополнительные кнопки (Свое время, Отключить, Назад)
+        if "custom_text" in actions_config and "custom_prefix" in actions_config:
+            keyboard.row(
+                types.InlineKeyboardButton(text=actions_config["custom_text"], callback_data=f"{actions_config['custom_prefix']}{key}")
+            )
+        if "cancel_text" in actions_config and "cancel_prefix" in actions_config:
+            keyboard.row(
+                types.InlineKeyboardButton(text=actions_config["cancel_text"], callback_data=f"{actions_config['cancel_prefix']}{key}")
+            )
+        if "back_text" in actions_config and "back_callback" in actions_config:
+            keyboard.row(
+                types.InlineKeyboardButton(text=actions_config["back_text"], callback_data=actions_config["back_callback"])
+            )
+            
+        return keyboard
+        
+    @staticmethod
+    def get_ai_button() -> types.InlineKeyboardButton:
+        """Переиспользуемая кнопка вызова ИИ-ассистента."""
+        return types.InlineKeyboardButton(
+            text="🧠 Задать вопрос Виртуальному Интеллекту", 
+            callback_data="start_ai_chat"
+        )
+        
+
+
+
+class NotificationSender:
+    """Менеджер для отправки сообщений и медиаконтента пользователям."""
+
+    def __init__(self, bot_instance, logger_instance):
+        self.bot = bot_instance
+        self.logger = logger_instance
+
+    def send_message_direct(self, chat_id: int | str, text: str, reply_markup=None, parse_mode: str = "Markdown"):
+        """Прямая отправка сообщения с резервным вариантом без разметки при ошибке."""
+        try:
+            return self.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        except Exception as e:
+            self.logger.error(f"Ошибка отправки сообщения: {e}")
+            return self.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+
+    def send_combo_result(self, chat_id: int | str, info: dict, img_bytes, date_text: str):
+        """Отправка результата комбо (фото с подписью или текст, если фото нет)."""
+        caption = f"🎯 **{info.get('name', 'Комбо')}**\n📅 `{date_text}`"
+        if img_bytes:
             try:
-                bot.edit_message_reply_markup(
-                    chat_id=chat_id,
-                    message_id=call.message.message_id,
-                    reply_markup=get_farms_menu_keyboard(chat_id)
+                self.bot.send_photo(chat_id, photo=img_bytes, caption=caption[:1024], parse_mode="Markdown")
+            except Exception as e:
+                self.logger.error(f"Ошибка отправки фото: {e}")
+                self.send_message_direct(chat_id, caption, parse_mode="Markdown")
+        else:
+            full_text = f"{caption}\n\n❌ Комбо еще не найдено"
+            self.send_message_direct(chat_id, full_text, parse_mode="Markdown")
+
+
+class ProfileManager:
+    """Менеджер для управления отображением профиля пользователя и игровой статистики."""
+
+    def __init__(self, bot_instance, logger_instance, sender_instance):
+        self.bot = bot_instance
+        self.logger = logger_instance
+        self.sender = sender_instance
+
+    def show_user_profile(self, chat_id: int | str, user_game_stats: dict):
+        """Профиль = только СПИСОК игр. Статы конкретной игры показываются
+        отдельно при нажатии на её кнопку (callback profgame_<name>)."""
+        try:
+            chat_info = self.bot.get_chat(chat_id)
+            user_name = chat_info.first_name or "Игрок"
+        except Exception:
+            user_name = "Игрок"
+
+        my_stats = user_game_stats.get(chat_id, {}) or {}
+
+        # Имена игр: из конфига (комбо + фермы) + добавленные пользователем вручную.
+        names = []
+        try:
+            for _k, gd in list(manager.combo_games.items()) + list(manager.independent_farms.items()):
+                nm = gd.get("name", _k)
+                if nm and nm not in names:
+                    names.append(nm)
+        except Exception:
+            pass
+        for nm in my_stats.keys():
+            if nm not in names:
+                names.append(nm)
+
+        # Кнопка на КАЖДУЮ игру: ✅ если стата уже есть, ➕ если ещё нет.
+        keyboard_markup = types.InlineKeyboardMarkup()
+        for nm in names:
+            mark = "✅" if nm in my_stats else "➕"
+            keyboard_markup.row(types.InlineKeyboardButton(text=f"{mark} {nm}", callback_data=f"profgame_{nm}"))
+        # Возможность добавить игру ВНЕ списка (ручной ввод «Название | Уровень»).
+        keyboard_markup.row(types.InlineKeyboardButton(text="➕ Другая игра (вручную)", callback_data="prof_add"))
+        keyboard_markup.row(types.InlineKeyboardButton(text="📜 История комбо", callback_data="combo_hist"))
+        keyboard_markup.row(MenuManager.get_ai_button())
+
+        profile_text = (
+            f"👤 **Профиль:** {user_name}\n\n"
+            f"🏆 Игр с вашими статами: **{len(my_stats)}**\n\n"
+            "👇 Нажмите на игру, чтобы посмотреть или добавить свой прогресс.\n"
+            "✅ — стата уже добавлена, ➕ — пока нет."
+        )
+        self.sender.send_message_direct(chat_id, profile_text, reply_markup=keyboard_markup, parse_mode="Markdown")
+
+class BackgroundSchedulerManager:
+    """Менеджер фоновых задач: автоматическая проверка комбо, пользовательские таймеры и контроль рекламы."""
+
+    def __init__(self, bot_instance, logger_instance, manager_instance, sender_instance, ads_manager_instance, admin_chat_id: int | str):
+        self.bot = bot_instance
+        self.logger = logger_instance
+        self.manager = manager_instance
+        self.sender = sender_instance
+        self.ads_manager = ads_manager_instance
+        self.admin_chat_id = admin_chat_id
+
+    def run_daily_checker(self, user_game_timers: dict):
+        """Бесконечный цикл фонового мониторинга."""
+        # Плавный старт: даём боту прогреться и быстро отвечать на меню,
+        # прежде чем нагружать сеть массовым скрейпингом комбо.
+        time.sleep(25)
+
+        last_reset_day = None
+        run_check_now = True
+
+        while True:
+            now_time = time.time()
+            now_struct = time.localtime(now_time)
+            current_day = now_struct.tm_mday
+            current_hour = now_struct.tm_hour
+
+            # 1. Сброс статусов в новый день
+            if last_reset_day != current_day:
+                self.manager.reset_daily_status()
+                last_reset_day = current_day
+                run_check_now = True
+
+    # 2. Проверка и сбор комбо-картинок
+            has_unfound_games = any(not found for found in self.manager.found_today.values())
+            if (run_check_now or current_hour >= 9) and has_unfound_games:
+                self.logger.info("🛡️ [AUTO-CHECKER] Запуск проверки комбо-картинок...")
+                
+                for key, info in self.manager.combo_games.items():
+                    if self.manager.found_today.get(key, False):
+                        continue
+
+                    try:
+                        img_url, date_text = self.manager.fetch_combo(key)
+                        if img_url:
+                            # Вызываем resize_img у нашего отдельного класса image_handler
+                            img_bytes = image_handler.resize_img(img_url)
+                            if img_bytes:
+                                self.manager.found_today[key] = True
+                                self.logger.info(f"✅ [AUTO-CHECKER] Картинка для {key} успешно найдена и зафиксирована!")
+                                
+                                caption = f"🎯 **[Авто-комбо] {info.get('name', key)}**\n📅 `{date_text}`"
+                                try:
+                                    sent = self.bot.send_photo(self.admin_chat_id, photo=img_bytes, caption=caption[:1024], parse_mode="Markdown")
+                                    # Фиксируем file_id (картинка живёт на серверах Telegram) в историю
+                                    if sent and getattr(sent, "photo", None):
+                                        add_combo_to_history(key, info.get('name', key), date_text, sent.photo[-1].file_id)
+                                except Exception as e:
+                                    self.logger.error(f"Ошибка отправки авто-фото администратору: {e}")
+                    except Exception as e:
+                        self.logger.error(f"Ошибка авто-проверки игры {key}: {e}")
+
+                run_check_now = False
+
+           # 3. Проверка и обновление игровых таймеров пользователей
+            try:
+                for chat_id, timers in list(user_game_timers.items()):
+                    for game_key, t_data in list(timers.items()):
+                        if t_data and isinstance(t_data, dict):
+                            target_time = t_data.get("target")
+                            if target_time and now_time >= target_time:
+                                game_data = self.manager.combo_games.get(game_key) or self.manager.independent_farms.get(game_key, {})
+                                game_name = game_data.get("name", game_key)
+
+                                # Кнопка «▶️ Открыть игру» — ведёт прямо в mini-app
+                                # (ссылка берётся из ref_link_1 / play_market в конфиге).
+                                play_link = game_data.get("ref_link_1") or game_data.get("play_market")
+                                reminder_kb = None
+                                if play_link:
+                                    reminder_kb = types.InlineKeyboardMarkup()
+                                    reminder_kb.row(types.InlineKeyboardButton(text="▶️ Открыть игру", url=play_link))
+
+                                self.sender.send_message_direct(
+                                    chat_id,
+                                    f"⏰ **Напоминание!** Пора зайти в игру: **{game_name}** 🚀\n"
+                                    f"Соберите монеты и посмотрите видео 👇",
+                                    reply_markup=reminder_kb
+                                )
+                                duration = t_data.get("duration_hours", 8)
+                                user_game_timers[chat_id][game_key]["target"] = time.time() + (duration * 3600)
+            except Exception as e:
+                self.logger.error(f"Ошибка в проверке таймеров: {e}")
+                
+            # 4. Проверка истечения срока активной рекламы через менеджер рекламы
+            try:
+                expired_ads = []
+                for oid, ad_data in list(self.ads_manager.storage.items()):
+                    if now_time >= ad_data["expire_time"]:
+                        expired_ads.append(oid)
+                        self.sender.send_message_direct(
+                            ad_data["user_id"],
+                            "⏱ **Срок размещения вашей рекламы истек.** Рекламный пост был автоматически снят. Спасибо за сотрудничество!",
+                            parse_mode="Markdown"
+                        )
+                        self.sender.send_message_direct(
+                            self.admin_chat_id,
+                            f"📢 **Рекламная кампания завершена по таймеру!**\nЗаказчик: `{ad_data['user_id']}` (ID заказа: `{oid}`)",
+                            parse_mode="Markdown"
+                        )
+                if expired_ads:
+                    for oid in expired_ads:
+                        self.ads_manager.storage.pop(oid, None)
+                    self.ads_manager.save_to_file()
+            except Exception as e:
+                self.logger.error(f"Ошибка проверки рекламных таймеров: {e}")
+
+            # 4b. Автоотмена НЕОПЛАЧЕННЫХ заявок старше 24 часов
+            # (заявка отправлена админу, но оплата так и не подтверждена).
+            try:
+                stale_orders = [
+                    oid for oid, o in list(pending_ad_orders.items())
+                    if now_time - o.get("created_at", now_time) > 86400
+                ]
+                for oid in stale_orders:
+                    o = pending_ad_orders.pop(oid, None)
+                    if o:
+                        self.sender.send_message_direct(
+                            o["user_id"],
+                            "⌛ **Ваша заявка на рекламу истекла** — оплата не была подтверждена в течение 24 часов. "
+                            "При необходимости оформите заявку заново.",
+                            parse_mode="Markdown"
+                        )
+            except Exception as e:
+                self.logger.error(f"Ошибка автоотмены неоплаченных заявок: {e}")
+
+            # Пауза 10 минут перед следующим циклом
+            time.sleep(600)
+
+
+class CaptchaManager:
+    """Менеджер для генерации и управления математической капчей."""
+
+    @staticmethod
+    def generate_advanced_captcha(chat_id: int | str, advanced_captchas_storage: dict) -> tuple[str, types.InlineKeyboardMarkup]:
+        """Генерация математического примера и инлайн-клавиатуры с вариантами ответа."""
+        a = random.randint(2, 9)
+        b = random.randint(2, 9)
+        ans = str(a + b)
+        
+        variants = [ans, str(int(ans) + 1 if int(ans) < 10 else "15"), str(max(1, int(ans) - 2)), str(int(ans) + 3)]
+        variants = list(set(variants))[:4]
+        
+        advanced_captchas_storage[chat_id] = ans
+        
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        random.shuffle(variants)
+        buttons = [types.InlineKeyboardButton(text=v, callback_data=f"advcap_{v}") for v in variants]
+        markup.add(*buttons)
+        
+        return f"Сколько будет {a} + {b}?", markup
+
+class TelegramBotController:
+    """Контроллер для регистрации обработчиков сообщений и команд бота."""
+
+    def __init__(self, bot_instance, message_processor_instance, bot_commands: list, main_menu_buttons: list):
+        self.bot = bot_instance
+        self.processor = message_processor_instance
+        self.bot_commands = bot_commands
+        self.main_menu_buttons = main_menu_buttons
+        self._register_handlers()
+
+    def _register_handlers(self):
+        """Регистрация всех обработчиков в инстансе бота."""
+        @self.bot.message_handler(commands=['start'])
+        def command_start(message: types.Message):
+            self.processor.handle_start(message)
+
+        @self.bot.message_handler(commands=self.bot_commands)
+        @self.bot.message_handler(func=lambda msg: msg.text in self.main_menu_buttons)
+        def menu_and_commands_handler(message: types.Message):
+            self.processor.handle_menu_or_commands(message)
+
+class MenuTextProcessor:
+    """Менеджер для обработки текстовых команд и кнопок главного меню бота."""
+
+    def __init__(self, bot_instance, logger_instance, sender_instance, manager_instance, verified_users_storage: set, user_game_timers_storage: dict, cloud_proofs_storage: list):
+        self.bot = bot_instance
+        self.logger = logger_instance
+        self.sender = sender_instance
+        self.manager = manager_instance
+        self.verified_users = verified_users_storage
+        self.user_game_timers = user_game_timers_storage
+        self.cloud_proofs = cloud_proofs_storage
+
+    def handle_menu_text(self, message: types.Message):
+        """Основной обработчик текстовых запросов и меню пользователя."""
+        chat_id = message.chat.id
+        if chat_id not in self.verified_users:
+            self.sender.send_message_direct(chat_id, "⚠️ Сначала пройдите верификацию через /start.")
+            return
+
+        # Мгновенный визуальный отклик: показываем «печатает…», чтобы
+        # пользователь понимал, что запрос принят и обрабатывается.
+        try:
+            self.bot.send_chat_action(chat_id, "typing")
+        except Exception:
+            pass
+
+        text = message.text
+        if text in ["🚀 Меню комбо-игр"]:
+            keyboard, total_count = get_combo_list_keyboard(page=0)
+            self.sender.send_message_direct(chat_id, f"🎮 **Активные комбо-проекты**\nВсего доступно игр с комбо: **{total_count}**\n\nВыберите проект из списка ниже:", reply_markup=keyboard)
+            
+        elif text in ["👤 Профиль и статы", "/profile"]:
+            show_user_profile(chat_id)
+        elif text in ["📱 Телефонные майнеры", "/miners"]:
+            self.sender.send_message_direct(chat_id, "📱 **Мобильные и облачные майнеры:**", reply_markup=get_phone_miners_keyboard())
+        elif text in ["🚰 Крипто-краны", "/faucets"]:
+            self.sender.send_message_direct(chat_id, "🚰 **Крипто-краны:**", reply_markup=get_faucets_keyboard())
+        elif text in ["🌾 Авто-фермы (без комбо)"]:
+            self.sender.send_message_direct(chat_id, "🌾 **Отдельные фермерские проекты:**", reply_markup=get_farms_keyboard())
+        elif text in ["⚡ Проверить все комбо", "/all_combo"]:
+            self.sender.send_message_direct(chat_id, "🔍 **Запущен массовый сбор комбо...**")
+            for key, info in self.manager.combo_games.items():
+                img_url, date_text = self.manager.fetch_combo(key)
+                img_bytes = image_handler.resize_img(img_url) if img_url else None
+                send_combo_result(chat_id, info, img_bytes, date_text)
+        elif text in ["🧮 Крипто-курс", "/calc"]:
+            self.sender.send_message_direct(chat_id, "🧮 **Выберите криптовалюту:**", reply_markup=get_crypto_currency_keyboard())
+        elif text in ["📊 Защита фермы", "/farm"]:
+            found = sum(1 for v in self.manager.found_today.values() if v)
+            total_games = len(self.manager.combo_games)
+            status = (
+                "🛡️ **Статус защиты бота:**\n\n"
+                f"👥 Верифицировано пользователей: **{len(self.verified_users)}**\n"
+                f"🚫 Заблокировано (спам/скам): **{len(account_guard.banned)}**\n"
+                f"🔗 Скам-доменов в базе: **{len(link_guard.scam_domains)}**\n"
+                f"🧾 Проверено оплат (хэшей): **{len(used_tx_hashes)}**\n"
+                f"🎯 Комбо найдено сегодня: **{found}/{total_games}**\n\n"
+                "✅ Все системы защиты активны."
+            )
+            self.sender.send_message_direct(chat_id, status, parse_mode="Markdown")
+        elif text in ["⏰ Мои таймеры", "/timers"]:
+            report = "⏰ **Ваши персональные таймеры сбора:**\n\n"
+            user_timers_dict = self.user_game_timers.get(chat_id, {})
+            all_games = {}
+            all_games.update({k: v["name"] for k, v in self.manager.combo_games.items()})
+            all_games.update({k: v["name"] for k, v in self.manager.independent_farms.items()})
+            for k, name in all_games.items():
+                t_info = user_timers_dict.get(k)
+                t_target = t_info.get("target") if t_info else None
+                if t_target and t_target > time.time():
+                    left_sec = int(t_target - time.time())
+                    report += f"• *{name}*: через **{left_sec // 3600}ч {(left_sec % 3600) // 60}м**\n"
+                else:
+                    report += f"• *{name}*: ❌ Не установлен\n"
+            self.sender.send_message_direct(chat_id, report + "\n👇 Выберите игру для настройки:", reply_markup=get_timers_games_keyboard(), parse_mode="Markdown")
+        elif text in ["💬 Отзывы", "/reviews"]:
+            self.sender.send_message_direct(chat_id, "💬 **Секция отзывов и предложений (Laysi🐾):**", reply_markup=get_reviews_keyboard(), parse_mode="Markdown")
+        elif text in ["📢 Реклама и монетизация", "/ads"]:
+            self.sender.send_message_direct(chat_id, "📢 **Размещение рекламы :**\n\nВыкупите рекламное место в закрепе или рассылке, оплатив его напрямую в криптовалюте.", reply_markup=get_ads_keyboard(), parse_mode="Markdown")
+        elif text in ["💎 Скрины выплат", "/proofs"]:
+            if not self.cloud_proofs:
+                self.sender.send_message_direct(chat_id, "💎 Скринов пока нет.")
+            else:
+                for p in self.cloud_proofs[-3:]:
+                    try:
+                        self.bot.send_photo(chat_id, p)
+                    except Exception:
+                        pass
+
+
+class MessageInputHandler:
+    """Менеджер для обработки входящих медиафайлов и текстовых сообщений."""
+
+    def __init__(self, bot_instance, logger_instance, sender_instance, security_core_instance, ai_assistant_instance, manager_instance, verified_users_storage: set, user_input_states_storage: dict, user_game_stats_storage: dict, user_game_timers_storage: dict, user_calc_states_storage: dict, pending_ad_orders_storage: dict, user_reviews_storage: list, cloud_proofs_storage: list, admin_chat_id: int | str, main_menu_buttons: list):
+        self.bot = bot_instance
+        self.logger = logger_instance
+        self.sender = sender_instance
+        self.security = security_core_instance
+        self.ai = ai_assistant_instance
+        self.manager = manager_instance
+        self.verified_users = verified_users_storage
+        self.user_input_states = user_input_states_storage
+        self.user_game_stats = user_game_stats_storage
+        self.user_game_timers = user_game_timers_storage
+        self.user_calc_states = user_calc_states_storage
+        self.pending_ad_orders = pending_ad_orders_storage
+        self.user_reviews = user_reviews_storage
+        self.cloud_proofs = cloud_proofs_storage
+        self.admin_chat_id = admin_chat_id
+        self.main_menu_buttons = main_menu_buttons
+
+    def handle_photo(self, message: types.Message):
+        """Обработка входящих фотографий (профиль, выплаты)."""
+        chat_id = message.chat.id
+        if account_guard.is_banned(message.from_user.id):
+            return
+        if chat_id not in self.verified_users:
+            return
+
+        if chat_id in self.user_input_states and self.user_input_states[chat_id].get("step") == "waiting_photo":
+            state_data = self.user_input_states[chat_id]
+            if chat_id not in self.user_game_stats:
+                self.user_game_stats[chat_id] = {}
+            self.user_game_stats[chat_id][state_data["game"]] = {
+                "stat": state_data["stat"],
+                "photo": message.photo[-1].file_id
+            }
+            save_user_stats()
+            self.user_input_states.pop(chat_id, None)
+            try:
+                self.bot.reply_to(
+                    message, 
+                    f"✅ Игра *{state_data['game']}* добавлена в профиль!", 
+                    reply_markup=MenuManager.get_inline_keyboard(PROFILE_KEYBOARD_DATA, extra_button=MenuManager.get_ai_button()), 
+                    parse_mode="Markdown"
                 )
+            except Exception as e:
+                self.logger.error(f"Ошибка ответа на фото профиля: {e}")
+            return
+
+        if chat_id == self.admin_chat_id:
+            self.cloud_proofs.append(message.photo[-1].file_id)
+            try:
+                self.bot.reply_to(message, "✅ Скрин сохранен в облачном хранилище!")
             except Exception:
                 pass
-            
-            status_msg = "🚀 Все фермы запущены!" if is_running else "🛑 Все фермы остановлены."
-            try:
-                bot.answer_callback_query(call.id, status_msg)
-            except:
-                pass
+
+    def handle_text_all(self, message: types.Message):
+        """Универсальный обработчик входящих текстовых сообщений и состояний диалога."""
+        chat_id = message.chat.id
+        raw_text = message.text.strip()
+
+        uid = message.from_user.id
+        # Забаненных не обслуживаем.
+        if account_guard.is_banned(uid):
+            return
+        # Анти-спам: резкий флуд → страйк, при рецидиве — бан.
+        if sec_guard.check_brute_force(chat_id):
+            if account_guard.strike(uid, "спам/флуд сообщениями"):
+                try:
+                    self.sender.send_message_direct(chat_id, "🚫 Вы заблокированы за спам.")
+                except Exception:
+                    pass
+            else:
+                try:
+                    self.sender.send_message_direct(chat_id, "⏳ Слишком много сообщений подряд. Помедленнее, пожалуйста.")
+                except Exception:
+                    pass
             return
 
-        # Управление авто-фермами игр
-        if data == "farm_start_all":
+        if chat_id not in self.verified_users:
+            self.sender.send_message_direct(chat_id, "⚠️ Пожалуйста, пройдите верификацию через /start.")
+            return
+
+        # Скриншот профиля НЕОБЯЗАТЕЛЕН: если ждали фото, но пришёл текст —
+        # значит пользователь его пропустил (прогресс уже сохранён). Сбрасываем
+        # состояние, чтобы будущее чужое фото не прикрепилось к игре по ошибке.
+        _pending = self.user_input_states.get(chat_id)
+        if _pending and _pending.get("step") == "waiting_photo":
+            self.user_input_states.pop(chat_id, None)
+
+        # 1. Обработка ввода текста отзыва (с фильтрацией безопасности)
+        if chat_id in self.user_input_states and self.user_input_states[chat_id].get("step") == "waiting_review_text":
+            self.user_input_states.pop(chat_id, None)
+            
+            clean_review_text = self.security.sanitize_input(raw_text)
+            is_threat, _ = self.security.analyze_traffic(raw_text)
+            
+            if is_threat or clean_review_text == "[BLOCKED_INJECTION_ATTEMPT]" or any(link in raw_text.lower() for link in ["http://", "https://", "t.me/"]):
+                self.sender.send_message_direct(chat_id, "⚠️ **Ваш отзыв отклонен системой безопасности!** Обнаружены запрещенные ссылки или потенциальная угроза спама.", parse_mode="Markdown")
+                return
+
             try:
-                bot.answer_callback_query(call.id, "🟢 Запуск всех ферм...")
-            except:
-                pass
-            send_message_direct(
-                chat_id, 
-                "🚀 **Авто-ферма для Doodle Jump запущена в фоновом режиме!**\nСкрипт начал цикл сбора монет, проверки баланса и просмотра видео.", 
+                user_name = self.bot.get_chat(chat_id).first_name or "Аноним"
+            except Exception:
+                user_name = "Аноним"
+                
+            self.user_reviews.append({"user": user_name, "text": clean_review_text, "date": time.strftime("%d.%m.%Y %H:%M")})
+            self.sender.send_message_direct(self.admin_chat_id, f"💬 **Новый отзыв от {user_name}:**\n\n`{clean_review_text}`", parse_mode="Markdown")
+            self.sender.send_message_direct(chat_id, "✅ **Спасибо за ваш отзыв!**", reply_markup=get_reviews_keyboard(), parse_mode="Markdown")
+            return
+
+        # 2. Обработка рекламного креатива
+        if chat_id in self.user_input_states and self.user_input_states[chat_id].get("step") == "waiting_ad_content":
+            order_data = self.user_input_states.pop(chat_id, None)
+            tariff = order_data["tariff"]
+            tariff_key = order_data.get("tariff_key", "")
+            coin = order_data.get("coin", "")
+            network = order_data.get("network", "")
+            wallet_key = order_data.get("wallet_key", "")
+
+            # --- АВТО-ПОДТВЕРЖДЕНИЕ ОПЛАТЫ ПО ХЭШУ (BTC / USDT-TRC20) ---
+            auto_note = ""
+            tinfo = ADS_TARIFFS.get(tariff_key, {})
+            expected_usd = parse_price_usd(tinfo.get("price", "0"))
+            our_addr = SAFEPAL_WALLETS.get(wallet_key, {}).get("address", "")
+            # Хэш ищем по-разному: TON использует base64, остальные — hex.
+            if network == "ton":
+                tx_hash = extract_ton_hash(raw_text)
+            else:
+                tx_hash = extract_tx_hash(raw_text)
+
+            verify_fn = None
+            if network == "bitcoin":
+                verify_fn = verify_btc
+            elif network == "ton":
+                verify_fn = verify_ton
+            elif network == "tron":
+                verify_fn = verify_usdt_trc20
+
+            if verify_fn:
+                if not tx_hash:
+                    auto_note = "\n⚠️ Авто-проверка: хэш транзакции не найден в сообщении."
+                elif not our_addr:
+                    auto_note = "\n⚠️ Авто-проверка: адрес получателя не настроен."
+                else:
+                    ok, reason = verify_fn(tx_hash, expected_usd, our_addr)
+                    if ok:
+                        # Для TON помечаем канонический hex-хэш (как в проверке).
+                        canon_hash = _ton_hash_to_hex(tx_hash) if network == "ton" else tx_hash
+                        mark_tx_used(canon_hash or tx_hash)
+                        order_id = f"ord_{chat_id}_{int(time.time())}"
+                        dur_h = tinfo.get("duration_hours", 0)
+                        if dur_h > 0:
+                            try:
+                                ads_manager.add_ad(order_id, chat_id, time.time() + dur_h * 3600)
+                            except Exception as e:
+                                self.logger.error(f"Ошибка запуска рекламы: {e}")
+
+                        self.sender.send_message_direct(
+                            chat_id,
+                            f"🎉 **Оплата подтверждена автоматически!**\n{reason}\n\n"
+                            "🚀 Ваша реклама запущена. Спасибо за сотрудничество!",
+                            reply_markup=get_ads_keyboard(),
+                            parse_mode="Markdown"
+                        )
+                        self.sender.send_message_direct(
+                            self.admin_chat_id,
+                            f"🤖 **Авто-подтверждение оплаты**\n"
+                            f"👤 Клиент: `{chat_id}`\n"
+                            f"📋 Тариф: `{tariff}`\n"
+                            f"💰 {reason}\n"
+                            f"🧾 Hash: `{tx_hash}`\n\n"
+                            f"📝 **Креатив:**\n{raw_text}",
+                            parse_mode="Markdown"
+                        )
+                        return
+                    else:
+                        auto_note = f"\n⚠️ Авто-проверка не пройдена: {reason}"
+
+            # --- РЕЗЕРВ: ручное подтверждение администратором ---
+            order_id = f"ord_{chat_id}_{int(time.time())}"
+            self.pending_ad_orders[order_id] = {
+                "user_id": chat_id,
+                "tariff": tariff,
+                "tariff_key": tariff_key,
+                "coin": coin,
+                "content": raw_text,
+                "created_at": time.time()
+            }
+
+            admin_markup = types.InlineKeyboardMarkup()
+            admin_markup.row(types.InlineKeyboardButton(text="✅ Оплата поступила (Запустить рекламу)", callback_data=f"adm_pay_ok_{order_id}"))
+            admin_markup.row(types.InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm_pay_no_{order_id}"))
+
+            self.sender.send_message_direct(
+                self.admin_chat_id,
+                f"📢 **Заявка на рекламу ожидает подтверждения оплаты!**\n"
+                f"👤 Заказчик: `{chat_id}`\n"
+                f"📋 Тариф: `{tariff}`\n"
+                f"💰 Оплата через: `{coin.upper()}`{auto_note}\n\n"
+                f"📝 **Креатив:**\n{raw_text}",
+                reply_markup=admin_markup,
+                parse_mode="Markdown"
+            )
+            self.sender.send_message_direct(
+                chat_id,
+                "✅ **Ваш рекламный креатив принят!**\nЗаявка отправлена на проверку поступления оплаты.",
+                reply_markup=get_ads_keyboard(),
                 parse_mode="Markdown"
             )
             return
 
-        if data == "farm_stop_all":
+        # 3. Обработка кастомного таймера
+        if chat_id in self.user_input_states and self.user_input_states[chat_id].get("step") == "waiting_custom_timer":
+            game_key = self.user_input_states[chat_id]["game_key"]
+            self.user_input_states.pop(chat_id, None)
             try:
-                bot.answer_callback_query(call.id, "🛑 Остановка ферм...")
-            except:
-                pass
-            send_message_direct(
-                chat_id, 
-                "🛑 **Все фоновые фермы остановлены.**", 
+                cleaned = raw_text.lower().replace(",", ".")
+                hours_val = float(re.sub(r'[^0-9.]', '', cleaned)) / 60.0 if "м" in cleaned else float(cleaned)
+                if hours_val <= 0:
+                    raise ValueError()
+                if chat_id not in self.user_game_timers:
+                    self.user_game_timers[chat_id] = {}
+                self.user_game_timers[chat_id][game_key] = {"target": time.time() + (hours_val * 3600), "duration_hours": hours_val}
+                
+                game_name = (
+                    self.manager.combo_games[game_key]["name"] if game_key in self.manager.combo_games 
+                    else self.manager.independent_farms.get(game_key, {}).get("name", game_key)
+                )
+                self.sender.send_message_direct(chat_id, f"✅ Успешно! Таймер для *{game_name}* установлен на **{hours_val} ч.**", reply_markup=get_timers_games_keyboard(), parse_mode="Markdown")
+                return
+            except Exception:
+                self.sender.send_message_direct(chat_id, "⚠️ Неверный формат! Введите число (например: `2.5`):", parse_mode="Markdown")
+                return
+
+        # 3b. Добавление игры в профиль: «Название | Уровень». СКРИНШОТ НЕОБЯЗАТЕЛЕН.
+        if chat_id in self.user_input_states and self.user_input_states[chat_id].get("step") == "waiting_game_info":
+            if "|" in raw_text:
+                game, stat = [p.strip() for p in raw_text.split("|", 1)]
+            else:
+                game, stat = raw_text.strip(), "—"
+            if not game:
+                self.sender.send_message_direct(chat_id, "⚠️ Формат: `Название игры | Уровень`", parse_mode="Markdown")
+                return
+            game = game[:24]                       # имя коротким → callback_data < 64 байт
+            if chat_id not in self.user_game_stats:
+                self.user_game_stats[chat_id] = {}
+            prev_photo = self.user_game_stats[chat_id].get(game, {}).get("photo")
+            self.user_game_stats[chat_id][game] = {"stat": stat, "photo": prev_photo}
+            save_user_stats()
+            self.user_input_states[chat_id] = {"step": "waiting_photo", "game": game, "stat": stat}
+            self.sender.send_message_direct(
+                chat_id,
+                f"✅ Прогресс для *{game}* сохранён (уровень: `{stat}`).\n"
+                "📸 Скриншот — по желанию: пришлите фото, чтобы прикрепить (необязательно).",
                 parse_mode="Markdown"
             )
             return
 
-        if data == "farm_status":
-            try:
-                bot.answer_callback_query(call.id, "📊 Проверка статуса...")
-            except:
-                pass
-            status_text = (
-                "📊 **Статус авто-ферм:**\n\n"
-                "🟢 **Signal Doodle Jump:** Активна\n"
-                "• Баланс проверка: Работает\n"
-                "• Видео-цикл: Ожидание / Просмотр\n"
-                "• Общий статус: Фоновый процесс запущен"
+        # 3c. Ввод уровня для игры (кнопка в профиле). СКРИНШОТ НЕОБЯЗАТЕЛЕН:
+        #     прогресс сохраняем сразу; фото (если пришлёт) просто прикрепится.
+        #     Само фото хранится на серверах Telegram (file_id), не на телефоне.
+        if chat_id in self.user_input_states and self.user_input_states[chat_id].get("step") == "waiting_game_stat":
+            st = self.user_input_states[chat_id]
+            game = st.get("game", "Игра")
+            stat = raw_text.strip() or "—"
+            if chat_id not in self.user_game_stats:
+                self.user_game_stats[chat_id] = {}
+            # При редактировании сохраняем ранее прикреплённое фото.
+            prev_photo = self.user_game_stats[chat_id].get(game, {}).get("photo")
+            self.user_game_stats[chat_id][game] = {"stat": stat, "photo": prev_photo}
+            save_user_stats()
+            self.user_input_states[chat_id] = {"step": "waiting_photo", "game": game, "stat": stat}
+            self.sender.send_message_direct(
+                chat_id,
+                f"✅ Прогресс для *{game}* сохранён (уровень: `{stat}`).\n"
+                "📸 Скриншот — по желанию: пришлите фото, чтобы прикрепить (необязательно).",
+                parse_mode="Markdown"
             )
-            send_message_direct(chat_id, status_text, parse_mode="Markdown")
             return
-            
+
+        # 4. Проверка ссылок (скоринг: скам / фишинг / вирус) + общая безопасность.
+        text = self.security.sanitize_input(raw_text)
+
+        # Если в сообщении есть ссылки — анализируем и показываем вердикт.
+        # Скам/подозрительные ссылки блокируются и помечаются 🚨/⚠️.
+        link_verdict = link_guard.analyze(raw_text)
+        if link_verdict["links"]:
+            self.sender.send_message_direct(chat_id, link_verdict["message"], parse_mode=None)
+            return
+
+        # Блокируем ТОЛЬКО реальные угрозы: analyze_traffic сам ловит скам-@юзернеймы
+        # по маркерам (SCAM_USERNAME_MARKERS). Обычные «@» и e-mail больше не блокируем.
+        # Ссылки (в т.ч. t.me/) уже проверены выше через link_guard.
+        is_threat, security_msg = self.security.analyze_traffic(text)
+        if is_threat:
+            self.sender.send_message_direct(chat_id, security_msg)
+            return
+
+        # 5. Обработка ввода крипто-конвертера
+        if chat_id in self.user_calc_states:
+            state = self.user_calc_states[chat_id]
+            try:
+                amt = float(text.replace(",", "."))
+                c_id = {"btc": "bitcoin", "eth": "ethereum", "usdt": "tether", "gram": "the-open-network"}.get(state["crypto"], "bitcoin")
+                fiat = state['fiat']
+                
+                url = f"https://api.coingecko.com/api/v3/simple/price?ids={c_id}&vs_currencies={fiat}&include_24hr_change=true"
+                res_data = requests.get(url, timeout=3).json().get(c_id, {})
+                
+                rate = res_data.get(fiat, 0)
+                change_24h = res_data.get(fiat + "_24h_change", 0)
+                total_sum = rate * amt
+                
+                trend_icon = "🟢" if change_24h >= 0 else "🔴"
+                change_sign = "+" if change_24h > 0 else ""
+                
+                report_text = (
+                    f"💎 **Крипто-конвертер [Zero-Lag]**\n\n"
+                    f"🔹 Количество: **{amt} {state['crypto'].upper()}**\n"
+                    f"💵 Стоимость: **{total_sum:,.2f} {fiat.upper()}**\n"
+                    f"📈 Тренд за 24ч: {trend_icon} **{change_sign}{change_24h:.2f}%**"
+                )
+                
+                self.sender.send_message_direct(chat_id, report_text, parse_mode="Markdown")
+                self.user_calc_states.pop(chat_id, None)
+                return
+            except Exception as e:
+                self.logger.error(f"Ошибка конвертера: {e}")
+                self.sender.send_message_direct(chat_id, "⚠️ Ошибка получения данных с API. Введите корректное число:")
+                return
+
+
+class CallbackQueryHandler:
+    """Менеджер для обработки всех входящих callback-запросов от инлайн-клавиатур."""
+
+    def __init__(
+        self,
+        bot_instance,
+        logger_instance,
+        sender_instance,
+        manager_instance,
+        verified_users_storage: set,
+        user_input_states_storage: dict,
+        user_game_timers_storage: dict,
+        user_calc_states_storage: dict,
+        pending_ad_orders_storage: dict,
+        ads_manager,  # <--- Заменили active_ads_storage: dict на ads_manager
+        user_reviews_storage: list,
+        advanced_captchas_storage: dict,
+        active_farms_state_storage: dict,
+        active_farm_threads_storage: dict,
+        admin_chat_id: int | str,
+        target_game_bot: str,
+        main_menu_buttons: list
+    ):
+        self.bot = bot_instance
+        self.logger = logger_instance
+        self.sender = sender_instance
+        self.manager = manager_instance
+        self.verified_users = verified_users_storage
+        self.user_input_states = user_input_states_storage
+        self.user_game_timers = user_game_timers_storage
+        self.user_calc_states = user_calc_states_storage
+        self.pending_ad_orders = pending_ad_orders_storage
+        self.ads_manager = ads_manager  # <--- Сохраняем менеджер в атрибут класса
+        self.user_reviews = user_reviews_storage
+        self.advanced_captchas = advanced_captchas_storage
+        self.active_farms_state = active_farms_state_storage
+        self.active_farm_threads = active_farm_threads_storage
+        self.admin_chat_id = admin_chat_id
+        self.target_game_bot = target_game_bot
+        self.main_menu_buttons = main_menu_buttons
+        
+    def handle_callbacks(self, call: types.CallbackQuery):
+        """Основной метод маршрутизации и обработки callback-данных."""
+        
+        # 1. Мгновенно гасим анимацию загрузки кнопки
+        try:
+            self.bot.answer_callback_query(call.id)
+        except Exception:
+            pass
+
+        # 2. Глобальный защитный блок с безопасным получением chat_id
+        try:
+            if not call.message:
+                # Если нажата кнопка из инлайн-режима (нет объекта message)
+                return
+                
+            chat_id = call.message.chat.id
+            data = call.data
+
+            # Забаненных не обслуживаем.
+            if account_guard.is_banned(call.from_user.id):
+                return
+
+            if data.startswith("advcap_"):
+                if data.replace("advcap_", "") == self.advanced_captchas.get(chat_id):
+                    save_verified_user(chat_id)
+                    self.advanced_captchas.pop(chat_id, None)
+                    try:
+                        self.bot.edit_message_text("✅ **Доступ открыт!**", chat_id, call.message.message_id, parse_mode="Markdown")
+                    except:
+                        pass
+                    self.sender.send_message_direct(chat_id, "👇 Главное меню:", reply_markup=MenuManager.get_reply_keyboard(self.main_menu_buttons))
+                else:
+                    q, m = generate_advanced_captcha(chat_id)
+                    try:
+                        self.bot.answer_callback_query(call.id, "❌ Неверно!", show_alert=True)
+                    except:
+                        pass
+                    try:
+                        self.bot.edit_message_text(f"❌ **Неверно!**\n🧠 *{q}*", chat_id, call.message.message_id, reply_markup=m, parse_mode="Markdown")
+                    except:
+                        pass
+                return
+
+            if chat_id not in self.verified_users:
+                try:
+                    self.bot.answer_callback_query(call.id, "Сначала пройдите верификацию через /start!", show_alert=True)
+                except:
+                    pass
+                return
+
+            # Админские кнопки подтверждения оплаты рекламы
+            if data.startswith("adm_pay_ok_") or data.startswith("adm_pay_no_"):
+                if chat_id != self.admin_chat_id:
+                    try:
+                        self.bot.answer_callback_query(call.id, "Только для администратора!", show_alert=True)
+                    except:
+                        pass
+                    return
+                
+                parts = data.split("_")
+                action = parts[2] 
+                order_id = f"{parts[3]}_{parts[4]}_{parts[5]}"
+                
+                order = self.pending_ad_orders.get(order_id)
+                if not order:
+                    try:
+                        self.bot.answer_callback_query(call.id, "Заказ не найден или уже обработан", show_alert=True)
+                    except:
+                        pass
+                    return
+
+                target_user_id = order["user_id"]
+                self.pending_ad_orders.pop(order_id, None)
+
+                if action == "ok":
+                    # Срок закрепа берём из тарифа (24ч / 7 дней / комбо…).
+                    tinfo = ADS_TARIFFS.get(order.get("tariff_key"), {})
+                    dur_h = tinfo.get("duration_hours", 0)
+                    if dur_h > 0:
+                        expire_timestamp = time.time() + dur_h * 3600
+                        self.ads_manager.add_ad(order_id, target_user_id, expire_timestamp)
+
+                    self.sender.send_message_direct(
+                        target_user_id,
+                        "🎉 **Оплата получена! Ваша реклама успешно запущена в боте.**\nБлагодарим за сотрудничество!",
+                        parse_mode="Markdown"
+                    )
+                    try:
+                        self.bot.edit_message_text(f"✅ **Заказ успешно подтвержден и запущен!** (Клиент: `{target_user_id}`)", chat_id, call.message.message_id, parse_mode="Markdown")
+                    except:
+                        pass
+                else:
+                    self.sender.send_message_direct(
+                        target_user_id,
+                        "❌ **Оплата не подтверждена администратором.** Свяжитесь с поддержкой для уточнения деталей.",
+                        parse_mode="Markdown"
+                    )
+                    try:
+                        self.bot.edit_message_text(f"❌ **Заказ отклонен.** (Клиент: `{target_user_id}`)", chat_id, call.message.message_id, parse_mode="Markdown")
+                    except:
+                        pass
+                return
+
+            # Секция отзывов
+            if data == "review_add":
+                self.user_input_states[chat_id] = {"step": "waiting_review_text"}
+                self.sender.send_message_direct(chat_id, "✍️ **Напишите ваш отзыв одним сообщением:**", parse_mode="Markdown")
+                return
+
+            if data == "review_read":
+                if not self.user_reviews:
+                    self.sender.send_message_direct(chat_id, "💬 Пока что отзывов нет.")
+                else:
+                    rev_text = "💬 **Последние отзывы:**\n\n" + "\n".join([f"👤 *{r['user']}* (`{r['date']}`):\n{r['text']}\n" for r in self.user_reviews[-5:]])
+                    self.sender.send_message_direct(chat_id, rev_text, parse_mode="Markdown")
+                return
+
+            # Монетизация и SafePal
+            if data == "ads_buy":
+                try:
+                    self.bot.edit_message_text(
+                        "💰 **Выберите тариф для размещения рекламы:**\nОплата производится напрямую в криптовалюте.",
+                        chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_ads_tariffs_keyboard(), parse_mode="Markdown"
+                    )
+                except:
+                    pass
+                return
+
+            if data == "ads_stats":
+                audience = len(self.verified_users)
+                games_count = len(self.manager.combo_games) + len(self.manager.independent_farms)
+                # Персональная статистика: активные размещения ЭТОГО пользователя.
+                my_ads = [(oid, d) for oid, d in self.ads_manager.storage.items() if d.get("user_id") == chat_id]
+
+                lines = [
+                    "📊 **Статистика аудитории:**\n",
+                    f"👥 Аудитория (потенциальный охват): **{audience}** польз.",
+                    f"🎮 Проектов в каталоге: **{games_count}**",
+                ]
+                if my_ads:
+                    lines.append("\n📢 **Ваши активные размещения:**")
+                    for oid, d in my_ads:
+                        left = int(d.get("expire_time", 0) - time.time())
+                        if left > 0:
+                            lines.append(f"• `{oid}` — осталось {left // 3600}ч {(left % 3600) // 60}м · охват ~{audience}")
+                        else:
+                            lines.append(f"• `{oid}` — истекает")
+                else:
+                    lines.append("\n📢 У вас нет активных размещений. Купите рекламу кнопкой выше 👆")
+
+                self.sender.send_message_direct(chat_id, "\n".join(lines), parse_mode="Markdown")
+                return
+
+            if data in ADS_TARIFFS:
+                t = ADS_TARIFFS[data]
+                tariff_name = f"{t['name']} ({t['price']})"
+                try:
+                    self.bot.edit_message_text(
+                        f"💎 Вы выбрали тариф: *{tariff_name}*.\n\n"
+                        "👇 **Выберите криптовалюту для оплаты:**",
+                        chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_safepal_coins_keyboard(data), parse_mode="Markdown"
+                    )
+                except:
+                    pass
+                return
+
+            if data.startswith("pay_"):
+                # Формат: pay_<tariff_key>_<method>. tariff_key содержит "_"
+                # (напр. adtariff_24h), а ключ метода — БЕЗ "_", поэтому метод =
+                # ПОСЛЕДНИЙ сегмент, а тариф — всё между "pay_" и методом.
+                parts = data.split("_")
+                method_key = parts[-1]
+                tariff_key = "_".join(parts[1:-1])
+
+                tinfo = ADS_TARIFFS.get(tariff_key)
+                if not tinfo:
+                    try:
+                        self.bot.answer_callback_query(call.id, "Тариф не найден", show_alert=True)
+                    except:
+                        pass
+                    return
+
+                method = PAYMENT_METHODS.get(method_key)
+                if not method:
+                    try:
+                        self.bot.answer_callback_query(call.id, "Способ оплаты не найден", show_alert=True)
+                    except:
+                        pass
+                    return
+
+                tariff_name = f"{tinfo['name']} ({tinfo['price']})"
+
+                # Анти-абуз: запрещаем вторую заявку, пока есть незакрытая.
+                already = any(o.get("user_id") == chat_id for o in self.pending_ad_orders.values())
+                if already:
+                    self.sender.send_message_direct(
+                        chat_id,
+                        "⚠️ **У вас уже есть заявка на рекламу**, ожидающая проверки администратором.\n"
+                        "Дождитесь решения, прежде чем оформлять новую.",
+                        reply_markup=get_ads_keyboard(),
+                        parse_mode="Markdown"
+                    )
+                    return
+
+                wallet_info = SAFEPAL_WALLETS.get(
+                    method["wallet_key"],
+                    {"name": method["label"], "address": "ADRESS_NOT_SET"}
+                )
+
+                self.user_input_states[chat_id] = {
+                    "step": "waiting_ad_content",
+                    "tariff": tariff_name,
+                    "tariff_key": tariff_key,
+                    "method": method_key,
+                    "coin": method["coin"],
+                    "network": method["network"],
+                    "wallet_key": method["wallet_key"],
+                }
+
+                pay_kb = types.InlineKeyboardMarkup()
+                pay_kb.row(types.InlineKeyboardButton(text="🔙 Изменить тариф", callback_data="ads_buy"))
+                pay_kb.row(types.InlineKeyboardButton(text="❌ Отменить заявку", callback_data="ad_cancel"))
+
+                self.sender.send_message_direct(
+                    chat_id,
+                    f"🧾 **Ваш заказ**\n"
+                    f"📋 Тариф: *{tariff_name}*\n"
+                    f"💳 Способ: *{method['label']}*\n\n"
+                    f"📌 **Адрес для оплаты** (нажмите, чтобы скопировать):\n"
+                    f"`{wallet_info['address']}`\n\n"
+                    f"⚠️ **Что делать дальше:**\n"
+                    f"1️⃣ Отправьте оплату (*{tinfo['price']}* в {method['coin']}) на адрес выше.\n"
+                    f"2️⃣ Пришлите **одним сообщением** текст рекламы + хэш транзакции.\n"
+                    f"{'3️⃣ Оплата подтвердится автоматически после подтверждения сети (~10–30 мин для BTC).' if method['network'] == 'bitcoin' else '3️⃣ Оплата подтверждается автоматически по хэшу почти мгновенно.'}",
+                    reply_markup=pay_kb,
+                    parse_mode="Markdown"
+                )
+                return
+
+            if data == "ad_cancel":
+                st = self.user_input_states.get(chat_id)
+                if st and st.get("step") == "waiting_ad_content":
+                    self.user_input_states.pop(chat_id, None)
+                self.sender.send_message_direct(
+                    chat_id,
+                    "❌ **Заявка на рекламу отменена.**",
+                    reply_markup=get_ads_keyboard(),
+                    parse_mode="Markdown"
+                )
+                return
+
+            if data == "ads_menu_back":
+                try:
+                    self.bot.edit_message_text("📢 **Размещение рекламы:**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_ads_keyboard(), parse_mode="Markdown")
+                except:
+                    pass
+                return
+
+            if data.startswith("timer_game_"):
+                key = data.replace("timer_game_", "")
+                game_name = self.manager.combo_games[key]["name"] if key in self.manager.combo_games else self.manager.independent_farms[key]["name"]
+                try:
+                    self.bot.edit_message_text(f"⏰ Настройка таймера для: **{game_name}**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_timer_duration_keyboard(key), parse_mode="Markdown")
+                except:
+                    pass
+                return
+
+            if data.startswith("settimer_"):
+                parts = data.split("_")
+                hours = int(parts[2])
+                if chat_id not in self.user_game_timers:
+                    self.user_game_timers[chat_id] = {}
+                self.user_game_timers[chat_id][parts[1]] = {"target": time.time() + (hours * 3600), "duration_hours": float(hours)}
+                try:
+                    self.bot.answer_callback_query(call.id, f"✅ Таймер на {hours}ч установлен!")
+                except:
+                    pass
+                try:
+                    self.bot.edit_message_text(f"✅ **Таймер установлен на {hours} ч.!**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_timers_games_keyboard(), parse_mode="Markdown")
+                except:
+                    pass
+                return
+
+            if data.startswith("customtimer_"):
+                self.user_input_states[chat_id] = {"step": "waiting_custom_timer", "game_key": data.replace("customtimer_", "")}
+                self.sender.send_message_direct(chat_id, "✏️ **Введите свое время таймера** (например: `2.5` или `90м`):", parse_mode="Markdown")
+                return
+
+            if data.startswith("canceltimer_"):
+                if chat_id in self.user_game_timers:
+                    self.user_game_timers[chat_id].pop(data.replace("canceltimer_", ""), None)
+                try:
+                    self.bot.edit_message_text("❌ **Таймер отключен.**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_timers_games_keyboard(), parse_mode="Markdown")
+                except:
+                    pass
+                return
+
+            if data == "timers_menu_back":
+                try:
+                    self.bot.edit_message_text("⏰ **Выберите игру для таймера:**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_timers_games_keyboard(), parse_mode="Markdown")
+                except:
+                    pass
+                return
+
+            if data == "prof_add":
+                self.user_input_states[chat_id] = {"step": "waiting_game_info"}
+                self.sender.send_message_direct(chat_id, "✍️ **Введите данные в формате:**\n`Название игры | Уровень`", parse_mode="Markdown")
+                return
+
+            # Кнопка конкретной игры в профиле → сразу вводим прогресс для неё.
+            if data.startswith("profadd_"):
+                key = data.replace("profadd_", "")
+                gdata = self.manager.combo_games.get(key) or self.manager.independent_farms.get(key, {})
+                gname = gdata.get("name", key)
+                self.user_input_states[chat_id] = {"step": "waiting_game_stat", "game": gname, "game_key": key}
+                self.sender.send_message_direct(
+                    chat_id,
+                    f"✍️ Введите ваш уровень/прогресс для *{gname}*\n(например: `15` или `Уровень 20`):",
+                    parse_mode="Markdown"
+                )
+                return
+
+            # Клик по игре в профиле → показываем СТАТЫ ИМЕННО ЭТОЙ игры
+            # (или предлагаем добавить, если их ещё нет).
+            if data.startswith("profgame_"):
+                gname = data[len("profgame_"):]
+                info = user_game_stats.get(chat_id, {}).get(gname)
+                if info:
+                    caption = f"🎮 *{gname}*\n📊 Стат / Уровень: `{info.get('stat', 'Н/Д')}`"
+                    row_kb = types.InlineKeyboardMarkup()
+                    row_kb.row(
+                        types.InlineKeyboardButton(text="✏️ Изменить", callback_data=f"statedit_{gname}"),
+                        types.InlineKeyboardButton(text="🗑 Удалить", callback_data=f"statdel_{gname}")
+                    )
+                    if info.get("photo"):
+                        try:
+                            self.bot.send_photo(chat_id, photo=info["photo"], caption=caption, parse_mode="Markdown", reply_markup=row_kb)
+                        except Exception:
+                            self.sender.send_message_direct(chat_id, caption, parse_mode="Markdown", reply_markup=row_kb)
+                    else:
+                        self.sender.send_message_direct(chat_id, caption, parse_mode="Markdown", reply_markup=row_kb)
+                else:
+                    self.user_input_states[chat_id] = {"step": "waiting_game_stat", "game": gname}
+                    self.sender.send_message_direct(
+                        chat_id,
+                        f"✍️ У вас пока нет прогресса для *{gname}*.\n"
+                        "Введите ваш уровень/прогресс (например: `15` или `Уровень 20`):",
+                        parse_mode="Markdown"
+                    )
+                return
+
+            if data == "prof_view":
+                show_user_profile(chat_id)
+                return
+
+            # Удаление конкретной строки статистики.
+            if data.startswith("statdel_"):
+                gname = data[len("statdel_"):]
+                stats = user_game_stats.get(chat_id, {})
+                if gname in stats:
+                    stats.pop(gname, None)
+                    save_user_stats()
+                    try:
+                        self.bot.answer_callback_query(call.id, f"🗑 «{gname}» удалено")
+                    except Exception:
+                        pass
+                    try:
+                        self.bot.delete_message(chat_id, call.message.message_id)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        self.bot.answer_callback_query(call.id, "Уже удалено")
+                    except Exception:
+                        pass
+                return
+
+            # Изменение уровня конкретной строки статистики.
+            if data.startswith("statedit_"):
+                gname = data[len("statedit_"):]
+                stats = user_game_stats.get(chat_id, {})
+                if gname in stats:
+                    self.user_input_states[chat_id] = {"step": "waiting_game_stat", "game": gname}
+                    self.sender.send_message_direct(
+                        chat_id,
+                        f"✏️ Введите новый уровень/прогресс для *{gname}*:",
+                        parse_mode="Markdown"
+                    )
+                else:
+                    try:
+                        self.bot.answer_callback_query(call.id, "Записи больше нет")
+                    except Exception:
+                        pass
+                return
+
+            # История найденных комбо (картинки берутся с серверов Telegram по file_id).
+            if data == "combo_hist":
+                try:
+                    self.bot.answer_callback_query(call.id, "Загрузка истории...")
+                except Exception:
+                    pass
+                if not combo_history:
+                    self.sender.send_message_direct(chat_id, "📜 История комбо пока пуста. Загляните позже!")
+                    return
+                recent = list(reversed(combo_history))[:15]
+                self.sender.send_message_direct(
+                    chat_id,
+                    f"📜 *История найденных комбо* (последние {len(recent)}):",
+                    parse_mode="Markdown"
+                )
+                for h in recent:
+                    cap = f"🎯 *{h.get('name', 'Комбо')}*\n📅 `{h.get('date', h.get('day', ''))}`"
+                    fid = h.get("file_id")
+                    if fid:
+                        try:
+                            self.bot.send_photo(chat_id, photo=fid, caption=cap, parse_mode="Markdown")
+                        except Exception:
+                            self.sender.send_message_direct(chat_id, cap, parse_mode="Markdown")
+                    else:
+                        self.sender.send_message_direct(chat_id, cap, parse_mode="Markdown")
+                return
+
+            if data.startswith("combopage_"):
+                page = int(data.replace("combopage_", ""))
+                keyboard, total_count = get_combo_list_keyboard(page=page)
+                try:
+                    self.bot.edit_message_text(f"🎮 **Комбо-проекты ({total_count})**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=keyboard, parse_mode="Markdown")
+                except:
+                    pass
+                return
+
+            if data.startswith("gamemenu_"):
+                parts = data.split("_")
+                if parts[1] in self.manager.combo_games:
+                    self.bot.edit_message_text(f"🕹 **Меню: {self.manager.combo_games[parts[1]]['name']}**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_single_game_keyboard(parts[1], parts[2]), parse_mode="Markdown")
+                return
+
+            if data == "ignore":
+                return
+
+            if data.startswith("pinfo_"):
+                info = self.manager.phone_miners[data.replace("pinfo_", "")]
+                self.sender.send_message_direct(chat_id, f"📱 **{info['name']}**\n\n{info['description']}\n\n🔑 Код: `{info['code']}`", parse_mode="Markdown")
+                return
+
+            if data.startswith("finfo_"):
+                info = self.manager.crypto_faucets[data.replace("finfo_", "")]
+                self.sender.send_message_direct(chat_id, f"🚰 **{info['name']}**\n\n{info['description']}", parse_mode="Markdown")
+                return
+
+            if data.startswith("cur_"):
+                crypto = data.replace("cur_", "")
+                self.bot.edit_message_text(f"🧮 Вы выбрали **{crypto.upper()}**. Выберите валюту:", chat_id, call.message.message_id, reply_markup=get_fiat_currency_keyboard(crypto), parse_mode="Markdown")
+                return
+
+            if data.startswith("fiat_"):
+                parts = data.split("_")
+                self.user_calc_states[chat_id] = {"crypto": parts[1], "fiat": parts[2]}
+                self.bot.edit_message_text(f"🧮 Введите количество {parts[1].upper()}:", chat_id, call.message.message_id, parse_mode="Markdown")
+                return
+
+            if data.startswith("strat_"):
+                self.sender.send_message_direct(chat_id, self.manager.combo_games[data.replace("strat_", "")]["strategy"])
+                return
+
+            if data.startswith("farm_strat_"):
+                self.sender.send_message_direct(chat_id, self.manager.independent_farms[data.replace("farm_strat_", "")]["strategy"])
+                return
+
+            if data.startswith("game_"):
+                key = data.replace("game_", "")
+                if key in self.manager.combo_games:
+                    try:
+                        self.bot.answer_callback_query(call.id, "Загрузка...")
+                    except:
+                        pass
+                    img_url, date_text = self.manager.fetch_combo(key)
+                    send_combo_result(chat_id, self.manager.combo_games[key], image_handler.resize_img(img_url) if img_url else None, date_text)
+                return
+
+        except Exception as e:
+            self.logger.error(f"Ошибка в обработчике callback-запросов: {e}")
+
+class AIChatHandler:
+    """Менеджер для управления интерактивным чатом с Виртуальным Интеллектом."""
+
+    def __init__(self, bot_instance, logger_instance, ai_assistant_instance, ai_chat_active_storage: set):
+        self.bot = bot_instance
+        self.logger = logger_instance
+        self.ai = ai_assistant_instance
+        self.ai_chat_active = ai_chat_active_storage
+
+    def handle_start_ai_chat(self, call: types.CallbackQuery):
+        """Активация режима диалога с Виртуальным Интеллектом по инлайн-кнопке."""
+        try:
+            self.bot.answer_callback_query(call.id)
+        except Exception:
+            pass
+
+        chat_id = call.message.chat.id
+        user_id = call.from_user.id
+        
+        self.ai_chat_active.add(user_id)
+        
+        try:
+            self.bot.send_message(
+                chat_id,
+                "🧠 **Виртуальный Интеллект активирован!**\n\n"
+                "Напишите ваш вопрос следующим сообщением, и я проанализирую вашу стратегию. "
+                "(Чтобы выйти из режима ИИ, просто отправьте любую команду, например /start)",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            self.logger.error(f"Ошибка активации ИИ-чата: {e}")
+
+    def handle_ai_text_messages(self, message: types.Message):
+        """Обработка входящих текстовых сообщений пользователя в активном режиме ИИ."""
+        user_id = message.from_user.id
+        chat_id = message.chat.id
+        text = message.text.strip()
+
+        if text.startswith('/'):
+            self.ai_chat_active.discard(user_id)
+            return
+
+        # Забаненных не обслуживаем.
+        if account_guard.is_banned(chat_id):
+            return
+
+        # Админские команды модерации.
+        if str(chat_id) == str(ADMIN_CHAT_ID):
+            m = re.match(r'^\s*разбан\s+(\d+)\s*$', text, re.IGNORECASE)
+            if m:
+                account_guard.unban(int(m.group(1)))
+                try:
+                    self.bot.reply_to(message, f"✅ Пользователь {m.group(1)} разбанен.")
+                except Exception:
+                    pass
+                return
+            m = re.match(r'^\s*бан\s+юзер\s+(\d+)\s*$', text, re.IGNORECASE)
+            if m:
+                account_guard.ban(int(m.group(1)), "ручной бан админом")
+                try:
+                    self.bot.reply_to(message, f"🚫 Пользователь {m.group(1)} забанен.")
+                except Exception:
+                    pass
+                return
+            m = re.match(r'^\s*(?:бан|скам|scam|blacklist)\s+(\S+)\s*$', text, re.IGNORECASE)
+            if m:
+                ok = link_guard.add_scam_domain(m.group(1))
+                try:
+                    self.bot.reply_to(
+                        message,
+                        f"🚫 Домен добавлен в чёрный список скама: {m.group(1)}"
+                        if ok else "⚠️ Это не похоже на домен. Пример: бан scam-site.top"
+                    )
+                except Exception:
+                    pass
+                return
+
+        # Проверка ссылок ПЕРЕД ответом ИИ: скам/подозрительные — блокируем и помечаем.
+        link_verdict = link_guard.analyze(text)
+        if link_verdict["links"] and link_verdict["worst"] in ("scam", "suspicious"):
+            try:
+                self.bot.reply_to(message, link_verdict["message"])
+            except Exception:
+                pass
+            return
+
+        try:
+            ai_response = self.ai.generate_response(text, chat_id=chat_id)
+            # Без Markdown: ответы ИИ — обычный текст, чтобы произвольные
+            # символы (в т.ч. в выученных знаниях) не ломали отправку.
+            self.bot.reply_to(message, ai_response)
+            # 6. Передача запроса ИИ-ассистенту
+            #self.sender.send_message_direct(chat_id, ai_response, parse_mode="Markdown", reply_markup=MenuManager.get_reply_keyboard(self.main_menu_buttons))
+
+        except Exception as e:
+            self.logger.error(f"Ошибка генерации ответа ИИ в чате: {e}")
+            try:
+                self.bot.send_message(chat_id, "⚠️ Произошла ошибка при обращении к Виртуальному Интеллекту.")
+            except Exception:
+                pass
+
+
+# --- Конец классов ---
+
+# --- callback_query_handler ---
+@bot.callback_query_handler(func=lambda call: call.data == "start_ai_chat")
+def handle_start_ai_chat(call: types.CallbackQuery):
+    ai_chat_handler.handle_start_ai_chat(call)
+
+@bot.message_handler(func=lambda message: message.from_user.id in AI_CHAT_ACTIVE, content_types=['text'])
+def handle_ai_text_messages(message: types.Message):
+    ai_chat_handler.handle_ai_text_messages(message)
+    
+def get_reviews_keyboard():
+    return MenuManager.get_matrix_keyboard(REVIEWS_KEYBOARD_DATA)
+
+def get_ads_keyboard():
+    return MenuManager.get_matrix_keyboard(ADS_KEYBOARD_DATA)
+
+def get_ads_tariffs_keyboard():
+    return MenuManager.get_matrix_keyboard(ADS_TARIFFS_DATA)
+
+def get_safepal_coins_keyboard(tariff_key):
+    return MenuManager.get_safepal_coins_keyboard(tariff_key, CRYPTO_COINS_DATA)
+    
+def get_combo_list_keyboard(page=0):
+    return MenuManager.get_paginated_list_keyboard(
+        manager.combo_games, 
+        page=page, 
+        items_per_page=5, 
+        callback_prefix="gamemenu_", 
+        page_prefix="combopage_",
+        icon="🎮"
+    )
+def get_single_game_keyboard(key, page):
+    data = manager.combo_games.get(key, {})
+    return ContentKeyboardManager.get_single_game_keyboard(key, page, data, SINGLE_GAME_ACTIONS)
+    
+def get_phone_miners_keyboard():
+    return ContentKeyboardManager.get_catalog_keyboard(
+        manager.phone_miners, 
+        PHONE_MINER_ACTIONS["info_prefix"], 
+        PHONE_MINER_ACTIONS, 
+        extra_url_key="play_market"
+    )
+    
+def get_faucets_keyboard():
+    return ContentKeyboardManager.get_catalog_keyboard(
+        manager.crypto_faucets, 
+        FAUCETS_ACTIONS["info_prefix"], 
+        FAUCETS_ACTIONS
+    )
+    
+def get_farms_keyboard():
+    return ContentKeyboardManager.get_catalog_keyboard(
+        manager.independent_farms, 
+        FARMS_ACTIONS["strat_prefix"], 
+        FARMS_ACTIONS, 
+        name_template=FARMS_ACTIONS["strat_suffix_template"]
+    )    
+
+def get_timers_games_keyboard():
+    return MenuManager.get_timers_games_keyboard([manager.combo_games, manager.independent_farms])
+
+def get_timer_duration_keyboard(key):
+    return MenuManager.get_timer_duration_keyboard(key, TIMER_DURATIONS, TIMER_ACTIONS)    
+
+def get_crypto_currency_keyboard():
+    return MenuManager.get_crypto_currency_keyboard(CRYPTO_CURRENCY_DATA, row_width=2)
+
+def get_fiat_currency_keyboard(crypto_symbol):
+    return MenuManager.get_fiat_currency_keyboard(crypto_symbol, FIAT_CURRENCIES, row_width=3)
+
+def send_message_direct(chat_id, text, reply_markup=None, parse_mode="Markdown"):
+    return sender.send_message_direct(chat_id, text, reply_markup, parse_mode)
+
+def send_combo_result(chat_id, info, img_bytes, date_text):
+    return sender.send_combo_result(chat_id, info, img_bytes, date_text)
+
+def show_user_profile(chat_id):
+    return profile_manager.show_user_profile(chat_id, user_game_stats)
+    
+def daily_auto_checker():
+    scheduler_manager.run_daily_checker(user_game_timers)
+
+# ============================================================
+# АВТО-ПРОВЕРКА ОПЛАТЫ USDT-TRC20 ПО ХЭШУ ТРАНЗАКЦИИ (сеть Tron)
+# ============================================================
+# Официальный контракт USDT (TRC20) в сети Tron.
+USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+# Файл с уже использованными хэшами (защита от повторного использования).
+USED_TX_FILE = "used_tx_hashes.txt"
+
+def _load_used_tx():
+    s = set()
+    if os.path.exists(USED_TX_FILE):
+        try:
+            with open(USED_TX_FILE, "r", encoding="utf-8") as f:
+                for line in f:
+                    h = line.strip().lower()
+                    if h:
+                        s.add(h)
+        except Exception as e:
+            logger.error(f"Ошибка загрузки использованных tx: {e}")
+    return s
+
+used_tx_hashes = _load_used_tx()
+
+def mark_tx_used(tx_hash: str):
+    """Помечает хэш как использованный (в памяти и в файле)."""
+    try:
+        used_tx_hashes.add(tx_hash.lower())
+        with open(USED_TX_FILE, "a", encoding="utf-8") as f:
+            f.write(tx_hash.lower() + "\n")
+    except Exception as e:
+        logger.error(f"Ошибка сохранения использованного tx: {e}")
+
+def parse_price_usd(price_str: str) -> float:
+    """Извлекает число из строки цены вида '$15' -> 15.0."""
+    m = re.search(r'\d+(?:\.\d+)?', price_str or "")
+    return float(m.group(0)) if m else 0.0
+
+def extract_tx_hash(text: str):
+    """Ищет в тексте хэш транзакции Tron (64 hex-символа)."""
+    m = re.search(r'\b[0-9a-fA-F]{64}\b', text or "")
+    return m.group(0) if m else None
+
+def verify_usdt_trc20(tx_hash: str, expected_usd: float, our_address: str):
+    """
+    Проверяет входящий USDT-TRC20 перевод по хэшу через публичный Tronscan API.
+    Возвращает (ok: bool, reason: str). При любой неоднозначности → False
+    (тогда сработает резервное ручное подтверждение админом).
+    """
+    tx_hash = (tx_hash or "").strip()
+    if not tx_hash:
+        return False, "Хэш транзакции не указан."
+    if tx_hash.lower() in used_tx_hashes:
+        return False, "Этот хэш уже был использован ранее."
+    try:
+        url = f"https://apilist.tronscanapi.com/api/transaction-info?hash={tx_hash}"
+        r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            return False, "Не удалось получить данные транзакции (сеть)."
+        data = r.json() or {}
+        if not data:
+            return False, "Транзакция не найдена в сети."
+
+        # Подтверждённость и успешность
+        if data.get("confirmed") is False:
+            return False, "Транзакция ещё не подтверждена сетью."
+        if data.get("contractRet") not in (None, "SUCCESS"):
+            return False, "Транзакция завершилась неуспешно."
+
+        info = data.get("tokenTransferInfo") or {}
+        if not info:
+            return False, "В транзакции нет TRC20-перевода."
+
+        symbol = (info.get("symbol") or "").upper()
+        contract = info.get("contract_address") or ""
+        to_addr = info.get("to_address") or ""
+        try:
+            decimals = int(info.get("decimals") or 6)
+            amount = int(info.get("amount_str") or "0") / (10 ** decimals)
+        except Exception:
+            return False, "Не удалось разобрать сумму перевода."
+
+        if symbol != "USDT" or contract != USDT_TRC20_CONTRACT:
+            return False, "Это не перевод USDT-TRC20."
+        if to_addr != our_address:
+            return False, "Перевод отправлен не на наш адрес."
+        # USDT — стейблкоин (~$1). Допускаем -2% на округление.
+        if amount + 1e-9 < expected_usd * 0.98:
+            return False, f"Сумма ({amount:.2f} USDT) меньше требуемой ({expected_usd:.2f})."
+
+        return True, f"Получено {amount:.2f} USDT."
+    except Exception as e:
+        logger.error(f"Ошибка проверки USDT-TRC20 tx: {e}")
+        return False, "Ошибка проверки транзакции."
+
+# ============================================================
+# АВТО-ПРОВЕРКА ОПЛАТЫ BTC ПО ХЭШУ (сеть Bitcoin, API Blockstream)
+# ============================================================
+def get_btc_usd_rate() -> float:
+    """Текущий курс BTC→USD через CoinGecko (0.0 при ошибке)."""
+    try:
+        r = requests.get(
+            "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd",
+            timeout=8
+        )
+        return float(r.json()["bitcoin"]["usd"])
+    except Exception as e:
+        logger.error(f"Ошибка получения курса BTC: {e}")
+        return 0.0
+
+def verify_btc(tx_hash: str, expected_usd: float, our_address: str):
+    """
+    Проверяет входящий BTC-перевод по хэшу через публичный Blockstream API.
+    Возвращает (ok: bool, reason: str). При любой неоднозначности → False
+    (тогда сработает резервное ручное подтверждение админом).
+    """
+    tx_hash = (tx_hash or "").strip().lower()
+    if not tx_hash:
+        return False, "Хэш транзакции не указан."
+    if tx_hash in used_tx_hashes:
+        return False, "Этот хэш уже был использован ранее."
+    try:
+        r = requests.get(
+            f"https://blockstream.info/api/tx/{tx_hash}",
+            timeout=12, headers={"User-Agent": "Mozilla/5.0"}
+        )
+        if r.status_code != 200:
+            return False, "Транзакция не найдена в сети BTC."
+        tx = r.json() or {}
+
+        status = tx.get("status") or {}
+        if not status.get("confirmed", False):
+            return False, "Транзакция ещё не подтверждена сетью."
+
+        # Суммируем все выходы, ушедшие на наш адрес.
+        received_sat = 0
+        for o in tx.get("vout", []):
+            if o.get("scriptpubkey_address") == our_address:
+                received_sat += int(o.get("value") or 0)
+        if received_sat <= 0:
+            return False, "Перевод не найден на наш BTC-адрес."
+
+        received_btc = received_sat / 1e8
+        rate = get_btc_usd_rate()
+        if rate <= 0:
+            return False, "Не удалось получить курс BTC."
+        expected_btc = expected_usd / rate
+        # BTC волатилен — допускаем 5% отклонения курса.
+        if received_btc + 1e-12 < expected_btc * 0.95:
+            return False, (
+                f"Сумма ({received_btc:.8f} BTC ≈ ${received_btc * rate:.2f}) "
+                f"меньше требуемой (${expected_usd:.2f})."
+            )
+        return True, f"Получено {received_btc:.8f} BTC (≈ ${received_btc * rate:.2f})."
+    except Exception as e:
+        logger.error(f"Ошибка проверки BTC tx: {e}")
+        return False, "Ошибка проверки транзакции."
+
+# ============================================================
+# АВТО-ПРОВЕРКА ОПЛАТЫ TON ПО ХЭШУ (сеть TON, API TonAPI)
+# ============================================================
+TON_API_BASE = "https://tonapi.io/v2"
+
+def _ton_hash_to_hex(h: str):
+    """Приводит хэш TON (hex или base64/base64url из tonviewer) к hex."""
+    h = (h or "").strip()
+    if re.fullmatch(r'[0-9a-fA-F]{64}', h):
+        return h.lower()
+    try:
+        s = h.replace('-', '+').replace('_', '/')
+        s += '=' * (-len(s) % 4)  # добить паддинг
+        raw = base64.b64decode(s)
+        if len(raw) == 32:
+            return raw.hex()
+    except Exception:
+        pass
+    return None
+
+def extract_ton_hash(text: str):
+    """Ищет хэш TON в тексте: из ссылки tonviewer/tonscan, hex или base64."""
+    text = text or ""
+    m = re.search(r'transaction/([A-Za-z0-9+/_\-]{43,44}=?)', text)
+    if m:
+        return m.group(1)
+    m = re.search(r'\b[0-9a-fA-F]{64}\b', text)
+    if m:
+        return m.group(0)
+    m = re.search(r'[A-Za-z0-9+/_\-]{43}=', text)
+    if m:
+        return m.group(0)
+    return None
+
+def _ton_address_raw(addr: str) -> str:
+    """Через TonAPI получаем raw-форму адреса (0:hex) для надёжного сравнения."""
+    try:
+        r = requests.get(f"{TON_API_BASE}/address/{addr}/parse", timeout=10)
+        if r.status_code == 200:
+            return ((r.json() or {}).get("raw_form") or "").lower()
+    except Exception as e:
+        logger.error(f"Ошибка парсинга TON-адреса: {e}")
+    return ""
+
+def get_ton_usd_rate() -> float:
+    """Текущий курс TON→USD через CoinGecko (0.0 при ошибке)."""
+    try:
+        r = requests.get(
+            "https://api.coingecko.com/api/v3/simple/price?ids=the-open-network&vs_currencies=usd",
+            timeout=8
+        )
+        return float(r.json()["the-open-network"]["usd"])
+    except Exception as e:
+        logger.error(f"Ошибка получения курса TON: {e}")
+        return 0.0
+
+def verify_ton(tx_hash: str, expected_usd: float, our_address: str):
+    """
+    Проверяет входящий TON-перевод по хэшу через публичный TonAPI.
+    Возвращает (ok: bool, reason: str). При любой неоднозначности → False
+    (тогда сработает резервное ручное подтверждение админом).
+    """
+    tx_hex = _ton_hash_to_hex(tx_hash)
+    if not tx_hex:
+        return False, "Не удалось распознать хэш транзакции TON."
+    if tx_hex in used_tx_hashes:
+        return False, "Этот хэш уже был использован ранее."
+    try:
+        r = requests.get(
+            f"{TON_API_BASE}/blockchain/transactions/{tx_hex}",
+            timeout=12, headers={"User-Agent": "Mozilla/5.0"}
+        )
+        if r.status_code != 200:
+            return False, "Транзакция не найдена в сети TON."
+        tx = r.json() or {}
+
+        if tx.get("success") is False:
+            return False, "Транзакция завершилась неуспешно."
+
+        in_msg = tx.get("in_msg") or {}
+        dest = ((in_msg.get("destination") or {}).get("address") or "")
+        value_nano = int(in_msg.get("value") or 0)
+        if value_nano <= 0:
+            return False, "В транзакции нет входящего перевода TON."
+        received_ton = value_nano / 1e9
+
+        our_raw = _ton_address_raw(our_address)
+        if our_raw and dest and our_raw != dest.lower():
+            return False, "Перевод отправлен не на наш адрес."
+
+        rate = get_ton_usd_rate()
+        if rate <= 0:
+            return False, "Не удалось получить курс TON."
+        expected_ton = expected_usd / rate
+        # TON волатилен — допускаем 5% отклонения курса.
+        if received_ton + 1e-9 < expected_ton * 0.95:
+            return False, (
+                f"Сумма ({received_ton:.4f} TON ≈ ${received_ton * rate:.2f}) "
+                f"меньше требуемой (${expected_usd:.2f})."
+            )
+        return True, f"Получено {received_ton:.4f} TON (≈ ${received_ton * rate:.2f})."
+    except Exception as e:
+        logger.error(f"Ошибка проверки TON tx: {e}")
+        return False, "Ошибка проверки транзакции."
+
+def generate_advanced_captcha(chat_id):
+    return CaptchaManager.generate_advanced_captcha(chat_id, advanced_captchas)
+
+def handle_menu_text(message: types.Message):
+    menu_text_processor.handle_menu_text(message)
+
+
+# ПРИМЕЧАНИЕ: catch-all обработчики (photo / любой текст / любой callback)
+# регистрируются НИЖЕ — после bot_controller — чтобы /start, команды и
+# кнопки меню имели приоритет над "ловушкой" func=lambda: True.
+
+
+# --- ВСЕ ИНИЦИАЛИЗАЦИИ И ССЫЛКИ НА ОБЪЕКТЫ ---
+# (здесь создаются message_processor, bot_controller, image_handler, manager и т.д.)
+
+# Запуск фонового потока (интервал: 2 часа = 7200 секунд)
+updater_thread = threading.Thread(target=background_independent_updater, args=(7200,), daemon=True)
+
+# Инициализируем отправителя (если у вас bot и logger уже объявлены глобально)
+sender = NotificationSender(bot, logger)
+# Инициализация виртуального помощника
+ai_assistant = BotVirtualAssistant()
+# Инициализация усиленного защитного модуля
+sec_guard = AdvancedSecurityGuard()
+security_core = UltimateSecurityCore()
+# Анализатор ссылок (скам/фишинг/вирус) — используется в чате ИИ и в общих сообщениях.
+link_guard = LinkScamGuard(PHISHING_DOMAINS, GHOST_MODE_DOMAINS, SCAM_PATTERNS, NETWORK_CORE_BLACKLIST)
+# Страж аккаунтов: боты, скам-имена, спам-флуд + чёрный список пользователей.
+account_guard = AccountGuard(bot, SCAM_USERNAME_MARKERS, ADMIN_CHAT_ID)
+# Инициализация менеджеров
+image_handler = ImageHandler(logger, target_width=600)
+manager = MiningComboManager()
+# 1. Сначала создаем экземпляр процессора
+message_processor = MessageProcessor(bot, logger, sender, manager)
+
+# 2. Передаем его в контроллер (с маленькой буквы)
+bot_controller = TelegramBotController(bot, message_processor, BOT_COMMANDS_LIST, MAIN_MENU_BUTTONS)
+
+# Инициализация процессора текстового меню
+menu_text_processor = MenuTextProcessor(bot, logger, sender, manager, verified_users, user_game_timers, cloud_proofs)
+
+# Инициализация обработчика сообщений
+message_input_handler = MessageInputHandler(
+    bot, logger, sender, security_core, ai_assistant, manager,
+    verified_users, user_input_states, user_game_stats, user_game_timers,
+    user_calc_states, pending_ad_orders, user_reviews_storage, cloud_proofs,
+    ADMIN_CHAT_ID, MAIN_MENU_BUTTONS
+)
+
+# Инициализация обработчика callback-запросов
+callback_query_handler = CallbackQueryHandler(
+    bot, logger, sender, manager,
+    verified_users, user_input_states, user_game_timers, user_calc_states,
+    pending_ad_orders, ads_manager, user_reviews_storage, advanced_captchas,
+    active_farms_state, active_farm_threads, ADMIN_CHAT_ID, TARGET_GAME_BOT, MAIN_MENU_BUTTONS
+)
+
+# Инициализация фонового шедулера
+scheduler_manager = BackgroundSchedulerManager(bot, logger, manager, sender, ads_manager, ADMIN_CHAT_ID)
+# Инициализация хранилища и обработчика чата с ИИ (теперь нужны только уже точно существующие bot, logger, ai_assistant)
+AI_CHAT_ACTIVE = set()
+ai_chat_handler = AIChatHandler(bot, logger, ai_assistant, AI_CHAT_ACTIVE)
+
+# Инициализируем менеджер профиля (используя уже созданные bot, logger и sender)
+profile_manager = ProfileManager(bot, logger, sender)
+
+# ============================================================
+# CATCH-ALL обработчики регистрируются ПОСЛЕДНИМИ,
+# чтобы /start, команды и кнопки меню (bot_controller) имели приоритет.
+# ============================================================
+@bot.message_handler(content_types=['photo'])
+def handle_photo(message: types.Message):
+    message_input_handler.handle_photo(message)
+
+@bot.message_handler(func=lambda m: True)
+def handle_text_all(message: types.Message):
+    message_input_handler.handle_text_all(message)
+
+@bot.callback_query_handler(func=lambda call: True)
+def handle_callbacks(call: types.CallbackQuery):
+    callback_query_handler.handle_callbacks(call)
+
+updater_thread.start()
+
+# Фоновый поток авто-проверки комбо / таймеров / рекламы.
+# ВАЖНО: запускаем ДО infinity_polling(), т.к. polling блокирует поток.
+# run_daily_checker() при старте сразу делает первую проверку комбо.
+combo_checker_thread = threading.Thread(target=daily_auto_checker, daemon=True)
+combo_checker_thread.start()
+print("🔎 Фоновый чекер комбо запущен.", flush=True)
+
+if __name__ == "__main__":
+    # ========================================================
+    # ОСНОВНАЯ ТОЧКА ЗАПУСКА TELEGRAM-БОТА
+    # ========================================================
+
+    print("🤖 Запуск Telegram-бота...", flush=True)
+
+    try:
+        # ----------------------------------------------------
+        # Проверяем доступность Telegram API.
+        # ----------------------------------------------------
+        print("🌐 Проверка Telegram API...", flush=True)
+
+        me = bot.get_me()
+
+        print(
+            f"✅ Telegram API отвечает. "
+            f"Бот: @{me.username} | ID: {me.id}",
+            flush=True
+        )
+
+        # ----------------------------------------------------
+        # Удаляем возможный вебхук — иначе getUpdates (polling)
+        # не получает апдейты и бот "молчит".
+        # ----------------------------------------------------
+        bot.remove_webhook()
+        print("🧹 Webhook удалён (polling-режим).", flush=True)
+
+        # ----------------------------------------------------
+        # Запускаем штатный long polling.
+        # ----------------------------------------------------
+        print(
+            "🟢 Запускаем infinity_polling()...",
+            flush=True
+        )
+
+        bot.infinity_polling(
+            timeout=30,
+            long_polling_timeout=30,
+            allowed_updates=[
+                "message",
+                "callback_query"
+            ],
+            skip_pending=True
+        )
+
+    except KeyboardInterrupt:
+        print(
+            "🛑 Бот остановлен пользователем.",
+            flush=True
+        )
 
     except Exception as e:
-        print(f"[ERROR] Критическая ошибка в handle_callbacks: {e}")
-        
-if __name__ == "__main__":
-    logger.info("=== ZERO-LAG TERMUX NATIVE BOT ЗАПУЩЕН ===")
-    threading.Thread(target=daily_auto_checker, daemon=True).start()
-    bot.infinity_polling(skip_pending=True, timeout=5, long_polling_timeout=3)
+        logger.exception(
+            "❌ Критическая ошибка Telegram polling: %s",
+            e
+        )
+
+        print(
+            f"❌ Telegram polling завершился: "
+            f"{type(e).__name__}: {e}",
+            flush=True
+        )
