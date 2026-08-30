@@ -1250,6 +1250,7 @@ def find_today_combo_fileid(game_key):
 BACKUP_FILES = [
     VERIFIED_FILE, USER_STATS_FILE, COMBO_HISTORY_FILE, REVIEWS_FILE,
     PROOFS_FILE, TIMERS_FILE, COMBO_SUBS_FILE, REFERRALS_FILE, GAMIFY_FILE,
+    "price_alerts.json", "digest_subs.json",
     "banned_users.txt", "scam_domains.txt", "ai_knowledge.json",
     ACTIVE_ADS_FILE, "used_tx_hashes.txt",
 ]
@@ -1277,6 +1278,62 @@ def backup_all_files(bot_instance, admin_chat_id):
         )
     except Exception:
         pass
+
+# Час суток (0-23), когда бот выполняет ежедневные автономные задачи
+# (бэкап, отчёт, дайджест, уборку).
+DAILY_TASK_HOUR = 9
+
+# Поддерживаемые монеты для ценовых алертов и конвертера (→ id CoinGecko).
+COIN_ID_MAP = {
+    "btc": "bitcoin", "eth": "ethereum", "ton": "the-open-network",
+    "usdt": "tether", "bnb": "binancecoin", "sol": "solana",
+}
+
+# ── Ценовые алерты: [{"user": id, "coin": "btc", "op": ">"/"<", "value": float}] ──
+PRICE_ALERTS_FILE = "price_alerts.json"
+
+def load_price_alerts():
+    if os.path.exists(PRICE_ALERTS_FILE):
+        try:
+            with open(PRICE_ALERTS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return data
+        except Exception as e:
+            logger.error(f"Ошибка загрузки ценовых алертов: {e}")
+    return []
+
+def save_price_alerts():
+    try:
+        with open(PRICE_ALERTS_FILE, "w", encoding="utf-8") as f:
+            json.dump(price_alerts, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения ценовых алертов: {e}")
+
+price_alerts = load_price_alerts()
+
+# ── Подписка на утренний дайджест (множество chat_id) ─────────────────────
+DIGEST_FILE = "digest_subs.json"
+
+def load_digest_subs():
+    if os.path.exists(DIGEST_FILE):
+        try:
+            with open(DIGEST_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return set(int(x) for x in data)
+        except Exception as e:
+            logger.error(f"Ошибка загрузки подписок дайджеста: {e}")
+    return set()
+
+def save_digest_subs():
+    try:
+        with open(DIGEST_FILE, "w", encoding="utf-8") as f:
+            json.dump(list(digest_subs), f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения подписок дайджеста: {e}")
+
+digest_subs = load_digest_subs()
 
 user_input_states = {}
 
@@ -2508,6 +2565,32 @@ class BackgroundSchedulerManager:
         self.ads_manager = ads_manager_instance
         self.admin_chat_id = admin_chat_id
 
+    def _send_daily_digest(self):
+        """Утренний дайджест подписчикам: комбо дня + личная серия/очки."""
+        if not digest_subs:
+            return
+        today = time.strftime("%Y-%m-%d", time.localtime())
+        found = [h.get("name") for h in combo_history if h.get("day") == today and h.get("file_id")]
+        combos_line = ("🎯 Комбо дня готовы: " + ", ".join(found)) if found else "⏳ Комбо дня ещё собираются — загляни позже."
+        for uid in list(digest_subs):
+            try:
+                self.sender.send_message_direct(
+                    uid,
+                    "🌅 *Доброе утро!*\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    f"{combos_line}\n"
+                    f"🔥 Твоя серия: *{get_streak(uid)}* дн. · 💰 Очки: *{get_points(uid)}*\n\n"
+                    "👉 Заходи собрать награды и открыть комбо!",
+                    parse_mode="Markdown"
+                )
+            except apihelper.ApiTelegramException as e:
+                if getattr(e, "error_code", None) == 403:
+                    digest_subs.discard(uid)
+            except Exception:
+                pass
+            time.sleep(0.05)
+        save_digest_subs()
+
     def run_daily_checker(self, user_game_timers: dict):
         """Бесконечный цикл фонового мониторинга."""
         # Плавный старт: даём боту прогреться и быстро отвечать на меню,
@@ -2515,6 +2598,7 @@ class BackgroundSchedulerManager:
         time.sleep(25)
 
         last_reset_day = None
+        last_daily_day = None
         run_check_now = True
 
         while True:
@@ -2657,6 +2741,103 @@ class BackgroundSchedulerManager:
                         )
             except Exception as e:
                 self.logger.error(f"Ошибка автоотмены неоплаченных заявок: {e}")
+
+            # 4c. АВТО-ОДОБРЕНИЕ оплаченных, но подвисших на модерации пуб (>12ч).
+            # Оплата уже подтверждена — отсутствие админа не должно блокировать клиента.
+            try:
+                auto_ok = [
+                    oid for oid, o in list(pending_ad_orders.items())
+                    if o.get("paid") and now_time - o.get("created_at", now_time) > 12 * 3600
+                ]
+                for oid in auto_ok:
+                    o = pending_ad_orders.pop(oid, None)
+                    if not o:
+                        continue
+                    creative = clean_ad_creative(o.get("content", ""))
+                    tinfo = ADS_TARIFFS.get(o.get("tariff_key"), {})
+                    dur_h = tinfo.get("duration_hours", 0)
+                    if dur_h > 0:
+                        self.ads_manager.add_ad(oid, o["user_id"], now_time + dur_h * 3600, creative)
+                    self.sender.broadcast_ad(creative, verified_users, self.admin_chat_id,
+                                             tariff_name=o.get("tariff", ""), order_id=oid)
+                    self.sender.send_message_direct(o["user_id"], "🎉 Ваша реклама одобрена автоматически и рассылается по базе!", parse_mode="Markdown")
+                    self.sender.send_message_direct(self.admin_chat_id, f"🤖 Авто-одобрение рекламы по таймауту (заказ `{oid}`, клиент `{o['user_id']}`).", parse_mode="Markdown")
+            except Exception as e:
+                self.logger.error(f"Ошибка авто-одобрения рекламы: {e}")
+
+            # 5. ЦЕНОВЫЕ АЛЕРТЫ (каждый цикл): проверяем и уведомляем, сработавшие удаляем.
+            try:
+                if price_alerts:
+                    ids = sorted({COIN_ID_MAP.get(a["coin"]) for a in price_alerts if COIN_ID_MAP.get(a["coin"])})
+                    if ids:
+                        url = f"https://api.coingecko.com/api/v3/simple/price?ids={','.join(ids)}&vs_currencies=usd"
+                        pdata = cached_json_get(url)
+                        fired = []
+                        for a in list(price_alerts):
+                            cid = COIN_ID_MAP.get(a["coin"])
+                            price = (pdata.get(cid) or {}).get("usd") if cid else None
+                            if price is None:
+                                continue
+                            if (a["op"] == ">" and price >= a["value"]) or (a["op"] == "<" and price <= a["value"]):
+                                try:
+                                    self.sender.send_message_direct(
+                                        a["user"],
+                                        f"🔔 *Ценовой алерт!*\n{a['coin'].upper()} = *${price:,.2f}* (условие: {a['op']} {a['value']:g})",
+                                        parse_mode="Markdown"
+                                    )
+                                except Exception:
+                                    pass
+                                fired.append(a)
+                        if fired:
+                            for a in fired:
+                                if a in price_alerts:
+                                    price_alerts.remove(a)
+                            save_price_alerts()
+            except Exception as e:
+                self.logger.error(f"Ошибка проверки ценовых алертов: {e}")
+
+            # 6. ЕЖЕДНЕВНЫЕ АВТОНОМНЫЕ ЗАДАЧИ (раз в сутки, после DAILY_TASK_HOUR):
+            #    авто-бэкап · отчёт о здоровье · утренний дайджест · уборка.
+            try:
+                today_key = time.strftime("%Y-%m-%d", now_struct)
+                if last_daily_day != today_key and current_hour >= DAILY_TASK_HOUR:
+                    last_daily_day = today_key
+                    try:
+                        backup_all_files(self.bot, self.admin_chat_id)
+                    except Exception as e:
+                        self.logger.error(f"Авто-бэкап: {e}")
+                    try:
+                        vip_active = sum(1 for t in gamify_store["vip_until"].values() if t > now_time)
+                        self.sender.send_message_direct(
+                            self.admin_chat_id,
+                            "✅ *Ежедневный отчёт бота*\n"
+                            f"👥 Пользователей: *{len(verified_users)}*\n"
+                            f"👑 VIP активных: *{vip_active}*\n"
+                            f"📢 Активных реклам: *{len(self.ads_manager.storage)}*\n"
+                            f"🔔 Подписок на комбо: *{sum(len(v) for v in combo_subscribers.values())}*\n"
+                            f"⏰ Активных таймеров: *{sum(len(t) for t in user_game_timers.values())}*\n"
+                            f"🌅 Дайджест-подписок: *{len(digest_subs)}* · 📈 Ценовых алертов: *{len(price_alerts)}*",
+                            parse_mode="Markdown"
+                        )
+                    except Exception as e:
+                        self.logger.error(f"Отчёт: {e}")
+                    try:
+                        self._send_daily_digest()
+                    except Exception as e:
+                        self.logger.error(f"Дайджест: {e}")
+                    # Уборка: чистим просроченный VIP и пустые записи очков.
+                    try:
+                        changed = False
+                        for _u in [u for u, t in list(gamify_store["vip_until"].items()) if t <= now_time]:
+                            gamify_store["vip_until"].pop(_u, None); changed = True
+                        for _u in [u for u, p in list(gamify_store["points"].items()) if not p]:
+                            gamify_store["points"].pop(_u, None); changed = True
+                        if changed:
+                            save_gamify()
+                    except Exception as e:
+                        self.logger.error(f"Уборка: {e}")
+            except Exception as e:
+                self.logger.error(f"Ошибка ежедневных задач: {e}")
 
             # Пауза 10 минут перед следующим циклом
             time.sleep(600)
@@ -2830,6 +3011,54 @@ class MenuTextProcessor:
                 "👇 Выберите тариф:",
                 reply_markup=get_vip_tariffs_keyboard(), parse_mode="Markdown"
             )
+        elif text in ["🌅 Дайджест", "/digest"]:
+            if chat_id in digest_subs:
+                digest_subs.discard(chat_id)
+                save_digest_subs()
+                self.sender.send_message_direct(chat_id, "🌅 Утренний дайджест *отключён*.", parse_mode="Markdown")
+            else:
+                digest_subs.add(chat_id)
+                save_digest_subs()
+                self.sender.send_message_direct(chat_id, "🌅 Утренний дайджест *включён*!\nКаждое утро — комбо дня + твоя серия. Выключить: /digest", parse_mode="Markdown")
+        elif text == "/alert_clear":
+            before = len(price_alerts)
+            price_alerts[:] = [a for a in price_alerts if a.get("user") != chat_id]
+            save_price_alerts()
+            self.sender.send_message_direct(chat_id, f"🗑 Удалено ваших алертов: *{before - len(price_alerts)}*.", parse_mode="Markdown")
+        elif text.startswith("/alert"):
+            m = re.match(r'/alert\s+([A-Za-z]{2,6})\s*([<>])\s*([\d.,]+)', text)
+            if m:
+                coin = m.group(1).lower()
+                op = m.group(2)
+                try:
+                    val = float(m.group(3).replace(",", "."))
+                except ValueError:
+                    val = 0.0
+                if coin not in COIN_ID_MAP:
+                    self.sender.send_message_direct(chat_id, f"⚠️ Монета не поддерживается. Доступно: {', '.join(c.upper() for c in COIN_ID_MAP)}.")
+                elif val <= 0:
+                    self.sender.send_message_direct(chat_id, "⚠️ Укажите цену больше нуля. Пример: `/alert BTC > 70000`", parse_mode="Markdown")
+                else:
+                    # Анти-спам: не больше 10 алертов на пользователя.
+                    if sum(1 for a in price_alerts if a.get("user") == chat_id) >= 10:
+                        self.sender.send_message_direct(chat_id, "⚠️ Достигнут лимит 10 алертов. Очистите: /alert_clear")
+                    else:
+                        price_alerts.append({"user": chat_id, "coin": coin, "op": op, "value": val})
+                        save_price_alerts()
+                        self.sender.send_message_direct(chat_id, f"🔔 Алерт создан: уведомлю, когда *{coin.upper()} {op} {val:g}$*.", parse_mode="Markdown")
+            else:
+                mine = [a for a in price_alerts if a.get("user") == chat_id]
+                cur = "\n".join(f"• {a['coin'].upper()} {a['op']} {a['value']:g}$" for a in mine) or "— пока нет активных алертов"
+                self.sender.send_message_direct(
+                    chat_id,
+                    "🔔 *Ценовые алерты*\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "Формат: `/alert BTC > 70000` или `/alert TON < 5`\n"
+                    f"Монеты: {', '.join(c.upper() for c in COIN_ID_MAP)}\n\n"
+                    f"Твои алерты:\n{cur}\n\n"
+                    "Очистить все: /alert_clear",
+                    parse_mode="Markdown"
+                )
         elif text in ["❓ Помощь", "/help"]:
             self.sender.send_message_direct(
                 chat_id,
@@ -2843,6 +3072,8 @@ class MenuTextProcessor:
                 "🎁 Заходи каждый день (/start) — растёт серия и очки.\n"
                 "👥 *Друзья* — приглашай и получай +50 очков за друга (/top — рейтинг).\n"
                 "💎 *VIP* — отключи рекламу и получи бейдж.\n"
+                "🔔 */alert BTC > 70000* — уведомлю при достижении цены.\n"
+                "🌅 */digest* — утренняя сводка: комбо дня + твоя серия.\n"
                 "📢 *Реклама* — размести свой пост на всю базу.\n"
                 "🛡 Все ссылки проверяются на скам автоматически.",
                 parse_mode="Markdown"
@@ -4533,6 +4764,27 @@ updater_thread.start()
 combo_checker_thread = threading.Thread(target=daily_auto_checker, daemon=True)
 combo_checker_thread.start()
 print("🔎 Фоновый чекер комбо запущен.", flush=True)
+
+def thread_watchdog():
+    """Сторож: если фоновый чекер (комбо/таймеры/реклама/алерты) умер —
+    перезапускает его и уведомляет админа. Делает бота самоисцеляющимся."""
+    global combo_checker_thread
+    while True:
+        time.sleep(300)
+        try:
+            if not combo_checker_thread.is_alive():
+                logger.error("♻️ [WATCHDOG] Фоновый чекер умер — перезапуск.")
+                combo_checker_thread = threading.Thread(target=daily_auto_checker, daemon=True)
+                combo_checker_thread.start()
+                try:
+                    bot.send_message(ADMIN_CHAT_ID, "♻️ Watchdog: фоновый чекер был перезапущен автоматически.")
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.error(f"Ошибка watchdog: {e}")
+
+threading.Thread(target=thread_watchdog, daemon=True).start()
+print("♻️ Watchdog запущен.", flush=True)
 
 if __name__ == "__main__":
     # ========================================================
