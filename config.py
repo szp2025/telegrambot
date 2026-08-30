@@ -386,7 +386,9 @@ BOT_COMMANDS = [
     ("reviews", "💬 Отзывы пользователей"),
     ("ads", "📢 Реклама и монетизация"),
     ("invite", "👥 Пригласить друзей"),
-    ("top", "🏆 Топ пригласивших"),
+    ("top", "🏆 Топ игроков"),
+    ("vip", "💎 VIP-статус"),
+    ("help", "❓ Помощь"),
     ("proofs", "Скрины выплат")
 ]
 
@@ -397,7 +399,9 @@ MAIN_MENU_BUTTONS = [
     "🌾 Авто-фермы (без комбо)", "⚡ Проверить все комбо",
     "🧮 Крипто-курс", "📊 Защита фермы",
     "⏰ Мои таймеры", "💬 Отзывы",
-    "📢 Реклама и монетизация", "💎 Скрины выплат"
+    "📢 Реклама и монетизация", "💎 Скрины выплат",
+    "👥 Друзья", "💎 VIP",
+    "❓ Помощь"
 ]
 
 # Список команд (строк) для фильтра message_handler(commands=...).
@@ -407,7 +411,8 @@ BOT_COMMANDS_LIST = [
     'calc', 'farm', 'timers', 'proofs',
     'all_combo', 'miners', 'faucets',
     'profile', 'reviews', 'ads',
-    'invite', 'top', 'stats', 'broadcast'
+    'invite', 'top', 'stats', 'broadcast',
+    'help', 'vip', 'backup', 'vipgrant'
 ]
 
 WELCOME_MESSAGES = {
@@ -488,6 +493,20 @@ PAYMENT_METHODS = {
 
 # Клавиатура выбора способа оплаты строится автоматически из PAYMENT_METHODS.
 CRYPTO_COINS_DATA = [(m["label"], key) for key, m in PAYMENT_METHODS.items()]
+
+# Тарифы VIP-статуса (оплата в крипте, как реклама). Ключи БЕЗ подчёркиваний
+# (иначе ломается разбор callback vippay_<vipkey>_<method>).
+VIP_TARIFFS = {
+    "vip30": {"icon": "💎", "name": "VIP на 30 дней", "price": "$5",  "days": 30},
+    "vip90": {"icon": "👑", "name": "VIP на 90 дней", "price": "$12", "days": 90},
+}
+
+VIP_TARIFFS_DATA = [
+    [(f"{d['icon']} {d['name']} — {d['price']}", key)]
+    for key, d in VIP_TARIFFS.items()
+] + [
+    [("🔙 Назад", "vip_menu_back")]
+]
 
 CRYPTO_CURRENCY_DATA = [
     ("🪙 BTC", "cur_btc"),
