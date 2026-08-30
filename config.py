@@ -709,9 +709,6 @@ CRYPTO_CURRENCY_DATA = [
     ("🪙 GRAM", "cur_gram")
 ]
 
-
-# config.py
-
 SINGLE_GAME_ACTIONS = {
     "combo": ("🎯 Открыть комбо", "game_"),
     "tactics": ("🧠 Тактика", "strat_"),
