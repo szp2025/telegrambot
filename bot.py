@@ -6,6 +6,7 @@ import time
 import threading
 import re
 import os
+import socket
 import requests
 from bs4 import BeautifulSoup
 from PIL import Image
@@ -79,6 +80,10 @@ apihelper.READ_TIMEOUT = 60
 # Периодическое пересоздание HTTP-сессии.
 # Помогает при ConnectionResetError после простоя соединения.
 apihelper.SESSION_TIME_TO_LIVE = 5 * 60
+
+# Автоматический повтор отдельных запросов при сетевых сбоях/таймаутах
+# (первая линия защиты; вторая — супервайзер-цикл вокруг infinity_polling).
+apihelper.RETRY_ON_ERROR = True
 
 
 # Исторический идентификатор (оставлен для совместимости конструктора).
@@ -3815,59 +3820,62 @@ if __name__ == "__main__":
 
     print("🤖 Запуск Telegram-бота...", flush=True)
 
-    try:
-        # ----------------------------------------------------
-        # Проверяем доступность Telegram API.
-        # ----------------------------------------------------
-        print("🌐 Проверка Telegram API...", flush=True)
+    # Ошибки сети/DNS, которые на телефоне (Termux) случаются постоянно при
+    # кратковременной потере связи. На них НЕЛЬЗЯ падать — нужно ждать и
+    # переподключаться, а не завершать процесс.
+    NETWORK_ERRORS = (
+        requests.exceptions.ConnectionError,
+        requests.exceptions.Timeout,
+        requests.exceptions.RequestException,
+        socket.gaierror,
+        ConnectionError,
+        OSError,
+    )
 
-        me = bot.get_me()
+    retry_delay = 5            # стартовая пауза перед повтором
+    max_delay = 300           # максимум 5 минут между попытками
 
-        print(
-            f"✅ Telegram API отвечает. "
-            f"Бот: @{me.username} | ID: {me.id}",
-            flush=True
-        )
+    # ========================================================
+    # СУПЕРВАЙЗЕР: бот сам поднимается после обрывов сети/DNS.
+    # ========================================================
+    while True:
+        try:
+            print("🌐 Проверка Telegram API...", flush=True)
+            me = bot.get_me()
+            print(f"✅ Telegram API отвечает. Бот: @{me.username} | ID: {me.id}", flush=True)
 
-        # ----------------------------------------------------
-        # Удаляем возможный вебхук — иначе getUpdates (polling)
-        # не получает апдейты и бот "молчит".
-        # ----------------------------------------------------
-        bot.remove_webhook()
-        print("🧹 Webhook удалён (polling-режим).", flush=True)
+            # Удаляем возможный вебхук — иначе getUpdates (polling) молчит.
+            bot.remove_webhook()
+            print("🧹 Webhook удалён (polling-режим).", flush=True)
 
-        # ----------------------------------------------------
-        # Запускаем штатный long polling.
-        # ----------------------------------------------------
-        print(
-            "🟢 Запускаем infinity_polling()...",
-            flush=True
-        )
+            retry_delay = 5   # связь есть — сбрасываем паузу переподключения
+            print("🟢 Запускаем infinity_polling()...", flush=True)
 
-        bot.infinity_polling(
-            timeout=30,
-            long_polling_timeout=30,
-            allowed_updates=[
-                "message",
-                "callback_query"
-            ],
-            skip_pending=True
-        )
+            bot.infinity_polling(
+                timeout=30,
+                long_polling_timeout=30,
+                allowed_updates=["message", "callback_query"],
+                skip_pending=True
+            )
 
-    except KeyboardInterrupt:
-        print(
-            "🛑 Бот остановлен пользователем.",
-            flush=True
-        )
+            # Штатный выход из polling — короткая пауза и переподключение.
+            print("♻️ Polling завершился штатно — переподключение...", flush=True)
+            time.sleep(retry_delay)
 
-    except Exception as e:
-        logger.exception(
-            "❌ Критическая ошибка Telegram polling: %s",
-            e
-        )
+        except KeyboardInterrupt:
+            print("🛑 Бот остановлен пользователем.", flush=True)
+            break
 
-        print(
-            f"❌ Telegram polling завершился: "
-            f"{type(e).__name__}: {e}",
-            flush=True
-        )
+        except NETWORK_ERRORS as e:
+            # Временная потеря сети/DNS на телефоне — ждём и пробуем снова.
+            logger.warning("🌐 Нет сети/DNS (%s: %s). Повтор через %d c...", type(e).__name__, e, retry_delay)
+            print(f"🌐 Сеть недоступна ({type(e).__name__}). Повтор через {retry_delay} c...", flush=True)
+            time.sleep(retry_delay)
+            retry_delay = min(max_delay, retry_delay * 2)
+
+        except Exception as e:
+            # Любая иная ошибка — логируем и перезапускаем цикл, НЕ выходя из процесса.
+            logger.exception("❌ Ошибка Telegram polling: %s", e)
+            print(f"❌ Polling упал: {type(e).__name__}: {e}. Перезапуск через {retry_delay} c...", flush=True)
+            time.sleep(retry_delay)
+            retry_delay = min(max_delay, retry_delay * 2)
