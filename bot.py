@@ -972,32 +972,46 @@ class ActiveAdsManager:
         self.storage: dict = self._load_ads()
 
     def _load_ads(self) -> dict:
-        """Загрузка активных объявлений из файла."""
+        """Загрузка активных объявлений из файла (JSON — с поддержкой текста креатива;
+        со старым pipe-форматом `oid|user_id|expire_time` для обратной совместимости)."""
         ads = {}
         if os.path.exists(self.file_path):
             try:
                 with open(self.file_path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        parts = line.strip().split("|")
-                        if len(parts) >= 3:
-                            order_id, user_id, expire_time = parts[0], int(parts[1]), float(parts[2])
-                            ads[order_id] = {"user_id": user_id, "expire_time": expire_time}
+                    raw = f.read().strip()
+                if raw:
+                    if raw.lstrip().startswith("{"):
+                        data = json.loads(raw)
+                        for oid, d in data.items():
+                            ads[oid] = {
+                                "user_id": int(d.get("user_id")),
+                                "expire_time": float(d.get("expire_time", 0)),
+                                "content": d.get("content", ""),
+                            }
+                    else:
+                        for line in raw.splitlines():
+                            parts = line.strip().split("|")
+                            if len(parts) >= 3:
+                                ads[parts[0]] = {
+                                    "user_id": int(parts[1]),
+                                    "expire_time": float(parts[2]),
+                                    "content": "",
+                                }
             except Exception as e:
                 logger.error(f"Ошибка загрузки активной рекламы: {e}")
         return ads
 
     def save_to_file(self):
-        """Сохранение текущего состояния активных объявлений в файл."""
+        """Сохранение текущего состояния активных объявлений в файл (JSON)."""
         try:
             with open(self.file_path, "w", encoding="utf-8") as f:
-                for oid, data in self.storage.items():
-                    f.write(f"{oid}|{data['user_id']}|{data['expire_time']}\n")
+                json.dump(self.storage, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"Ошибка сохранения активной рекламы в файл: {e}")
 
-    def add_ad(self, order_id: str, user_id: int, expire_time: float):
-        """Добавление новой рекламы с автоматическим сохранением."""
-        self.storage[order_id] = {"user_id": user_id, "expire_time": expire_time}
+    def add_ad(self, order_id: str, user_id: int, expire_time: float, content: str = ""):
+        """Добавление новой рекламы с автоматическим сохранением (с текстом креатива)."""
+        self.storage[order_id] = {"user_id": user_id, "expire_time": expire_time, "content": content}
         self.save_to_file()
 
     def remove_ad(self, order_id: str):
@@ -1736,7 +1750,6 @@ class MessageProcessor:
             question, markup = generate_advanced_captcha(chat_id)
             bot.send_message(chat_id, f"🛡️ **Проверка на человека**\n\n🧠 *{question}*", reply_markup=markup, parse_mode="Markdown")
             return
-        send_message_direct(chat_id, WELCOME_MESSAGES["zero_lag"])
         send_message_direct(chat_id, WELCOME_MESSAGES["main_menu"], reply_markup=MenuManager.get_reply_keyboard(MAIN_MENU_BUTTONS))
 
     @staticmethod
@@ -1922,12 +1935,80 @@ class MenuManager:
 
 
 
+# ============================================================
+# РЕКЛАМА: очистка креатива и оформление карточки объявления
+# ============================================================
+
+def clean_ad_creative(raw_text: str, tx_hash: str = "") -> str:
+    """Убирает из присланного сообщения хэш транзакции и служебные подписи,
+    оставляя только сам рекламный текст (креатив) для показа пользователям."""
+    text = raw_text or ""
+    if tx_hash:
+        text = text.replace(tx_hash, "")
+    # Строки-подписи вида «hash: ...», «хэш = ...», «tx: ...».
+    text = re.sub(r'(?im)^\s*(?:tx|txid|hash|хэш|хеш)\s*[:=].*$', '', text)
+    # Отдельные токены, похожие на хэш (hex/base64 длиной 40+ символов).
+    text = re.sub(r'\b[A-Za-z0-9+/=_-]{40,}\b', '', text)
+    # Схлопываем лишние пустые строки.
+    text = re.sub(r'\n{3,}', '\n\n', text).strip()
+    return text
+
+
+def build_ad_card(creative: str, tariff_name: str = "") -> str:
+    """Компактная, аккуратная карточка спонсорского поста (Markdown)."""
+    creative = (creative or "").strip()
+    return (
+        "📢 *РЕКЛАМА* · _спонсорский пост_\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        f"{creative}\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "💼 _Хотите так же? Раздел «📢 Реклама» в меню._"
+    )
+
+
 class NotificationSender:
     """Менеджер для отправки сообщений и медиаконтента пользователям."""
 
     def __init__(self, bot_instance, logger_instance):
         self.bot = bot_instance
         self.logger = logger_instance
+
+    def broadcast_ad(self, creative: str, recipients, admin_chat_id, tariff_name: str = "", order_id: str = ""):
+        """Рассылает рекламную карточку всем пользователям в фоне, с ограничением
+        скорости (~20 сообщений/сек) и отчётом администратору по завершении."""
+        card = build_ad_card(creative, tariff_name)
+        targets = list(recipients)  # снимок, чтобы не мутировать во время итерации
+
+        def _worker():
+            sent = 0
+            failed = 0
+            for uid in targets:
+                try:
+                    self.bot.send_message(uid, card, parse_mode="Markdown")
+                    sent += 1
+                except Exception:
+                    # Частая причина ошибки — Markdown в креативе; шлём без разметки.
+                    try:
+                        self.bot.send_message(uid, card)
+                        sent += 1
+                    except Exception:
+                        failed += 1
+                time.sleep(0.05)  # ~20 сообщений/сек — безопасно для лимитов Telegram
+            try:
+                self.bot.send_message(
+                    admin_chat_id,
+                    "📢 *Рассылка рекламы завершена*\n"
+                    f"🆔 Заказ: `{order_id}`\n"
+                    f"📋 Тариф: {tariff_name}\n"
+                    f"✅ Доставлено: *{sent}*\n"
+                    f"⚠️ Не доставлено: *{failed}*\n"
+                    f"👥 Всего в базе: *{len(targets)}*",
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                self.logger.error(f"Ошибка отчёта о рассылке рекламы: {e}")
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def send_message_direct(self, chat_id: int | str, text: str, reply_markup=None, parse_mode: str = "Markdown"):
         """Прямая отправка сообщения с резервным вариантом без разметки при ошибке."""
@@ -2258,9 +2339,22 @@ class MenuTextProcessor:
                     report += f"• *{name}*: ❌ Не установлен\n"
             self.sender.send_message_direct(chat_id, report + "\n👇 Выберите игру для настройки:", reply_markup=get_timers_games_keyboard(), parse_mode="Markdown")
         elif text in ["💬 Отзывы", "/reviews"]:
-            self.sender.send_message_direct(chat_id, "💬 **Секция отзывов и предложений (Laysi🐾):**", reply_markup=get_reviews_keyboard(), parse_mode="Markdown")
+            self.sender.send_message_direct(
+                chat_id,
+                "💬 *Отзывы и предложения* 🐾\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                "Поделитесь мнением или прочитайте отзывы других 👇",
+                reply_markup=get_reviews_keyboard(), parse_mode="Markdown"
+            )
         elif text in ["📢 Реклама и монетизация", "/ads"]:
-            self.sender.send_message_direct(chat_id, "📢 **Размещение рекламы :**\n\nВыкупите рекламное место в закрепе или рассылке, оплатив его напрямую в криптовалюте.", reply_markup=get_ads_keyboard(), parse_mode="Markdown")
+            self.sender.send_message_direct(
+                chat_id,
+                "📢 *Реклама и монетизация*\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                "📣 Ваш пост увидит *вся база* пользователей.\n"
+                "💳 Оплата напрямую в крипте · запуск автоматом 👇",
+                reply_markup=get_ads_keyboard(), parse_mode="Markdown"
+            )
         elif text in ["💎 Скрины выплат", "/proofs"]:
             if not self.cloud_proofs:
                 self.sender.send_message_direct(chat_id, "💎 Скринов пока нет.")
@@ -2425,16 +2519,55 @@ class MessageInputHandler:
                         mark_tx_used(canon_hash or tx_hash)
                         order_id = f"ord_{chat_id}_{int(time.time())}"
                         dur_h = tinfo.get("duration_hours", 0)
+
+                        # Готовим креатив (без хэша) и проверяем его безопасность
+                        # перед рассылкой по всей базе пользователей.
+                        creative = clean_ad_creative(raw_text, canon_hash or tx_hash)
+                        is_threat, threat_reason = self.security.analyze_traffic(creative)
+
+                        if is_threat:
+                            # Оплата прошла, но креатив подозрителен → ручная модерация,
+                            # без автоматической рассылки.
+                            self.pending_ad_orders[order_id] = {
+                                "user_id": chat_id, "tariff": tariff, "tariff_key": tariff_key,
+                                "coin": coin, "content": creative, "created_at": time.time(),
+                                "paid": True,
+                            }
+                            review_kb = types.InlineKeyboardMarkup()
+                            review_kb.row(types.InlineKeyboardButton(text="✅ Одобрить и разослать", callback_data=f"adm_pay_ok_{order_id}"))
+                            review_kb.row(types.InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm_pay_no_{order_id}"))
+                            self.sender.send_message_direct(
+                                self.admin_chat_id,
+                                f"🛡 **Оплата подтверждена, но креатив требует проверки!**\n"
+                                f"👤 Клиент: `{chat_id}`\n📋 Тариф: `{tariff}`\n"
+                                f"⚠️ Причина: {threat_reason}\n\n📝 **Креатив:**\n{creative}",
+                                reply_markup=review_kb, parse_mode="Markdown"
+                            )
+                            self.sender.send_message_direct(
+                                chat_id,
+                                "🎉 **Оплата подтверждена!**\n\n"
+                                "🛡 Ваше объявление отправлено на быструю проверку модератором "
+                                "и будет разослано сразу после одобрения.",
+                                reply_markup=get_ads_keyboard(), parse_mode="Markdown"
+                            )
+                            return
+
+                        # Креатив чистый — сохраняем размещение и запускаем рассылку.
                         if dur_h > 0:
                             try:
-                                ads_manager.add_ad(order_id, chat_id, time.time() + dur_h * 3600)
+                                ads_manager.add_ad(order_id, chat_id, time.time() + dur_h * 3600, creative)
                             except Exception as e:
                                 self.logger.error(f"Ошибка запуска рекламы: {e}")
+
+                        self.sender.broadcast_ad(
+                            creative, self.verified_users, self.admin_chat_id,
+                            tariff_name=tariff, order_id=order_id
+                        )
 
                         self.sender.send_message_direct(
                             chat_id,
                             f"🎉 **Оплата подтверждена автоматически!**\n{reason}\n\n"
-                            "🚀 Ваша реклама запущена. Спасибо за сотрудничество!",
+                            "🚀 Ваша реклама уже рассылается по всей базе пользователей. Спасибо за сотрудничество!",
                             reply_markup=get_ads_keyboard(),
                             parse_mode="Markdown"
                         )
@@ -2445,7 +2578,7 @@ class MessageInputHandler:
                             f"📋 Тариф: `{tariff}`\n"
                             f"💰 {reason}\n"
                             f"🧾 Hash: `{tx_hash}`\n\n"
-                            f"📝 **Креатив:**\n{raw_text}",
+                            f"📝 **Креатив:**\n{creative}",
                             parse_mode="Markdown"
                         )
                         return
@@ -2725,17 +2858,24 @@ class CallbackQueryHandler:
                     # Срок закрепа берём из тарифа (24ч / 7 дней / комбо…).
                     tinfo = ADS_TARIFFS.get(order.get("tariff_key"), {})
                     dur_h = tinfo.get("duration_hours", 0)
+                    creative = clean_ad_creative(order.get("content", ""))
                     if dur_h > 0:
                         expire_timestamp = time.time() + dur_h * 3600
-                        self.ads_manager.add_ad(order_id, target_user_id, expire_timestamp)
+                        self.ads_manager.add_ad(order_id, target_user_id, expire_timestamp, creative)
+
+                    # Админ одобрил креатив — рассылаем его всем пользователям.
+                    self.sender.broadcast_ad(
+                        creative, self.verified_users, self.admin_chat_id,
+                        tariff_name=order.get("tariff", ""), order_id=order_id
+                    )
 
                     self.sender.send_message_direct(
                         target_user_id,
-                        "🎉 **Оплата получена! Ваша реклама успешно запущена в боте.**\nБлагодарим за сотрудничество!",
+                        "🎉 **Оплата получена! Ваша реклама одобрена и рассылается по базе пользователей.**\nБлагодарим за сотрудничество!",
                         parse_mode="Markdown"
                     )
                     try:
-                        self.bot.edit_message_text(f"✅ **Заказ успешно подтвержден и запущен!** (Клиент: `{target_user_id}`)", chat_id, call.message.message_id, parse_mode="Markdown")
+                        self.bot.edit_message_text(f"✅ **Заказ подтверждён и разослан!** (Клиент: `{target_user_id}`)", chat_id, call.message.message_id, parse_mode="Markdown")
                     except:
                         pass
                 else:
