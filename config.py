@@ -409,7 +409,14 @@ BOT_COMMANDS_LIST = [
 
 WELCOME_MESSAGES = {
     "zero_lag": "⚡ **Бот работает в режиме Zero-Lag!**",
-    "main_menu": "👇 Главное меню:"
+    "main_menu": (
+        "⚡️ *CRYPTO HUB* · режим Zero-Lag\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "🎯 Комбо   ⛏ Майнеры   🚰 Краны\n"
+        "🌾 Фермы   ⏰ Таймеры   🧮 Курс\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "👇 Выберите раздел в меню ниже"
+    )
 }
 
 DANGEROUS_INJECTION_PATTERNS = [
@@ -438,18 +445,15 @@ DANGEROUS_INJECTION_PATTERNS = [
 
 
 PROFILE_KEYBOARD_DATA = [
-    [("➕ Добавить / Обновить игру", "prof_add")],
-    [("📋 Посмотреть мои статы", "prof_view")]
+    [("➕ Добавить игру", "prof_add"), ("📋 Мои статы", "prof_view")]
 ]
 
 REVIEWS_KEYBOARD_DATA = [
-    [("✍️ Оставить отзыв", "review_add")],
-    [("📖 Читать отзывы", "review_read")]
+    [("✍️ Оставить", "review_add"), ("📖 Читать", "review_read")]
 ]
 
 ADS_KEYBOARD_DATA = [
-    [("💰 Купить рекламу", "ads_buy")],
-    [("📊 Статистика аудитории", "ads_stats")]
+    [("💰 Купить рекламу", "ads_buy"), ("📊 Аудитория", "ads_stats")]
 ]
 
 # Реестр тарифов рекламы. Чтобы добавить/изменить тариф — просто
