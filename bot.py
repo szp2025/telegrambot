@@ -1157,6 +1157,28 @@ def get_bot_username() -> str:
             _bot_username_cache["name"] = None
     return _bot_username_cache["name"] or "bot"
 
+# ── Приватность в публичных списках: имя вместо ID + маскировка ID ─────────
+_name_cache = {}
+
+def display_name(uid) -> str:
+    """Имя пользователя для публичных рейтингов (кэш, экранирование Markdown)."""
+    key = str(uid)
+    if key in _name_cache:
+        return _name_cache[key]
+    name = ""
+    try:
+        name = (bot.get_chat(uid).first_name or "").strip()
+    except Exception:
+        name = ""
+    name = re.sub(r'[*_`\[\]]', '', name)[:20] or "👤"
+    _name_cache[key] = name
+    return name
+
+def mask_id(uid) -> str:
+    """Маскирует ID для публичного показа: 5290***079."""
+    s = str(uid)
+    return s if len(s) <= 5 else s[:4] + "***" + s[-3:]
+
 # ── Здоровье внешних подсистем (деградация при сетевых проблемах) ──────────
 system_health = {"prices_ok": True, "combos_ok": True}
 
@@ -3153,15 +3175,28 @@ class MenuTextProcessor:
         elif text in ["📊 Защита фермы", "/farm"]:
             found = sum(1 for v in self.manager.found_today.values() if v)
             total_games = len(self.manager.combo_games)
-            status = (
-                "🛡️ **Статус защиты бота:**\n\n"
-                f"👥 Верифицировано пользователей: **{len(self.verified_users)}**\n"
-                f"🚫 Заблокировано (спам/скам): **{len(account_guard.banned)}**\n"
-                f"🔗 Скам-доменов в базе: **{len(link_guard.scam_domains)}**\n"
-                f"🧾 Проверено оплат (хэшей): **{len(used_tx_hashes)}**\n"
-                f"🎯 Комбо найдено сегодня: **{found}/{total_games}**\n\n"
-                "✅ Все системы защиты активны."
-            )
+            if str(chat_id) == str(ADMIN_CHAT_ID):
+                # Полная внутренняя статистика — ТОЛЬКО админу.
+                status = (
+                    "🛡️ **Статус защиты бота:**\n\n"
+                    f"👥 Верифицировано пользователей: **{len(self.verified_users)}**\n"
+                    f"🚫 Заблокировано (спам/скам): **{len(account_guard.banned)}**\n"
+                    f"🔗 Скам-доменов в базе: **{len(link_guard.scam_domains)}**\n"
+                    f"🧾 Проверено оплат (хэшей): **{len(used_tx_hashes)}**\n"
+                    f"🎯 Комбо найдено сегодня: **{found}/{total_games}**\n\n"
+                    "✅ Все системы защиты активны."
+                )
+            else:
+                # Для пользователей — без внутренних цифр (только статус защиты).
+                status = (
+                    "🛡️ **Статус защиты бота:**\n\n"
+                    f"🎯 Комбо найдено сегодня: **{found}/{total_games}**\n\n"
+                    "✅ Активны:\n"
+                    "• 🔗 Антискам-проверка ссылок\n"
+                    "• 🚫 Антифлуд и капча\n"
+                    "• 🕵️ Проверка аккаунтов\n"
+                    "• 💳 Авто-проверка оплат"
+                )
             self.sender.send_message_direct(chat_id, status, parse_mode="Markdown")
         elif text in ["⏰ Мои таймеры", "/timers"]:
             report = "⏰ **Ваши персональные таймеры сбора:**\n\n"
@@ -3272,7 +3307,7 @@ class MenuTextProcessor:
                 for i, (uid, pts) in enumerate(top):
                     badge = medals[i] if i < 3 else f"{i + 1}."
                     vip = " 👑" if is_vip(uid) else ""
-                    lines.append(f"{badge} `{uid}`{vip} — *{pts}* очк. · 👥 {referral_count(uid)}")
+                    lines.append(f"{badge} *{display_name(uid)}* (`{mask_id(uid)}`){vip} — *{pts}* очк. · 👥 {referral_count(uid)}")
                 self.sender.send_message_direct(chat_id, "\n".join(lines), parse_mode="Markdown")
         elif text == "/backup" and str(chat_id) == str(ADMIN_CHAT_ID):
             self.sender.send_message_direct(chat_id, "💾 Готовлю резервную копию всех данных...", parse_mode="Markdown")
