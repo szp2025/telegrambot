@@ -385,6 +385,8 @@ BOT_COMMANDS = [
     ("timers", "⏰ Персональные таймеры сбора"),
     ("reviews", "💬 Отзывы пользователей"),
     ("ads", "📢 Реклама и монетизация"),
+    ("invite", "👥 Пригласить друзей"),
+    ("top", "🏆 Топ пригласивших"),
     ("proofs", "Скрины выплат")
 ]
 
@@ -404,7 +406,8 @@ MAIN_MENU_BUTTONS = [
 BOT_COMMANDS_LIST = [
     'calc', 'farm', 'timers', 'proofs',
     'all_combo', 'miners', 'faucets',
-    'profile', 'reviews', 'ads'
+    'profile', 'reviews', 'ads',
+    'invite', 'top', 'stats', 'broadcast'
 ]
 
 WELCOME_MESSAGES = {
