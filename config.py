@@ -388,6 +388,8 @@ BOT_COMMANDS = [
     ("invite", "👥 Пригласить друзей"),
     ("top", "🏆 Топ игроков"),
     ("vip", "💎 VIP-статус"),
+    ("alert", "🔔 Ценовой алерт (напр. /alert BTC > 70000)"),
+    ("digest", "🌅 Утренний дайджест (вкл/выкл)"),
     ("help", "❓ Помощь"),
     ("proofs", "Скрины выплат")
 ]
@@ -412,7 +414,8 @@ BOT_COMMANDS_LIST = [
     'all_combo', 'miners', 'faucets',
     'profile', 'reviews', 'ads',
     'invite', 'top', 'stats', 'broadcast',
-    'help', 'vip', 'backup', 'vipgrant'
+    'help', 'vip', 'backup', 'vipgrant',
+    'alert', 'alert_clear', 'digest'
 ]
 
 WELCOME_MESSAGES = {
