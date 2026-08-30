@@ -899,6 +899,17 @@ def save_verified_user(user_id):
     except Exception as e:
         logger.error(f"Ошибка сохранения пользователя в файл: {e}")
 
+def remove_verified_user(user_id):
+    """Удаляет пользователя из базы (например, если он заблокировал бота).
+    Перезаписывает файл целиком актуальным составом множества."""
+    try:
+        verified_users.discard(user_id)
+        with open(VERIFIED_FILE, "w", encoding="utf-8") as f:
+            for uid in verified_users:
+                f.write(f"{uid}\n")
+    except Exception as e:
+        logger.error(f"Ошибка удаления пользователя из файла: {e}")
+
 verified_users = load_verified_users()
 
 # ── Персистентность статов профиля ────────────────────────────────────────
@@ -966,6 +977,52 @@ def add_combo_to_history(game_key, name, date_text, file_id):
     save_combo_history()
 
 combo_history = load_combo_history()
+
+# ── Персистентность отзывов и скринов выплат ──────────────────────────────
+# Отзывы = текст; скрины = ТОЛЬКО file_id Telegram (сами картинки хранятся на
+# серверах Telegram, НЕ на телефоне) — всё переживает перезапуск бота.
+REVIEWS_FILE = "reviews.json"
+PROOFS_FILE = "proofs.json"
+
+def load_reviews():
+    if os.path.exists(REVIEWS_FILE):
+        try:
+            with open(REVIEWS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return data
+        except Exception as e:
+            logger.error(f"Ошибка загрузки отзывов: {e}")
+    return []
+
+def save_reviews():
+    try:
+        with open(REVIEWS_FILE, "w", encoding="utf-8") as f:
+            json.dump(user_reviews_storage, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения отзывов: {e}")
+
+def load_proofs():
+    if os.path.exists(PROOFS_FILE):
+        try:
+            with open(PROOFS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return data
+        except Exception as e:
+            logger.error(f"Ошибка загрузки скринов выплат: {e}")
+    return []
+
+def save_proofs():
+    try:
+        with open(PROOFS_FILE, "w", encoding="utf-8") as f:
+            json.dump(cloud_proofs, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения скринов выплат: {e}")
+
+# Восстанавливаем сохранённые отзывы и скрины (заменяют пустые списки выше).
+user_reviews_storage = load_reviews()
+cloud_proofs = load_proofs()
 
 user_input_states = {}
 
@@ -1987,18 +2044,38 @@ class NotificationSender:
         def _worker():
             sent = 0
             failed = 0
+            blocked = []          # те, кто заблокировал бота (403) → чистим базу
             for uid in targets:
                 try:
                     self.bot.send_message(uid, card, parse_mode="Markdown")
                     sent += 1
+                except apihelper.ApiTelegramException as e:
+                    # 403 = пользователь заблокировал бота / удалил аккаунт.
+                    if getattr(e, "error_code", None) == 403:
+                        blocked.append(uid)
+                        failed += 1
+                    else:
+                        # Прочее (часто Markdown в креативе) — шлём без разметки.
+                        try:
+                            self.bot.send_message(uid, card)
+                            sent += 1
+                        except Exception:
+                            failed += 1
                 except Exception:
-                    # Частая причина ошибки — Markdown в креативе; шлём без разметки.
                     try:
                         self.bot.send_message(uid, card)
                         sent += 1
                     except Exception:
                         failed += 1
                 time.sleep(0.05)  # ~20 сообщений/сек — безопасно для лимитов Telegram
+
+            # Чистим базу от заблокировавших бота (честный охват + без флага спама).
+            for uid in blocked:
+                try:
+                    remove_verified_user(uid)
+                except Exception:
+                    pass
+
             try:
                 self.bot.send_message(
                     admin_chat_id,
@@ -2007,7 +2084,8 @@ class NotificationSender:
                     f"📋 Тариф: {tariff_name}\n"
                     f"✅ Доставлено: *{sent}*\n"
                     f"⚠️ Не доставлено: *{failed}*\n"
-                    f"👥 Всего в базе: *{len(targets)}*",
+                    f"🚫 Удалено (заблокировали бота): *{len(blocked)}*\n"
+                    f"👥 Осталось в базе: *{len(targets) - len(blocked)}*",
                     parse_mode="Markdown"
                 )
             except Exception as e:
@@ -2423,6 +2501,7 @@ class MessageInputHandler:
 
         if chat_id == self.admin_chat_id:
             self.cloud_proofs.append(message.photo[-1].file_id)
+            save_proofs()
             try:
                 self.bot.reply_to(message, "✅ Скрин сохранен в облачном хранилище!")
             except Exception:
@@ -2479,6 +2558,7 @@ class MessageInputHandler:
                 user_name = "Аноним"
                 
             self.user_reviews.append({"user": user_name, "text": clean_review_text, "date": time.strftime("%d.%m.%Y %H:%M")})
+            save_reviews()
             self.sender.send_message_direct(self.admin_chat_id, f"💬 **Новый отзыв от {user_name}:**\n\n`{clean_review_text}`", parse_mode="Markdown")
             self.sender.send_message_direct(chat_id, "✅ **Спасибо за ваш отзыв!**", reply_markup=get_reviews_keyboard(), parse_mode="Markdown")
             return
@@ -2848,7 +2928,9 @@ class CallbackQueryHandler:
                 action = parts[2] 
                 order_id = f"{parts[3]}_{parts[4]}_{parts[5]}"
                 
-                order = self.pending_ad_orders.get(order_id)
+                # Атомарно забираем заявку: второй (двойной) клик получит None
+                # и не запустит повторную рассылку по всей базе.
+                order = self.pending_ad_orders.pop(order_id, None)
                 if not order:
                     try:
                         self.bot.answer_callback_query(call.id, "Заказ не найден или уже обработан", show_alert=True)
@@ -2857,7 +2939,6 @@ class CallbackQueryHandler:
                     return
 
                 target_user_id = order["user_id"]
-                self.pending_ad_orders.pop(order_id, None)
 
                 if action == "ok":
                     # Срок закрепа берём из тарифа (24ч / 7 дней / комбо…).
@@ -3045,7 +3126,14 @@ class CallbackQueryHandler:
 
             if data == "ads_menu_back":
                 try:
-                    self.bot.edit_message_text("📢 **Размещение рекламы:**", chat_id=chat_id, message_id=call.message.message_id, reply_markup=get_ads_keyboard(), parse_mode="Markdown")
+                    self.bot.edit_message_text(
+                        "📢 *Реклама и монетизация*\n"
+                        "━━━━━━━━━━━━━━━━━━\n"
+                        "📣 Ваш пост увидит *вся база* пользователей.\n"
+                        "💳 Оплата напрямую в крипте · запуск автоматом 👇",
+                        chat_id=chat_id, message_id=call.message.message_id,
+                        reply_markup=get_ads_keyboard(), parse_mode="Markdown"
+                    )
                 except:
                     pass
                 return
@@ -3099,19 +3187,6 @@ class CallbackQueryHandler:
             if data == "prof_add":
                 self.user_input_states[chat_id] = {"step": "waiting_game_info"}
                 self.sender.send_message_direct(chat_id, "✍️ **Введите данные в формате:**\n`Название игры | Уровень`", parse_mode="Markdown")
-                return
-
-            # Кнопка конкретной игры в профиле → сразу вводим прогресс для неё.
-            if data.startswith("profadd_"):
-                key = data.replace("profadd_", "")
-                gdata = self.manager.combo_games.get(key) or self.manager.independent_farms.get(key, {})
-                gname = gdata.get("name", key)
-                self.user_input_states[chat_id] = {"step": "waiting_game_stat", "game": gname, "game_key": key}
-                self.sender.send_message_direct(
-                    chat_id,
-                    f"✍️ Введите ваш уровень/прогресс для *{gname}*\n(например: `15` или `Уровень 20`):",
-                    parse_mode="Markdown"
-                )
                 return
 
             # Клик по игре в профиле → показываем СТАТЫ ИМЕННО ЭТОЙ игры
