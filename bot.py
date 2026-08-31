@@ -296,42 +296,53 @@ class BotVirtualAssistant:
 
     # Встроенная база: (список ключевых слов/фраз-триггеров, ответ).
     BASE_KNOWLEDGE = [
-        (["комбо", "combo", "daily combo", "связка", "карты"],
+        (["комбо", "combo", "daily combo", "связка", "карты", "cartes", "combinaison",
+          "combos", "cards"],
          "🎯 Комбо (daily combo) — ежедневная связка карт/действий в tap-to-earn играх, "
          "которая даёт большой бонус монет. Открой «🚀 Меню комбо-игр», выбери игру и "
          "нажми «Открыть комбо» — увидишь актуальную комбинацию на сегодня."),
-        (["майнинг", "майнер", "добыча", "mining"],
+        (["майнинг", "майнер", "майнить", "добыча", "добывать", "mining", "miner", "mine",
+          "mineur", "minage", "miner-crypto"],
          "⛏️ Майнинг — пассивная добыча монет в приложении/боте. Раздел «📱 Телефонные "
          "майнеры»: выбери проект, установи и собирай монеты по таймеру. Регулярно заходи "
          "и смотри буст-видео, чтобы ускорить добычу."),
-        (["кран", "краны", "faucet", "краник", "фаусет"],
+        (["кран", "краны", "faucet", "faucets", "краник", "фаусет", "robinet", "robinets"],
          "🚰 Крипто-краны — сайты/боты, где дают маленькие суммы крипты за простые действия "
          "(клики, капча, задания). Смотри «🚰 Крипто-краны». Выводи на сеть с низкой "
          "комиссией (TON или USDT-TRC20)."),
-        (["ферма", "фарм", "farming", "фармить"],
+        (["ферма", "фарм", "фармить", "farming", "farm", "farmer", "ferme"],
          "🌾 Фарм — регулярный сбор наград в игре. Настрой «⏰ Мои таймеры» — бот будет "
          "напоминать, когда пора зайти собрать монеты и посмотреть видео."),
-        (["вывод", "вывести", "withdraw", "снять"],
+        (["вывод", "вывести", "выводить", "выплата", "withdraw", "withdrawal", "payout",
+          "снять", "снятие", "retrait", "retirer", "sortie", "encaisser", "cashout"],
          "💸 Для вывода нужен криптокошелёк. Дождись минимальной суммы в проекте, укажи адрес "
          "своей сети (TON, TRC20, BTC) и подтверди. ВСЕГДА проверяй сеть — при неверной сети "
          "средства теряются безвозвратно."),
-        (["кошелек", "кошелёк", "wallet", "safepal", "seed", "фраза"],
+        (["кошелек", "кошелёк", "кошель", "wallet", "portefeuille", "safepal", "metamask",
+          "trust", "seed", "фраза", "portmonnaie"],
          "👛 Кошелёк хранит твою крипту. НИКОГДА и НИКОМУ не показывай seed-фразу (12/24 слова) "
          "— это полный доступ к деньгам. Храни её офлайн, на бумаге."),
-        (["безопасность", "скам", "мошенник", "развод", "scam", "обман"],
+        (["безопасность", "безопасно", "обезопасить", "скам", "мошенник", "мошенничество",
+          "развод", "разводят", "scam", "обман", "обманут", "security", "secure", "safe",
+          "safety", "securite", "sécurité", "securise", "sécurisé", "sur", "sûr", "arnaque",
+          "escroquerie", "fraude", "danger", "risque", "opasno", "опасно"],
          "🛡️ Безопасность: не вводи seed-фразу на сайтах, не переходи по подозрительным ссылкам, "
          "не отправляй крипту «для разблокировки вывода». Обещают лёгкие деньги за предоплату — "
          "это скам."),
-        (["таймер", "напоминание", "timer", "напомнить"],
+        (["таймер", "напоминание", "напомнить", "timer", "reminder", "minuteur",
+          "rappel", "rappeler", "alarme"],
          "⏰ Открой «⏰ Мои таймеры», выбери игру и интервал — бот будет присылать напоминание "
          "со ссылкой прямо на игру каждые несколько часов."),
-        (["курс", "цена", "стоимость", "price", "конвертер", "сколько стоит"],
+        (["курс", "цена", "стоимость", "price", "конвертер", "конвертация", "сколько стоит",
+          "prix", "cours", "taux", "rate", "convert", "conversion", "cotation", "combien"],
          "🧮 Раздел «🧮 Крипто-курс»: выбери монету и валюту, введи количество — бот покажет "
          "актуальную стоимость и тренд за 24 часа."),
-        (["реклама", "рекламу", "ads", "разместить"],
+        (["реклама", "рекламу", "рекламировать", "ads", "advertise", "разместить",
+          "publicite", "publicité", "pub", "annonce", "promotion", "promo"],
          "📢 Раздел «📢 Реклама и монетизация» → выбери тариф → способ оплаты (BTC/TON) → "
          "пришли текст объявления и хэш транзакции. Оплата проверяется автоматически по хэшу."),
-        (["привет", "здравствуй", "хай", "hello", "hi", "здарова", "прив"],
+        (["привет", "здравствуй", "хай", "hello", "hi", "здарова", "прив",
+          "bonjour", "salut", "coucou", "hey", "bonsoir"],
          "👋 Привет! Я помощник по крипте, майнингу и комбо-играм. Спроси про комбо, фарм, "
          "краны, вывод средств или безопасность."),
         (["спасибо", "благодарю", "thanks", "спс"],
@@ -351,11 +362,13 @@ class BotVirtualAssistant:
         (["usdt", "тизер", "tether", "стейбл", "стейблкоин", "юсдт"],
          "💵 USDT (Tether) — стейблкоин, ~1$ всегда. Есть в разных сетях: TRC20 (Tron) — дёшево и "
          "быстро, ERC20 (Ethereum) — дорого. Всегда выбирай ту же сеть, что и получатель!"),
-        (["сеть", "network", "trc20", "erc20", "bep20", "какая сеть"],
+        (["сеть", "сети", "network", "reseau", "réseau", "blockchain", "chaine", "chaîne",
+          "trc20", "erc20", "bep20", "какая сеть"],
          "🌐 Сеть — это «дорога», по которой идёт перевод. TRC20 (Tron) и TON — дешёвые и быстрые; "
          "ERC20 (Ethereum) — дорогой. КРИТИЧЕСКИ важно: отправитель и получатель должны быть в "
          "ОДНОЙ сети, иначе средства теряются навсегда."),
-        (["комиссия", "комисия", "fee", "газ", "gas", "сколько комиссия"],
+        (["комиссия", "комисия", "fee", "fees", "газ", "gas", "сколько комиссия",
+          "frais", "commission", "cout", "coût"],
          "⛽ Комиссия (fee/gas) — плата сети за перевод. В BTC/ERC20 она высокая, в TON и TRC20 — "
          "копейки. Для частых мелких выводов выбирай TON или USDT-TRC20."),
         (["купить крипту", "где купить", "p2p", "обмен", "обменник", "поменять"],
@@ -363,7 +376,9 @@ class BotVirtualAssistant:
          "не переводи деньги «частнику» из ЛС без гаранта — это классический развод."),
 
         # --- Безопасность (углублённо) ---
-        (["seed", "сид", "фраза", "мнемоника", "12 слов", "24 слова"],
+        (["seed", "сид", "фраза", "мнемоника", "мнемоническая", "12 слов", "24 слова",
+          "phrase", "mnemonique", "mnémonique", "recovery", "recuperation", "récupération",
+          "seedphrase"],
          "🔑 Seed-фраза (12/24 слова) = ПОЛНЫЙ доступ к кошельку. Кто её знает — заберёт все деньги. "
          "Правила: записать на бумаге, хранить офлайн, НИКОМУ не показывать, НИКУДА не вводить, "
          "кроме восстановления своего же кошелька. Поддержка НИКОГДА её не спрашивает."),
@@ -388,14 +403,16 @@ class BotVirtualAssistant:
          "кошелька, но seed всё равно береги."),
 
         # --- Заработок и механика бота ---
-        (["заработать", "доход", "сколько можно заработать", "как заработать", "профит"],
+        (["заработать", "заработок", "доход", "сколько можно заработать", "как заработать",
+          "профит", "gagner", "gain", "revenu", "argent", "earn", "profit", "income"],
          "💰 Честно: на кранах, комбо и tap-to-earn заработок небольшой и требует регулярности. "
          "Реальные плюсы — из ретро-дропов (airdrop) и рефералов. Не вкладывай деньги в проекты, "
          "которые обещают «иксы» — почти всегда это скам."),
         (["airdrop", "аирдроп", "дроп", "раздача токенов"],
          "🪂 Airdrop (дроп) — бесплатная раздача токенов за активность в проекте. Легитимные дропы "
          "НЕ просят seed-фразу и предоплату. Делай задания заранее и жди листинга токена."),
-        (["реферал", "рефка", "реф", "пригласить", "referral"],
+        (["реферал", "рефка", "реф", "пригласить", "приглашение", "referral", "parrainage",
+          "parrain", "filleul", "invite", "invitation", "inviter", "ref"],
          "👥 Реферальная программа — ты получаешь % от активности приглашённых. Делись своей "
          "реф-ссылкой из проекта. Это один из самых стабильных способов заработка в таких ботах."),
         (["минималка", "минимальная сумма", "минимум для вывода", "порог вывода"],
@@ -452,41 +469,129 @@ class BotVirtualAssistant:
         words = re.findall(r'[a-zA-Zа-яА-ЯёЁ0-9]+', (text or "").lower())
         return [w for w in words if w not in self.STOP_WORDS and len(w) > 2]
 
+    def _match(self, a: str, b: str) -> float:
+        """
+        Сходство двух слов с учётом морфологии, 0..1.
+        Сравниваем по ОСНОВЕ (общий префикс), без словаря и внешних библиотек:
+        «безопасно/безопасность/безопасный», «вывод/выводить»,
+        «sécurité/sécurisé», «withdraw/withdrawal» — считаются одним словом.
+        """
+        if a == b:
+            return 1.0
+        n = 0
+        for ca, cb in zip(a, b):
+            if ca != cb:
+                break
+            n += 1
+        # Общий префикс от 4 символов трактуем как одну основу слова.
+        if n >= 4:
+            return n / max(len(a), len(b))
+        return 0.0
+
     def _score(self, query_tokens, key_tokens) -> float:
-        """Мягкое сходство по пересечению множеств слов."""
+        """Мягкое сходство: точные + морфологические (по основе) совпадения слов."""
         qset, kset = set(query_tokens), set(key_tokens)
         if not qset or not kset:
             return 0.0
-        overlap = len(qset & kset)
-        if overlap == 0:
+        # Для каждого слова запроса берём лучшее совпадение среди ключей.
+        soft = 0.0
+        for q in qset:
+            best = 0.0
+            for k in kset:
+                m = self._match(q, k)
+                if m > best:
+                    best = m
+                    if best == 1.0:
+                        break
+            soft += best
+        if soft == 0.0:
             return 0.0
-        return overlap / (len(kset) ** 0.5) + overlap / (len(qset) ** 0.5)
+        return soft / (len(kset) ** 0.5) + soft / (len(qset) ** 0.5)
+
+    def _stem_hit(self, q_tokens, key_tokens) -> bool:
+        """
+        True, если слово запроса и ключ имеют общую основу (префикс >= 5 букв):
+        «безопасный»↔«безопасность», «выводить»↔«вывод», «sécurité»↔«sécurisé».
+        Даёт сильный прямой бонус, устойчивый к длине списка ключей.
+        """
+        for q in q_tokens:
+            if len(q) < 5:
+                continue
+            for k in key_tokens:
+                if len(k) < 5:
+                    continue
+                n = 0
+                for ca, cb in zip(q, k):
+                    if ca != cb:
+                        break
+                    n += 1
+                if n >= 5:
+                    return True
+        return False
 
     def _best_answer(self, query: str):
         q_tokens = self._tokens(query)
         q_lower = query.lower()
-        best_answer, best_score = None, 0.0
+        best_answer, best_score, best_keys = None, 0.0, []
 
         # 1) Выученные знания — приоритет обучению пользователя.
         for item in self.learned:
             keys = item.get("keys", [])
-            score = self._score(q_tokens, self._tokens(" ".join(keys)))
+            key_toks = self._tokens(" ".join(keys))
+            score = self._score(q_tokens, key_toks)
             for k in keys:
                 if k and k.lower() in q_lower:      # прямое попадание фразы
                     score += 2.0
+            if self._stem_hit(q_tokens, key_toks):  # попадание по основе слова
+                score += 2.0
             if score > best_score:
-                best_score, best_answer = score, item.get("answer")
+                best_score, best_answer, best_keys = score, item.get("answer"), keys
 
         # 2) Встроенная база знаний.
         for keys, answer in self.BASE_KNOWLEDGE:
-            score = self._score(q_tokens, self._tokens(" ".join(keys)))
+            key_toks = self._tokens(" ".join(keys))
+            score = self._score(q_tokens, key_toks)
             for k in keys:
                 if k in q_lower:                    # прямое попадание ключа
                     score += 1.6
+            if self._stem_hit(q_tokens, key_toks):  # попадание по основе слова
+                score += 1.6
             if score > best_score:
-                best_score, best_answer = score, answer
+                best_score, best_answer, best_keys = score, answer, keys
 
-        return best_answer, best_score
+        # Токены темы (ключевые слова найденного ответа) — для памяти диалога.
+        topic_tokens = self._tokens(" ".join(best_keys)) if best_keys else []
+        return best_answer, best_score, topic_tokens
+
+    # ---------- Определение уточняющего (follow-up) вопроса ----------
+    # Слова-связки, по которым видно, что вопрос продолжает прошлую тему.
+    CONTINUATION_MARKERS = (
+        "подробнее", "детальнее", "поподробнее", "ещё", "еще", "продолжай",
+        "продолжи", "дальше", "а дальше", "поясни", "объясни", "точнее",
+        "пример", "приведи пример", "не понял", "не поняла", "непонятно",
+        "не понятно", "а почему", "почему", "а как", "а что", "а если",
+        "а это", "а там", "и что", "а нужно", "а можно", "а безопасно",
+        "more", "why", "details", "continue", "explain",
+    )
+
+    def _is_followup(self, text: str, q_tokens) -> bool:
+        """True, если реплика — уточнение/продолжение прошлой темы, а не новый вопрос."""
+        t = (text or "").lower().strip()
+        if any(m in t for m in self.CONTINUATION_MARKERS):
+            return True
+        # Короткая реплика-связка («а сеть?», «ну и?») — почти без своих ключевых слов.
+        if len(q_tokens) <= 2 and t.startswith(("а ", "и ", "но ", "ну ", "а?", "и?")):
+            return True
+        if len(q_tokens) <= 1:
+            return True
+        return False
+
+    def _remember(self, ctx: dict, question: str, answer: str):
+        """Сохраняет реплику в память диалога (последние 8 пар вопрос/ответ)."""
+        turns = ctx.setdefault("turns", [])
+        turns.append({"q": question, "a": answer})
+        if len(turns) > 8:
+            del turns[:len(turns) - 8]
 
     # ---------- Обучение прямо в диалоге ----------
     def _try_learn(self, text: str, is_admin: bool):
@@ -623,11 +728,14 @@ class BotVirtualAssistant:
         if not userQuery:
             return "🤔 Задай вопрос словами — и я постараюсь помочь."
 
-        # Память диалога (последние 8 реплик пользователя).
-        hist = self.session_memory.setdefault(chat_id, [])
-        hist.append(userQuery)
-        if len(hist) > 8:
-            del hist[:len(hist) - 8]
+        # Память диалога по каждому пользователю: тема, прошлый вопрос/ответ
+        # и последние реплики. Хранится как словарь на chat_id.
+        ctx = self.session_memory.setdefault(chat_id, {
+            "turns": [],            # [{"q": ..., "a": ...}] — последние реплики
+            "last_answer": "",      # последний выданный ответ (для анти-повтора)
+            "topic_tokens": [],     # ключевые слова текущей темы разговора
+        })
+        q_tokens = self._tokens(userQuery)
 
         # 1) Обучение (запись в базу — только для админа).
         is_admin = str(chat_id) == str(ADMIN_CHAT_ID)
@@ -645,9 +753,28 @@ class BotVirtualAssistant:
         if tactic:
             return tactic
 
-        # 4) База знаний (встроенная + выученная).
-        answer, score = self._best_answer(userQuery)
+        # 4) База знаний (встроенная + выученная) — с учётом памяти диалога.
+        answer, score, topic_tokens = self._best_answer(userQuery)
+
+        # Уточняющий вопрос («а почему?», «подробнее», «а это безопасно?») —
+        # подмешиваем ключевые слова прошлой темы, чтобы понять контекст.
+        followup = self._is_followup(userQuery, q_tokens)
+        if (followup or score < 1.2) and ctx["topic_tokens"]:
+            enriched = userQuery + " " + " ".join(ctx["topic_tokens"])
+            alt_answer, alt_score, alt_topic = self._best_answer(enriched)
+            if alt_answer and alt_score > score:
+                answer, score, topic_tokens = alt_answer, alt_score, alt_topic
+
         if answer and score >= 1.2:
+            # Запоминаем тему и ответ для следующих реплик.
+            ctx["topic_tokens"] = topic_tokens or ctx["topic_tokens"]
+            self._remember(ctx, userQuery, answer)
+            # Анти-повтор: тот же ответ подряд — не дублируем один в один.
+            if answer == ctx["last_answer"]:
+                ctx["last_answer"] = answer
+                return ("📎 Уже касались этой темы — напомню коротко:\n\n" + answer +
+                        "\n\nЕсли нужен другой аспект — уточни вопрос (например «а вывод?»).")
+            ctx["last_answer"] = answer
             return answer
 
         # 5) Не знаем — честно говорим и предлагаем научить.
