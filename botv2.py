@@ -5478,9 +5478,15 @@ def setup_webapp_button():
     """Installe le bouton menu Telegram (☰ → 🚀 App) qui ouvre le Mini App."""
     if not WEBAPP_URL:
         return
+    web_app = types.WebAppInfo(url=WEBAPP_URL)
     try:
-        bot.set_chat_menu_button(menu_button=types.MenuButtonWebApp(
-            text="🚀 App", web_app=types.WebAppInfo(url=WEBAPP_URL)))
+        # Selon la version de pyTelegramBotAPI, MenuButtonWebApp exige (ou non)
+        # l'argument positionnel `type`. On tente d'abord avec, puis sans.
+        try:
+            menu_btn = types.MenuButtonWebApp(type="web_app", text="🚀 App", web_app=web_app)
+        except TypeError:
+            menu_btn = types.MenuButtonWebApp(text="🚀 App", web_app=web_app)
+        bot.set_chat_menu_button(menu_button=menu_btn)
         logger.info("✅ Bouton Mini App installé dans le menu Telegram.")
     except Exception as e:
         logger.error(f"Bouton Mini App non installé : {e}")
