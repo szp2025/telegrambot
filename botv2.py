@@ -6365,13 +6365,37 @@ def ensure_cloudflared():
     return None
 
 
-def start_cloudflared_tunnel():
-    """Lance cloudflared, capture l'URL https://…trycloudflare.com, la place
-    automatiquement dans WEBAPP_URL, installe le bouton et prévient l'admin.
-    Aucune manip manuelle : l'URL publique est trouvée toute seule.
-    Si cloudflared est absent, tente d'abord de l'installer automatiquement."""
-    global WEBAPP_URL
+# État courant du tunnel cloudflared (pour l'auto-réparation du lien).
+_cf_tunnel = {"proc": None, "url": None, "fails": 0}
 
+
+def _announce_tunnel_url(new_url):
+    """Met à jour WEBAPP_URL, réinstalle le bouton menu et prévient l'admin —
+    uniquement si l'URL a changé (évite le spam à chaque reconnexion)."""
+    global WEBAPP_URL
+    if not new_url or new_url == WEBAPP_URL:
+        return
+    WEBAPP_URL = new_url
+    _cf_tunnel["url"] = new_url
+    logger.info(f"🌐 Tunnel actif → {WEBAPP_URL}")
+    setup_webapp_button()
+    try:
+        bot.send_message(
+            ADMIN_CHAT_ID,
+            f"🌐 *Mini App en ligne !*\nURL publique : {WEBAPP_URL}\n"
+            "Le bouton 🚀 App (menu ☰) est à jour automatiquement.",
+            parse_mode="Markdown"
+        )
+    except Exception:
+        pass
+
+
+def start_cloudflared_tunnel():
+    """Superviseur cloudflared : (re)lance le tunnel EN BOUCLE et s'auto-répare.
+    Si cloudflared s'arrête (perte réseau, veille du téléphone, tunnel cassé),
+    on le relance tout seul, on récupère la NOUVELLE URL, on réinstalle le
+    bouton et on prévient l'admin. => le lien se répare sans intervention.
+    Si cloudflared est absent, tente d'abord de l'installer automatiquement."""
     cf_bin = ensure_cloudflared()
     if not cf_bin:
         logger.warning("🌐 cloudflared introuvable et install auto impossible. "
@@ -6386,38 +6410,68 @@ def start_cloudflared_tunnel():
             pass
         return
 
-    try:
-        proc = subprocess.Popen(
-            [cf_bin, "tunnel", "--url", f"http://localhost:{WEBAPP_PORT}"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
-        )
-    except Exception as e:
-        logger.error(f"🌐 Lancement cloudflared impossible : {e}")
-        return
-
     pattern = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
-    found = False
-    try:
-        for line in proc.stdout:
-            if not found:
+    backoff = 5
+    while True:
+        proc = None
+        try:
+            proc = subprocess.Popen(
+                [cf_bin, "tunnel", "--no-autoupdate", "--url", f"http://localhost:{WEBAPP_PORT}"],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+            )
+            _cf_tunnel["proc"] = proc
+            _cf_tunnel["fails"] = 0
+            # Lecture bloquante de la sortie : capte l'URL et garde le thread
+            # « accroché » au process tant qu'il vit.
+            for line in proc.stdout:
                 m = pattern.search(line)
                 if m:
-                    WEBAPP_URL = m.group(0)
-                    found = True
-                    logger.info(f"🌐 Tunnel actif → {WEBAPP_URL}")
-                    setup_webapp_button()
-                    try:
-                        bot.send_message(
-                            ADMIN_CHAT_ID,
-                            f"🌐 *Mini App en ligne !*\nURL publique : {WEBAPP_URL}\n"
-                            "Le bouton 🚀 App est actif. (URL valable tant que le bot tourne.)",
-                            parse_mode="Markdown"
-                        )
-                    except Exception:
-                        pass
-            # on continue de vider la sortie pour ne pas bloquer cloudflared
-    except Exception as e:
-        logger.error(f"🌐 Tunnel cloudflared interrompu : {e}")
+                    backoff = 5                       # tunnel OK → reset du back-off
+                    _announce_tunnel_url(m.group(0))
+            # La sortie s'est fermée => cloudflared s'est arrêté : on relance.
+            logger.warning("🌐 Tunnel cloudflared arrêté — relance automatique...")
+        except Exception as e:
+            logger.error(f"🌐 Superviseur cloudflared : {e}")
+        finally:
+            try:
+                if proc and proc.poll() is None:
+                    proc.terminate()
+            except Exception:
+                pass
+            _cf_tunnel["proc"] = None
+        time.sleep(backoff)
+        backoff = min(300, backoff * 2)               # back-off progressif (max 5 min)
+
+
+def cloudflared_health_watchdog():
+    """Sonde l'URL publique toutes les 2 min. Si elle renvoie une erreur
+    Cloudflare (530 = 1033 « tunnel non routé », ou 5xx) 3 fois de suite,
+    on tue cloudflared : le superviseur relance alors un tunnel NEUF.
+    => auto-réparation du lien même si le process reste « vivant » mais cassé."""
+    while True:
+        time.sleep(120)
+        url = _cf_tunnel.get("url")
+        proc = _cf_tunnel.get("proc")
+        if not url or not proc:
+            continue
+        try:
+            r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+            # 530 = erreur 1033 (tunnel non routé) ; 502/503/504 = origine injoignable.
+            if r.status_code in (502, 503, 504, 530):
+                _cf_tunnel["fails"] = _cf_tunnel.get("fails", 0) + 1
+            else:
+                _cf_tunnel["fails"] = 0
+        except Exception:
+            _cf_tunnel["fails"] = _cf_tunnel.get("fails", 0) + 1
+        # 3 échecs consécutifs (~6 min) → relance forcée du tunnel.
+        if _cf_tunnel.get("fails", 0) >= 3:
+            logger.error("🌐 [CF-WATCHDOG] Lien cassé (1033/5xx) — relance forcée du tunnel.")
+            _cf_tunnel["fails"] = 0
+            try:
+                if proc and proc.poll() is None:
+                    proc.terminate()              # le superviseur relancera un tunnel neuf
+            except Exception:
+                pass
 
 
 # Démarrage du serveur web + URL publique (manuelle ou auto-tunnel).
@@ -6428,7 +6482,8 @@ if _FLASK_OK:
         print(f"🌐 Mini App web : ACTIF → {WEBAPP_URL}", flush=True)
     elif WEBAPP_AUTOTUNNEL:
         threading.Thread(target=start_cloudflared_tunnel, daemon=True).start()
-        print(f"🌐 Mini App web : serveur lancé (port {WEBAPP_PORT}) · tunnel cloudflared auto en cours...", flush=True)
+        threading.Thread(target=cloudflared_health_watchdog, daemon=True).start()
+        print(f"🌐 Mini App web : serveur lancé (port {WEBAPP_PORT}) · tunnel cloudflared auto + auto-réparation en cours...", flush=True)
     else:
         print(f"🌐 Mini App web : serveur local lancé (port {WEBAPP_PORT}) mais sans URL publique (WEBAPP_URL vide, auto-tunnel off).", flush=True)
 else:
