@@ -20,6 +20,9 @@ import json
 from datetime import datetime
 import math
 import subprocess
+import shutil
+import platform
+import stat
 from colorama import Fore
 import urllib.parse
 from typing import Tuple, Dict, List, Any
@@ -71,6 +74,47 @@ from private_config import (
     SAFEPAL_WALLETS,
     TOKEN,
 )
+
+# ============================================================
+# 🌐 CONFIG MINI APP WEB (botv2) — interface stylée dans Telegram
+# ============================================================
+import hmac as _hmac
+import hashlib as _hashlib
+from urllib.parse import parse_qsl as _parse_qsl
+
+# URL HTTPS publique du Mini App (tunnel cloudflared/ngrok vers ce téléphone).
+# Priorité : variable d'env WEBAPP_URL > private_config.WEBAPP_URL > vide (web off).
+try:
+    from private_config import WEBAPP_URL as _CFG_WEBAPP_URL
+except Exception:
+    _CFG_WEBAPP_URL = ""
+WEBAPP_URL = (os.environ.get("WEBAPP_URL") or _CFG_WEBAPP_URL or "").strip().rstrip("/")
+WEBAPP_PORT = int(os.environ.get("WEBAPP_PORT", "8080"))
+
+# Auto-tunnel : si aucune WEBAPP_URL n'est fournie, botv2 lance cloudflared
+# tout seul et récupère l'URL HTTPS publique automatiquement (défaut : activé).
+try:
+    from private_config import WEBAPP_AUTOTUNNEL as _CFG_AUTOTUNNEL
+except Exception:
+    _CFG_AUTOTUNNEL = True
+WEBAPP_AUTOTUNNEL = str(os.environ.get("WEBAPP_AUTOTUNNEL", _CFG_AUTOTUNNEL)).lower() not in ("0", "false", "no", "off", "")
+
+# Flask est optionnel. S'il manque, on tente une installation auto (une fois) ;
+# en dernier recours le bot tourne normalement avec le Mini App désactivé.
+try:
+    from flask import Flask, request, Response, jsonify
+    _FLASK_OK = True
+except Exception:
+    _FLASK_OK = False
+    try:
+        print("📦 Flask absent — installation auto (pip install flask)...", flush=True)
+        subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "flask"], timeout=300)
+        from flask import Flask, request, Response, jsonify
+        _FLASK_OK = True
+        print("✅ Flask installé automatiquement.", flush=True)
+    except Exception as _flask_err:
+        _FLASK_OK = False
+        print(f"⚠️ Flask non installable ({_flask_err}). Mini App désactivé, le bot tourne quand même.", flush=True)
 
 
 # ============================================================
@@ -2792,7 +2836,14 @@ class BackgroundSchedulerManager:
         last_reset_day = None
         last_daily_day = None
         was_degraded = False
-        run_check_now = True
+
+        # Au démarrage : on NE rescane PAS. On reconstruit l'état « déjà trouvé
+        # aujourd'hui » depuis l'historique (persistant sur disque) — ainsi un
+        # redémarrage en journée ne relance aucun scraping inutile.
+        for _key in self.manager.found_today:
+            _fid, _ = find_today_combo_fileid(_key)
+            if _fid:
+                self.manager.found_today[_key] = True
 
         while True:
             now_time = time.time()
@@ -2810,11 +2861,18 @@ class BackgroundSchedulerManager:
             if last_reset_day != current_day:
                 self.manager.reset_daily_status()
                 last_reset_day = current_day
-                run_check_now = True
+                # Après remise à zéro, on ré-applique ce qui est déjà dans
+                # l'historique pour aujourd'hui (cas d'un redémarrage juste après minuit).
+                for _key in self.manager.found_today:
+                    _fid, _ = find_today_combo_fileid(_key)
+                    if _fid:
+                        self.manager.found_today[_key] = True
 
     # 2. Проверка и сбор комбо-картинок
             has_unfound_games = any(not found for found in self.manager.found_today.values())
-            if (run_check_now or current_hour >= 9) and has_unfound_games:
+            # On ne scrape QU'À PARTIR de 9h, puis à chaque cycle (10 min) tant
+            # qu'il reste des jeux sans combo pour aujourd'hui (pas à chaque redémarrage).
+            if current_hour >= 9 and has_unfound_games:
                 self.logger.info("🛡️ [AUTO-CHECKER] Запуск проверки комбо-картинок...")
                 
                 for key, info in self.manager.combo_games.items():
@@ -2866,8 +2924,6 @@ class BackgroundSchedulerManager:
                                     self.logger.error(f"Ошибка отправки авто-фото администратору: {e}")
                     except Exception as e:
                         self.logger.error(f"Ошибка авто-проверки игры {key}: {e}")
-
-                run_check_now = False
 
            # 3. Проверка и обновление игровых таймеров пользователей
             try:
@@ -4650,8 +4706,16 @@ def get_fiat_currency_keyboard(crypto_symbol):
     return MenuManager.get_fiat_currency_keyboard(crypto_symbol, FIAT_CURRENCIES, row_width=3)
 
 def main_menu_kb(chat_id):
-    """Reply-клавиатура главного меню на языке пользователя."""
-    return MenuManager.get_reply_keyboard(MENU_LABELS.get(get_lang(chat_id), MAIN_MENU_BUTTONS))
+    """Reply-клавиатура главного меню на языке пользователя.
+    botv2 : bouton 🚀 App en tête qui ouvre le Mini App web (si WEBAPP_URL configuré)."""
+    labels = MENU_LABELS.get(get_lang(chat_id), MAIN_MENU_BUTTONS)
+    if not WEBAPP_URL:
+        return MenuManager.get_reply_keyboard(labels)
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    app_label = {"fr": "🚀 Ouvrir l'app", "en": "🚀 Open the app"}.get(get_lang(chat_id), "🚀 Открыть приложение")
+    markup.row(types.KeyboardButton(app_label, web_app=types.WebAppInfo(url=WEBAPP_URL)))
+    markup.add(*[types.KeyboardButton(x) for x in labels])
+    return markup
 
 def lang_keyboard():
     """Инлайн-выбор языка."""
@@ -5018,7 +5082,8 @@ updater_thread.start()
 
 # Фоновый поток авто-проверки комбо / таймеров / рекламы.
 # ВАЖНО: запускаем ДО infinity_polling(), т.к. polling блокирует поток.
-# run_daily_checker() при старте сразу делает первую проверку комбо.
+# run_daily_checker() НЕ сканирует при старте: только с 9:00 и до тех пор,
+# пока не найдёт все комбо; уже найденное за сегодня берётся из истории.
 combo_checker_thread = threading.Thread(target=daily_auto_checker, daemon=True)
 combo_checker_thread.start()
 print("🔎 Фоновый чекер комбо запущен.", flush=True)
@@ -5047,6 +5112,1395 @@ print("♻️ Watchdog запущен.", flush=True)
 # Фоновая дорассылка сообщений, не ушедших из-за микро-обрывов сети.
 threading.Thread(target=drain_retry_queue, daemon=True).start()
 print("📨 Очередь повторной отправки запущена.", flush=True)
+
+
+# ============================================================
+# 🌐 MINI APP WEB (Telegram Web App) — interface stylée compacte
+# ------------------------------------------------------------
+# S'ouvre DANS Telegram via le bouton 🚀 App. Auth automatique par
+# signature Telegram initData (aucun mot de passe). Le token du bot
+# ne quitte jamais le serveur (images servies par proxy).
+# ============================================================
+
+def verify_init_data(init_data: str):
+    """Vérifie la signature Telegram WebApp initData avec le token du bot.
+    Retourne (ok: bool, user: dict). user contient id, first_name, etc."""
+    if not init_data:
+        return False, {}
+    try:
+        pairs = dict(_parse_qsl(init_data, keep_blank_values=True))
+        received = pairs.pop("hash", "")
+        check = "\n".join(f"{k}={pairs[k]}" for k in sorted(pairs))
+        secret = _hmac.new(b"WebAppData", TOKEN.encode(), _hashlib.sha256).digest()
+        calc = _hmac.new(secret, check.encode(), _hashlib.sha256).hexdigest()
+        if not _hmac.compare_digest(calc, received):
+            return False, {}
+        user = json.loads(pairs["user"]) if pairs.get("user") else {}
+        return True, user
+    except Exception as e:
+        logger.error(f"initData invalide: {e}")
+        return False, {}
+
+
+# Monnaies affichées dans l'onglet Prix du Mini App.
+WEB_COINS = [
+    ("btc", "bitcoin", "₿"), ("eth", "ethereum", "Ξ"),
+    ("ton", "the-open-network", "💎"), ("usdt", "tether", "💵"),
+    ("bnb", "binancecoin", "🅱"), ("sol", "solana", "◎"),
+]
+
+def web_prices():
+    ids = ",".join(c[1] for c in WEB_COINS)
+    url = f"https://api.coingecko.com/api/v3/simple/price?ids={ids}&vs_currencies=usd&include_24hr_change=true"
+    try:
+        data = cached_json_get(url)
+    except Exception:
+        data = {}
+    out = []
+    for sym, cid, icon in WEB_COINS:
+        d = data.get(cid, {}) or {}
+        out.append({"sym": sym.upper(), "icon": icon, "usd": d.get("usd"),
+                    "chg": d.get("usd_24h_change")})
+    return out
+
+
+# Interface du Mini App (HTML+CSS+JS autonome, thème Telegram, compact & pro).
+WEBAPP_HTML = r"""<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>CRYPTO HUB</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root{
+    --bg:var(--tg-theme-bg-color,#0f1115);
+    --sec:var(--tg-theme-secondary-bg-color,#171a21);
+    --txt:var(--tg-theme-text-color,#f4f5f7);
+    --hint:var(--tg-theme-hint-color,#8b93a1);
+    --btn:var(--tg-theme-button-color,#3d8bff);
+    --btntxt:var(--tg-theme-button-text-color,#fff);
+    --line:rgba(255,255,255,.07);
+    --accent:#4dd0a7;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro",Roboto,Segoe UI,sans-serif;
+    font-size:14px;padding:0 0 76px}
+  a{color:var(--btn)}
+  .wrap{max-width:520px;margin:0 auto;padding:12px}
+  header{display:flex;align-items:center;justify-content:space-between;padding:6px 2px 12px}
+  .logo{font-weight:800;letter-spacing:.4px;font-size:16px}
+  .logo span{color:var(--accent)}
+  .chip{display:flex;align-items:center;gap:6px;background:var(--sec);
+    border:1px solid var(--line);border-radius:20px;padding:5px 10px;font-size:12px}
+  .chip b{font-weight:600}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .card{background:var(--sec);border:1px solid var(--line);border-radius:14px;
+    padding:12px;position:relative;overflow:hidden}
+  .card .k{color:var(--hint);font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+  .card .v{font-size:22px;font-weight:800;margin-top:3px}
+  .card .e{position:absolute;right:10px;top:10px;font-size:18px;opacity:.5}
+  .vip{background:linear-gradient(135deg,#3a2f10,#171a21);border-color:#5a4a15}
+  .vip .v{color:#f6c945}
+  .btn{display:block;width:100%;border:0;border-radius:12px;padding:13px;
+    font-size:14px;font-weight:700;color:var(--btntxt);background:var(--btn);
+    margin-top:10px;cursor:pointer;transition:.15s;text-align:center}
+  .btn:active{transform:scale(.98)}
+  .btn.ghost{background:var(--sec);color:var(--txt);border:1px solid var(--line)}
+  .btn.gold{background:linear-gradient(135deg,#f6c945,#e0a90c);color:#221c00}
+  .btn.sm{padding:9px;font-size:13px;margin-top:0;width:auto}
+  .btn.red{background:#b23b3b}
+  .menu{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:12px}
+  .mitem{background:var(--sec);border:1px solid var(--line);border-radius:14px;
+    padding:14px 6px;text-align:center;cursor:pointer;font-size:11px;font-weight:600}
+  .mitem .mi{font-size:24px;display:block;margin-bottom:5px}
+  .mitem:active{transform:scale(.96)}
+  .sec-title{font-size:12px;color:var(--hint);text-transform:uppercase;
+    letter-spacing:.6px;margin:16px 2px 8px;font-weight:700}
+  .row{display:flex;align-items:center;gap:10px;background:var(--sec);
+    border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:7px}
+  .row .n{font-weight:600;flex:1}
+  .row .s{color:var(--hint);font-size:12px}
+  .up{color:#4dd0a7}.down{color:#ff6b6b}
+  .medal{font-size:16px;width:26px;text-align:center}
+  .combo{border-radius:14px;overflow:hidden;background:var(--sec);
+    border:1px solid var(--line);margin-bottom:10px}
+  .combo img{width:100%;display:block}
+  .combo .cap{padding:9px 12px}
+  .combo .cap b{font-size:13px}
+  .combo .cap i{color:var(--hint);font-style:normal;font-size:11px}
+  .combo .cap .lk{margin-top:6px;display:flex;gap:6px;flex-wrap:wrap}
+  .badge{font-size:10px;background:var(--accent);color:#062018;border-radius:6px;
+    padding:2px 6px;font-weight:800}
+  .tabbar{position:fixed;left:0;right:0;bottom:0;background:var(--bg);
+    border-top:1px solid var(--line);display:flex;max-width:520px;margin:0 auto}
+  .tabbar button{flex:1;background:0;border:0;color:var(--hint);padding:9px 0 12px;
+    font-size:10px;font-weight:600;display:flex;flex-direction:column;align-items:center;gap:3px}
+  .tabbar button .i{font-size:20px}
+  .tabbar button.on{color:var(--btn)}
+  .empty{text-align:center;color:var(--hint);padding:40px 20px;font-size:13px}
+  .skel{background:var(--sec);border-radius:12px;height:70px;margin-bottom:8px;animation:pulse 1.2s infinite}
+  @keyframes pulse{50%{opacity:.5}}
+  .warn{background:#3a2410;border:1px solid #6b4410;color:#f6c945;border-radius:10px;
+    padding:9px 12px;font-size:12px;margin-bottom:10px}
+  .toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);
+    background:#000;color:#fff;padding:10px 16px;border-radius:20px;font-size:13px;
+    opacity:0;transition:.3s;pointer-events:none;z-index:9;max-width:90%;text-align:center}
+  .toast.show{opacity:.95}
+  .hide{display:none!important}
+  .back{display:inline-flex;align-items:center;gap:6px;background:var(--sec);
+    border:1px solid var(--line);border-radius:10px;padding:7px 12px;font-size:13px;
+    font-weight:600;cursor:pointer;margin-bottom:10px}
+  input,select,textarea{width:100%;background:var(--sec);border:1px solid var(--line);
+    color:var(--txt);border-radius:10px;padding:11px;font-size:14px;margin-top:6px;font-family:inherit}
+  textarea{min-height:90px;resize:vertical}
+  label{font-size:12px;color:var(--hint);display:block;margin-top:10px}
+  .addr{background:var(--sec);border:1px dashed var(--accent);border-radius:10px;
+    padding:10px;font-size:12px;word-break:break-all;margin-top:6px;cursor:pointer}
+  .card2{background:var(--sec);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:8px}
+  .card2 b{font-size:14px}
+  .card2 p{color:var(--hint);font-size:12px;margin:6px 0 8px}
+  .pill{display:inline-block;background:var(--btn);color:#fff;border-radius:8px;padding:3px 9px;
+    font-size:12px;font-weight:700;margin:3px 4px 0 0;cursor:pointer;text-decoration:none}
+  .pill.g{background:var(--sec);border:1px solid var(--line);color:var(--txt)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">CRYPTO <span>HUB</span></div>
+    <div class="chip" id="chip"><span>👤</span><b id="uname">…</b></div>
+  </header>
+  <div id="warn" class="warn hide">⚠️ Mode allégé — données externes en cache.</div>
+
+  <!-- ACCUEIL -->
+  <section id="v-home" class="view">
+    <div class="grid">
+      <div class="card"><span class="e">💰</span><div class="k">Points</div><div class="v" id="pts">—</div></div>
+      <div class="card"><span class="e">🔥</span><div class="k">Série</div><div class="v" id="stk">—</div></div>
+      <div class="card"><span class="e">👥</span><div class="k">Amis</div><div class="v" id="ref">—</div></div>
+      <div class="card vip"><span class="e">👑</span><div class="k">VIP</div><div class="v" id="vip">—</div></div>
+    </div>
+    <button class="btn" id="checkin">🎁 Récupérer le bonus du jour</button>
+    <button class="btn ghost" id="invite">👥 Inviter des amis (+50 pts)</button>
+    <button class="btn gold" onclick="show('vip')">💎 Passer VIP (sans pub)</button>
+    <div class="sec-title">Tout le menu</div>
+    <div class="menu" id="menu"></div>
+  </section>
+
+  <!-- COMBOS -->
+  <section id="v-combos" class="view hide">
+    <div class="sec-title">🎯 Combos & jeux</div>
+    <div id="combos"><div class="skel"></div><div class="skel"></div></div>
+  </section>
+
+  <!-- GAGNER -->
+  <section id="v-earn" class="view hide">
+    <div class="sec-title">💰 Gagner de la crypto</div>
+    <div id="earn"><div class="skel"></div><div class="skel"></div></div>
+  </section>
+
+  <!-- PRIX -->
+  <section id="v-prices" class="view hide">
+    <div class="sec-title">🧮 Cours crypto (USD)</div>
+    <div id="prices"><div class="skel"></div></div>
+    <div class="sec-title">🧮 Convertisseur</div>
+    <div class="card2">
+      <label>Crypto</label>
+      <select id="cv-coin"><option value="btc">BTC</option><option value="eth">ETH</option>
+        <option value="ton">TON</option><option value="usdt">USDT</option>
+        <option value="bnb">BNB</option><option value="sol">SOL</option></select>
+      <label>Devise</label>
+      <select id="cv-fiat"><option value="usd">USD</option><option value="eur">EUR</option><option value="rub">RUB</option></select>
+      <label>Montant</label>
+      <input id="cv-amt" type="number" inputmode="decimal" placeholder="1">
+      <button class="btn sm" style="width:100%;margin-top:10px" onclick="convert()">Convertir</button>
+      <div id="cv-res" style="margin-top:10px;font-weight:700"></div>
+    </div>
+  </section>
+
+  <!-- TOP -->
+  <section id="v-top" class="view hide">
+    <div class="sec-title">🏆 Top joueurs</div>
+    <div id="top"><div class="skel"></div><div class="skel"></div></div>
+  </section>
+
+  <!-- PROFIL -->
+  <section id="v-profil" class="view hide">
+    <div class="back" onclick="show('home')">⬅️ Retour</div>
+    <div class="sec-title">👤 Profil & stats</div>
+    <div id="profil"></div>
+    <div class="card2">
+      <b>➕ Ajouter / modifier un jeu</b>
+      <input id="pf-game" placeholder="Nom du jeu">
+      <input id="pf-stat" placeholder="Niveau / progrès (ex: 15)">
+      <button class="btn sm" style="width:100%;margin-top:10px" onclick="addGame()">Enregistrer</button>
+    </div>
+  </section>
+
+  <!-- TIMERS -->
+  <section id="v-timers" class="view hide">
+    <div class="back" onclick="show('home')">⬅️ Retour</div>
+    <div class="sec-title">⏰ Mes timers</div>
+    <div class="card2">
+      <label>Jeu</label>
+      <select id="tm-game"></select>
+      <label>Intervalle (heures, 0 = désactiver)</label>
+      <input id="tm-h" type="number" inputmode="decimal" placeholder="8">
+      <button class="btn sm" style="width:100%;margin-top:10px" onclick="setTimer()">Définir</button>
+    </div>
+    <div id="timers"></div>
+  </section>
+
+  <!-- AVIS -->
+  <section id="v-avis" class="view hide">
+    <div class="back" onclick="show('home')">⬅️ Retour</div>
+    <div class="sec-title">💬 Avis</div>
+    <div class="card2">
+      <textarea id="rv-text" placeholder="Écrivez votre avis (sans liens)…"></textarea>
+      <button class="btn sm" style="width:100%;margin-top:10px" onclick="addReview()">Envoyer</button>
+    </div>
+    <div id="avis"></div>
+  </section>
+
+  <!-- PREUVES -->
+  <section id="v-preuves" class="view hide">
+    <div class="back" onclick="show('home')">⬅️ Retour</div>
+    <div class="sec-title">💎 Preuves de paiement</div>
+    <div id="preuves"></div>
+  </section>
+
+  <!-- PUB -->
+  <section id="v-pub" class="view hide">
+    <div class="back" onclick="show('home')">⬅️ Retour</div>
+    <div class="sec-title">📢 Publicité</div>
+    <div id="pub"></div>
+  </section>
+
+  <!-- VIP -->
+  <section id="v-vip" class="view hide">
+    <div class="back" onclick="show('home')">⬅️ Retour</div>
+    <div class="sec-title">👑 VIP (sans pub)</div>
+    <div id="vipbuy"></div>
+  </section>
+
+  <!-- ALERTES -->
+  <section id="v-alertes" class="view hide">
+    <div class="back" onclick="show('home')">⬅️ Retour</div>
+    <div class="sec-title">🔔 Alertes de prix</div>
+    <div class="card2">
+      <div class="grid">
+        <select id="al-coin"><option value="btc">BTC</option><option value="eth">ETH</option>
+          <option value="ton">TON</option><option value="usdt">USDT</option>
+          <option value="bnb">BNB</option><option value="sol">SOL</option></select>
+        <select id="al-op"><option value=">">≥ (au-dessus)</option><option value="<">≤ (en-dessous)</option></select>
+      </div>
+      <input id="al-val" type="number" inputmode="decimal" placeholder="Prix cible en $">
+      <button class="btn sm" style="width:100%;margin-top:10px" onclick="addAlert()">Créer l'alerte</button>
+    </div>
+    <div id="alertes"></div>
+    <button class="btn ghost" onclick="clearAlerts()">🗑 Supprimer toutes mes alertes</button>
+  </section>
+
+  <!-- LANGUE -->
+  <section id="v-langue" class="view hide">
+    <div class="back" onclick="show('home')">⬅️ Retour</div>
+    <div class="sec-title">🌐 Langue</div>
+    <button class="btn ghost" onclick="setLang('ru')">🇷🇺 Русский</button>
+    <button class="btn ghost" onclick="setLang('en')">🇬🇧 English</button>
+    <button class="btn ghost" onclick="setLang('fr')">🇫🇷 Français</button>
+  </section>
+
+  <!-- AIDE -->
+  <section id="v-aide" class="view hide">
+    <div class="back" onclick="show('home')">⬅️ Retour</div>
+    <div class="sec-title">❓ Aide</div>
+    <div class="card2" id="aide" style="white-space:pre-wrap"></div>
+  </section>
+
+  <!-- ADMIN -->
+  <section id="v-admin" class="view hide">
+    <div class="back" onclick="show('home')">⬅️ Retour</div>
+    <div class="sec-title">🛡️ Panneau administrateur</div>
+    <div class="card2" id="adm-stats" style="white-space:pre-wrap">…</div>
+    <div class="card2">
+      <b>📣 Diffusion (broadcast)</b>
+      <textarea id="ad-bc" placeholder="Message à envoyer à toute la base…"></textarea>
+      <button class="btn sm red" style="width:100%;margin-top:10px" onclick="admBroadcast()">Envoyer à tous</button>
+    </div>
+    <div class="card2">
+      <b>👑 Donner un VIP</b>
+      <div class="grid"><input id="ad-vu" placeholder="ID user"><input id="ad-vd" type="number" placeholder="Jours"></div>
+      <button class="btn sm" style="width:100%;margin-top:10px" onclick="admVip()">Attribuer</button>
+    </div>
+    <div class="card2">
+      <b>🚫 Bannir / débannir</b>
+      <input id="ad-bu" placeholder="ID user">
+      <div class="grid" style="margin-top:8px">
+        <button class="btn sm red" onclick="admBan(1)">Bannir</button>
+        <button class="btn sm ghost" onclick="admBan(0)">Débannir</button>
+      </div>
+    </div>
+    <div class="card2">
+      <b>🔗 Domaine scam</b>
+      <input id="ad-sc" placeholder="ex: scam-site.top">
+      <button class="btn sm" style="width:100%;margin-top:10px" onclick="admScam()">Ajouter au blacklist</button>
+    </div>
+    <button class="btn gold" onclick="admBackup()">💾 Lancer un backup complet</button>
+  </section>
+</div>
+
+<nav class="tabbar">
+  <button data-tab="home" class="on" onclick="show('home')"><span class="i">🏠</span>Accueil</button>
+  <button data-tab="combos" onclick="show('combos')"><span class="i">🎯</span>Combos</button>
+  <button data-tab="earn" onclick="show('earn')"><span class="i">💰</span>Gagner</button>
+  <button data-tab="prices" onclick="show('prices')"><span class="i">🧮</span>Prix</button>
+  <button data-tab="top" onclick="show('top')"><span class="i">🏆</span>Top</button>
+</nav>
+<div class="toast" id="toast"></div>
+
+<script>
+const tg = window.Telegram ? window.Telegram.WebApp : null;
+if(tg){ tg.ready(); tg.expand(); }
+const INIT = tg ? tg.initData : "";
+const H = {"X-Telegram-Init-Data": INIT, "Content-Type":"application/json"};
+const $ = s => document.querySelector(s);
+const esc = s => (s==null?"":String(s)).replace(/[<>&]/g, c=>({"<":"&lt;",">":"&gt;","&":"&amp;"}[c]));
+const MAIN = ["home","combos","earn","prices","top"];
+let ME = {};
+
+function toast(t){ const el=$("#toast"); el.textContent=t; el.classList.add("show");
+  setTimeout(()=>el.classList.remove("show"),2000); }
+async function api(path, opts){ const r = await fetch(path, Object.assign({headers:H}, opts||{}));
+  if(!r.ok) throw new Error(r.status); return r.json(); }
+function post(path, body){ return api(path, {method:"POST", body:JSON.stringify(body||{})}); }
+
+const loaders = {combos:loadCombos, earn:loadEarn, prices:loadPrices, top:loadTop,
+  profil:loadProfil, timers:loadTimers, avis:loadAvis, preuves:loadPreuves,
+  pub:loadPub, vip:loadVip, alertes:loadAlertes, aide:loadAide, admin:loadAdmin};
+
+function show(v){
+  document.querySelectorAll(".view").forEach(s=>s.classList.add("hide"));
+  const el=$("#v-"+v); if(el) el.classList.remove("hide");
+  document.querySelectorAll(".tabbar button").forEach(b=>b.classList.toggle("on", b.dataset.tab===v));
+  if(loaders[v]) loaders[v]();
+  window.scrollTo(0,0);
+  if(tg&&tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+}
+
+const MENU = [
+  ["profil","👤","Profil"],["timers","⏰","Timers"],["earn","💰","Gagner"],
+  ["combos","🎯","Combos"],["prices","🧮","Prix"],["top","🏆","Top"],
+  ["avis","💬","Avis"],["preuves","💎","Preuves"],["pub","📢","Pub"],
+  ["vip","👑","VIP"],["alertes","🔔","Alertes"],["langue","🌐","Langue"],
+  ["digest","🌅","Digest"],["aide","❓","Aide"]
+];
+function buildMenu(){
+  let items = MENU.slice();
+  if(ME.is_admin) items.push(["admin","🛡️","Admin"]);
+  $("#menu").innerHTML = items.map(m=>
+    `<div class="mitem" onclick="${m[0]==='digest'?'toggleDigest()':`show('${m[0]}')`}">
+      <span class="mi">${m[1]}</span>${m[2]}</div>`).join("");
+}
+
+async function loadMe(){
+  try{
+    ME = await api("/api/me");
+    $("#uname").textContent = ME.name;
+    $("#pts").textContent = ME.points;
+    $("#stk").textContent = ME.streak + " j";
+    $("#ref").textContent = ME.referrals;
+    $("#vip").textContent = ME.vip ? ME.vip_days+" j" : "—";
+    if(ME.degraded) $("#warn").classList.remove("hide");
+    buildMenu();
+  }catch(e){
+    $("#uname").textContent = "hors Telegram";
+    $(".wrap").insertAdjacentHTML("beforeend",
+      '<div class="empty">🔒 Ouvre cette page depuis le bouton 🚀 App dans Telegram.</div>');
+  }
+}
+
+async function loadCombos(){
+  try{
+    const d = await api("/api/combos"); const box=$("#combos");
+    if(!d.combos.length){ box.innerHTML='<div class="empty">📜 Aucun combo pour l\'instant.</div>'; return; }
+    box.innerHTML = d.combos.map(c=>`
+      <div class="combo">${c.img?`<img loading="lazy" src="${c.img}">`:""}
+        <div class="cap"><b>🎯 ${esc(c.name)}</b>
+          ${c.today?' <span class="badge">AUJOURD\'HUI</span>':''}
+          <i> ${esc(c.date||'')}</i>
+          <div class="lk">
+            ${c.ref?`<a class="pill" href="${c.ref}" target="_blank">▶️ Jouer</a>`:''}
+            <span class="pill g" onclick="subCombo('${c.key}',this)">${c.subscribed?'🔕 Abonné':'🔔 S\'abonner'}</span>
+          </div>
+        </div></div>`).join("");
+  }catch(e){ $("#combos").innerHTML='<div class="empty">Connexion requise.</div>'; }
+}
+async function subCombo(key,el){
+  try{ const d=await post("/api/combo_sub",{key});
+    el.textContent = d.subscribed?'🔕 Abonné':'🔔 S\'abonner'; toast(d.subscribed?"🔔 Abonné !":"🔕 Désabonné");
+  }catch(e){ toast("Erreur"); }
+}
+
+async function loadEarn(){
+  try{
+    const d = await api("/api/catalogs"); const box=$("#earn");
+    const sect=(title,arr)=> `<div class="sec-title">${title}</div>` + (arr.length?arr.map(it=>`
+      <div class="card2"><b>${esc(it.name)}</b><p>${esc(it.description||'')}</p>
+        ${it.links.map((u,i)=>`<a class="pill" href="${u}" target="_blank">🔗 Lien ${i+1}</a>`).join("")}
+        ${it.code?`<div class="s" style="margin-top:6px">Code : <b>${esc(it.code)}</b></div>`:''}
+      </div>`).join(""):'<div class="empty">—</div>');
+    box.innerHTML = sect("📱 Mineurs téléphone",d.miners)+sect("🚰 Faucets",d.faucets)+sect("🌾 Fermes auto",d.farms);
+  }catch(e){ $("#earn").innerHTML='<div class="empty">Connexion requise.</div>'; }
+}
+
+async function loadPrices(){
+  try{
+    const d = await api("/api/prices"); const box=$("#prices");
+    box.innerHTML = d.prices.map(p=>{
+      const chg = p.chg==null?0:p.chg, cls=chg>=0?"up":"down", sign=chg>=0?"+":"";
+      const usd = p.usd==null?"—":"$"+Number(p.usd).toLocaleString();
+      return `<div class="row"><div style="font-size:18px">${p.icon}</div>
+        <div class="n">${p.sym}<div class="s">${sign}${chg.toFixed(2)}% / 24h</div></div>
+        <div class="${cls}" style="font-weight:800">${usd}</div></div>`;
+    }).join("");
+  }catch(e){ $("#prices").innerHTML='<div class="empty">Connexion requise.</div>'; }
+}
+async function convert(){
+  const coin=$("#cv-coin").value, fiat=$("#cv-fiat").value, amt=parseFloat($("#cv-amt").value||"0");
+  if(!amt){ toast("Entrez un montant"); return; }
+  try{ const d=await post("/api/convert",{coin,fiat,amount:amt});
+    $("#cv-res").innerHTML = `💵 ${amt} ${coin.toUpperCase()} = <span class="up">${d.total.toLocaleString(undefined,{maximumFractionDigits:2})} ${fiat.toUpperCase()}</span><br><span class="s">Tendance 24h : ${d.chg>=0?'+':''}${d.chg.toFixed(2)}%</span>`;
+  }catch(e){ toast("Erreur conversion"); }
+}
+
+async function loadTop(){
+  try{
+    const d = await api("/api/top"); const box=$("#top");
+    if(!d.top.length){ box.innerHTML='<div class="empty">🏆 Classement vide.</div>'; return; }
+    const m=["🥇","🥈","🥉"];
+    box.innerHTML = d.top.map(u=>`<div class="row">
+      <div class="medal">${u.rank<=3?m[u.rank-1]:u.rank}</div>
+      <div class="n">${esc(u.name)}${u.vip?' 👑':''}<div class="s">${u.id} · 👥 ${u.refs}</div></div>
+      <div style="font-weight:800">${u.points}</div></div>`).join("");
+  }catch(e){ $("#top").innerHTML='<div class="empty">Connexion requise.</div>'; }
+}
+
+async function loadProfil(){
+  try{
+    const d = await api("/api/profile"); const box=$("#profil");
+    box.innerHTML = d.games.length ? d.games.map(g=>`
+      <div class="card2">
+        ${g.img?`<img src="${g.img}" style="width:100%;border-radius:8px;margin-bottom:6px">`:''}
+        <b>🎮 ${esc(g.name)}</b> — <span class="s">niv. ${esc(g.stat)}</span>
+        <button class="pill g" style="float:right" onclick="delGame('${encodeURIComponent(g.name)}')">🗑</button>
+      </div>`).join("") : '<div class="empty">Aucun jeu. Ajoutez-en un ci-dessous.</div>';
+  }catch(e){ $("#profil").innerHTML='<div class="empty">Connexion requise.</div>'; }
+}
+async function addGame(){
+  const game=$("#pf-game").value.trim(), stat=$("#pf-stat").value.trim()||"—";
+  if(!game){ toast("Nom du jeu ?"); return; }
+  try{ await post("/api/profile",{game,stat}); $("#pf-game").value="";$("#pf-stat").value=""; toast("✅ Enregistré"); loadProfil(); }
+  catch(e){ toast("Erreur"); }
+}
+async function delGame(g){
+  try{ await post("/api/profile_del",{game:decodeURIComponent(g)}); toast("🗑 Supprimé"); loadProfil(); }
+  catch(e){ toast("Erreur"); }
+}
+
+async function loadTimers(){
+  try{
+    const d = await api("/api/timers");
+    $("#tm-game").innerHTML = d.games.map(g=>`<option value="${g.key}">${esc(g.name)}</option>`).join("");
+    $("#timers").innerHTML = d.games.map(g=>`<div class="row"><div class="n">${esc(g.name)}</div>
+      <div class="s">${g.left>0?('⏳ '+Math.floor(g.left/3600)+'h '+Math.floor(g.left%3600/60)+'m'):'❌ off'}</div></div>`).join("");
+  }catch(e){ $("#timers").innerHTML='<div class="empty">Connexion requise.</div>'; }
+}
+async function setTimer(){
+  const key=$("#tm-game").value, h=parseFloat($("#tm-h").value||"0");
+  try{ await post("/api/timer",{key,hours:h}); toast(h>0?`✅ Timer ${h}h`:"❌ Timer désactivé"); loadTimers(); }
+  catch(e){ toast("Erreur"); }
+}
+
+async function loadAvis(){
+  try{
+    const d = await api("/api/reviews"); const box=$("#avis");
+    box.innerHTML = d.reviews.length ? d.reviews.map(r=>`<div class="card2">
+      <b>👤 ${esc(r.user)}</b> <span class="s">${esc(r.date)}</span><p>${esc(r.text)}</p></div>`).join("")
+      : '<div class="empty">Aucun avis.</div>';
+  }catch(e){ $("#avis").innerHTML='<div class="empty">Connexion requise.</div>'; }
+}
+async function addReview(){
+  const text=$("#rv-text").value.trim();
+  if(!text){ toast("Écrivez un avis"); return; }
+  try{ const d=await post("/api/reviews",{text});
+    if(d.ok){ $("#rv-text").value=""; toast("✅ Merci !"); loadAvis(); } else toast("⚠️ "+(d.reason||"Refusé")); }
+  catch(e){ toast("Erreur"); }
+}
+
+async function loadPreuves(){
+  try{
+    const d = await api("/api/proofs"); const box=$("#preuves");
+    box.innerHTML = d.proofs.length ? d.proofs.map(u=>`<div class="combo"><img loading="lazy" src="${u}"></div>`).join("")
+      : '<div class="empty">Aucune preuve pour l\'instant.</div>';
+  }catch(e){ $("#preuves").innerHTML='<div class="empty">Connexion requise.</div>'; }
+}
+
+let TAR={};
+async function loadPub(){
+  try{
+    TAR = await api("/api/tariffs"); const box=$("#pub");
+    box.innerHTML = `<p class="s">📣 Votre pub est diffusée à toute la base.</p>` + TAR.ads.map(t=>`
+      <div class="card2"><b>${t.icon} ${esc(t.name)}</b> — <span class="up">${esc(t.price)}</span>
+        <div style="margin-top:8px">${TAR.methods.map(m=>`<span class="pill" onclick="payFlow('ad','${t.key}','${m.key}')">${esc(m.label)}</span>`).join("")}</div>
+      </div>`).join("");
+  }catch(e){ $("#pub").innerHTML='<div class="empty">Connexion requise.</div>'; }
+}
+async function loadVip(){
+  try{
+    TAR = await api("/api/tariffs"); const box=$("#vipbuy");
+    const head = ME.vip?`<div class="warn" style="background:#1c2a1f;border-color:#2f5a3a;color:#4dd0a7">👑 VIP actif — ${ME.vip_days} j restants</div>`:'';
+    box.innerHTML = head + TAR.vip.map(t=>`
+      <div class="card2"><b>${t.icon} ${esc(t.name)}</b> — <span class="up">${esc(t.price)}</span>
+        <p>🚫 Sans pub · 💎 badge profil & top</p>
+        <div>${TAR.methods.map(m=>`<span class="pill" onclick="payFlow('vip','${t.key}','${m.key}')">${esc(m.label)}</span>`).join("")}</div>
+      </div>`).join("");
+  }catch(e){ $("#vipbuy").innerHTML='<div class="empty">Connexion requise.</div>'; }
+}
+function payFlow(kind,tkey,mkey){
+  const m = TAR.methods.find(x=>x.key===mkey);
+  const addr = TAR.wallets[m.wallet_key] || "—";
+  const isAd = kind==='ad';
+  const box = isAd ? $("#pub") : $("#vipbuy");
+  box.insertAdjacentHTML("afterbegin", `<div class="card2" id="paybox">
+    <b>💳 Paiement — ${esc(m.label)}</b>
+    <label>Adresse (cliquez pour copier)</label>
+    <div class="addr" onclick="copy('${addr}')">${addr}</div>
+    ${isAd?'<label>Texte de la pub + hash de transaction</label><textarea id="pay-text" placeholder="Votre pub…\nhash: ..."></textarea>'
+          :'<label>Hash de la transaction</label><input id="pay-text" placeholder="hash de la tx">'}
+    <button class="btn sm" style="width:100%;margin-top:10px" onclick="sendPay('${kind}','${tkey}','${mkey}')">✅ J'ai payé, vérifier</button>
+  </div>`);
+  window.scrollTo(0,0);
+}
+function copy(t){ if(navigator.clipboard) navigator.clipboard.writeText(t); toast("📋 Adresse copiée"); }
+async function sendPay(kind,tkey,mkey){
+  const content=$("#pay-text").value.trim();
+  if(!content){ toast("Collez le hash"); return; }
+  toast("⏳ Vérification…");
+  try{ const d=await post("/api/pay",{kind,tariff_key:tkey,method_key:mkey,content});
+    if(d.status==='sent'){ toast("🎉 Payé ! Pub en diffusion"); loadPub(); }
+    else if(d.status==='vip'){ toast(`🎉 VIP activé ${d.days} j !`); loadMe(); loadVip(); }
+    else if(d.status==='moderation'){ toast("🛡 Payé — en modération"); }
+    else toast("⚠️ "+(d.reason||"Échec vérification"));
+  }catch(e){ toast("Erreur"); }
+}
+
+async function loadAlertes(){
+  try{
+    const d = await api("/api/alerts"); const box=$("#alertes");
+    box.innerHTML = d.alerts.length ? d.alerts.map(a=>`<div class="row"><div class="n">${a.coin.toUpperCase()} ${a.op} $${a.value}</div></div>`).join("")
+      : '<div class="empty">Aucune alerte.</div>';
+  }catch(e){ $("#alertes").innerHTML='<div class="empty">Connexion requise.</div>'; }
+}
+async function addAlert(){
+  const coin=$("#al-coin").value, op=$("#al-op").value, value=parseFloat($("#al-val").value||"0");
+  if(!value){ toast("Prix cible ?"); return; }
+  try{ const d=await post("/api/alerts",{coin,op,value});
+    if(d.ok){ $("#al-val").value=""; toast("🔔 Alerte créée"); loadAlertes(); } else toast("⚠️ "+(d.reason||"Refusé")); }
+  catch(e){ toast("Erreur"); }
+}
+async function clearAlerts(){ try{ await post("/api/alerts_clear",{}); toast("🗑 Alertes supprimées"); loadAlertes(); }catch(e){ toast("Erreur"); } }
+
+async function setLang(l){ try{ await post("/api/lang",{lang:l}); toast("✅ Langue: "+l.toUpperCase()); }catch(e){ toast("Erreur"); } }
+async function toggleDigest(){ try{ const d=await post("/api/digest",{}); toast(d.on?"🌅 Digest activé":"🌅 Digest désactivé"); }catch(e){ toast("Erreur"); } }
+async function loadAide(){ try{ const d=await api("/api/help"); $("#aide").textContent=d.text; }catch(e){ $("#aide").textContent="Connexion requise."; } }
+
+async function loadAdmin(){
+  if(!ME.is_admin){ show('home'); return; }
+  try{ const d=await api("/api/admin/stats"); $("#adm-stats").textContent=d.text; }catch(e){ $("#adm-stats").textContent="Erreur"; }
+}
+async function admBroadcast(){ const text=$("#ad-bc").value.trim(); if(!text){toast("Message ?");return;}
+  try{ await post("/api/admin/broadcast",{text}); $("#ad-bc").value=""; toast("📣 Diffusion lancée"); }catch(e){ toast("Erreur"); } }
+async function admVip(){ const uid=$("#ad-vu").value.trim(), days=parseInt($("#ad-vd").value||"0");
+  if(!uid||!days){toast("ID + jours ?");return;}
+  try{ await post("/api/admin/vipgrant",{uid,days}); toast("👑 VIP attribué"); }catch(e){ toast("Erreur"); } }
+async function admBan(b){ const uid=$("#ad-bu").value.trim(); if(!uid){toast("ID ?");return;}
+  try{ await post("/api/admin/"+(b?"ban":"unban"),{uid}); toast(b?"🚫 Banni":"✅ Débanni"); }catch(e){ toast("Erreur"); } }
+async function admScam(){ const domain=$("#ad-sc").value.trim(); if(!domain){toast("Domaine ?");return;}
+  try{ const d=await post("/api/admin/scam",{domain}); $("#ad-sc").value=""; toast(d.ok?"🚫 Ajouté":"⚠️ Invalide"); }catch(e){ toast("Erreur"); } }
+async function admBackup(){ try{ await post("/api/admin/backup",{}); toast("💾 Backup lancé (voir Telegram)"); }catch(e){ toast("Erreur"); } }
+
+$("#checkin").onclick=async()=>{
+  try{ const d=await post("/api/checkin",{});
+    if(d.claimed){ toast(`🎁 +${d.reward} pts · série ${d.streak} j`); $("#pts").textContent=d.total; $("#stk").textContent=d.streak+" j"; }
+    else toast("✅ Bonus déjà pris aujourd'hui");
+  }catch(e){ toast("🔒 Ouvre depuis Telegram"); }
+};
+$("#invite").onclick=()=>{ const l=ME.invite_link; if(!l)return toast("🔒 Ouvre depuis Telegram");
+  const txt="🚀 Rejoins CRYPTO HUB — combos, mining & crypto !";
+  if(tg) tg.openTelegramLink("https://t.me/share/url?url="+encodeURIComponent(l)+"&text="+encodeURIComponent(txt));
+  else toast(l); };
+
+loadMe();
+</script>
+</body>
+</html>"""
+
+
+if _FLASK_OK:
+    web_app = Flask(__name__)
+    _img_path_cache = {}
+
+    def _webapp_uid():
+        init = request.headers.get("X-Telegram-Init-Data", "") or request.args.get("initData", "")
+        ok, user = verify_init_data(init)
+        if not ok or not user.get("id"):
+            return None, {}
+        return int(user["id"]), user
+
+    def _is_admin(uid):
+        return str(uid) == str(ADMIN_CHAT_ID)
+
+    def _catalog_links(data):
+        seen, res = set(), []
+        for k in ("ref_link_1", "ref_link_2", "play_market"):
+            u = data.get(k)
+            if u and u not in seen:
+                seen.add(u)
+                res.append(u)
+        return res
+
+    @web_app.route("/")
+    def _web_index():
+        return Response(WEBAPP_HTML, mimetype="text/html")
+
+    @web_app.route("/api/me")
+    def _web_me():
+        uid, user = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        return jsonify({
+            "id": mask_id(uid),
+            "name": re.sub(r'[<>]', '', (user.get("first_name") or "👤"))[:20],
+            "points": get_points(uid), "streak": get_streak(uid),
+            "vip": is_vip(uid), "vip_days": vip_days_left(uid),
+            "referrals": referral_count(uid),
+            "invite_link": f"https://t.me/{get_bot_username()}?start=ref_{uid}",
+            "degraded": is_degraded(),
+            "is_admin": _is_admin(uid),
+            "lang": get_lang(uid),
+            "digest": uid in digest_subs,
+        })
+
+    @web_app.route("/api/checkin", methods=["POST"])
+    def _web_checkin():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        claimed, streak, reward, total = daily_checkin(uid)
+        return jsonify({"claimed": claimed, "streak": streak, "reward": reward, "total": total})
+
+    @web_app.route("/api/combos")
+    def _web_combos():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        out = []
+        for key, info in manager.combo_games.items():
+            fid, dtext = find_today_combo_fileid(key)
+            today = True
+            if not fid:
+                fid, dtext = find_last_combo_fileid(key)
+                today = False
+            out.append({
+                "key": key,
+                "name": info.get("name", key),
+                "date": dtext or "",
+                "img": f"/img/{fid}" if fid else None,
+                "today": bool(fid) and today,
+                "ref": info.get("ref_link_1") or info.get("play_market"),
+                "subscribed": is_combo_subscribed(key, uid),
+            })
+        return jsonify({"combos": out})
+
+    @web_app.route("/api/combo_sub", methods=["POST"])
+    def _web_combo_sub():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        key = (request.json or {}).get("key", "")
+        if key not in manager.combo_games:
+            return jsonify({"error": "no game"}), 400
+        return jsonify({"subscribed": toggle_combo_sub(key, uid)})
+
+    @web_app.route("/api/catalogs")
+    def _web_catalogs():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+
+        def pack(d):
+            out = []
+            for _k, it in d.items():
+                out.append({
+                    "name": it.get("name", _k),
+                    "description": it.get("description") or it.get("strategy") or "",
+                    "links": _catalog_links(it),
+                    "code": it.get("code", ""),
+                })
+            return out
+
+        return jsonify({
+            "miners": pack(manager.phone_miners),
+            "faucets": pack(manager.crypto_faucets),
+            "farms": pack(manager.independent_farms),
+        })
+
+    @web_app.route("/api/prices")
+    def _web_pr():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        return jsonify({"prices": web_prices()})
+
+    @web_app.route("/api/convert", methods=["POST"])
+    def _web_convert():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        b = request.json or {}
+        coin = str(b.get("coin", "btc")).lower()
+        fiat = str(b.get("fiat", "usd")).lower()
+        try:
+            amt = float(b.get("amount", 0))
+        except Exception:
+            amt = 0.0
+        cid = COIN_ID_MAP.get(coin, "bitcoin")
+        try:
+            url = f"https://api.coingecko.com/api/v3/simple/price?ids={cid}&vs_currencies={fiat}&include_24hr_change=true"
+            d = cached_json_get(url).get(cid, {})
+            rate = d.get(fiat, 0) or 0
+            chg = d.get(fiat + "_24h_change", 0) or 0
+            return jsonify({"total": rate * amt, "chg": chg})
+        except Exception:
+            return jsonify({"error": "api"}), 502
+
+    @web_app.route("/api/top")
+    def _web_top():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        out = []
+        for i, (u, pts) in enumerate(points_leaderboard(10)):
+            out.append({"rank": i + 1, "name": display_name(u), "id": mask_id(u),
+                        "points": pts, "vip": is_vip(u), "refs": referral_count(u)})
+        return jsonify({"top": out})
+
+    @web_app.route("/api/profile")
+    def _web_profile():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        games = []
+        for name, gd in (user_game_stats.get(uid, {}) or {}).items():
+            games.append({
+                "name": name,
+                "stat": gd.get("stat", "—"),
+                "img": f"/img/{gd['photo']}" if gd.get("photo") else None,
+            })
+        return jsonify({"games": games})
+
+    @web_app.route("/api/profile", methods=["POST"])
+    def _web_profile_add():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        b = request.json or {}
+        game = str(b.get("game", "")).strip()[:24]
+        stat = str(b.get("stat", "—")).strip() or "—"
+        if not game:
+            return jsonify({"error": "no game"}), 400
+        user_game_stats.setdefault(uid, {})
+        prev = user_game_stats[uid].get(game, {}).get("photo")
+        user_game_stats[uid][game] = {"stat": stat, "photo": prev}
+        save_user_stats()
+        return jsonify({"ok": True})
+
+    @web_app.route("/api/profile_del", methods=["POST"])
+    def _web_profile_del():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        game = str((request.json or {}).get("game", ""))
+        if uid in user_game_stats and game in user_game_stats[uid]:
+            user_game_stats[uid].pop(game, None)
+            save_user_stats()
+        return jsonify({"ok": True})
+
+    @web_app.route("/api/timers")
+    def _web_timers():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        now = time.time()
+        mine = user_game_timers.get(uid, {})
+        games = []
+        allg = {}
+        allg.update({k: v.get("name", k) for k, v in manager.combo_games.items()})
+        allg.update({k: v.get("name", k) for k, v in manager.independent_farms.items()})
+        for k, nm in allg.items():
+            ti = mine.get(k)
+            tgt = ti.get("target") if ti else None
+            left = int(tgt - now) if (tgt and tgt > now) else 0
+            games.append({"key": k, "name": nm, "left": left})
+        return jsonify({"games": games})
+
+    @web_app.route("/api/timer", methods=["POST"])
+    def _web_timer_set():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        b = request.json or {}
+        key = b.get("key", "")
+        try:
+            hours = float(b.get("hours", 0))
+        except Exception:
+            hours = 0
+        if key not in manager.combo_games and key not in manager.independent_farms:
+            return jsonify({"error": "no game"}), 400
+        user_game_timers.setdefault(uid, {})
+        if hours <= 0:
+            user_game_timers[uid].pop(key, None)
+        else:
+            user_game_timers[uid][key] = {"target": time.time() + hours * 3600, "duration_hours": hours}
+        save_timers()
+        return jsonify({"ok": True})
+
+    @web_app.route("/api/reviews")
+    def _web_reviews():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        return jsonify({"reviews": list(reversed(user_reviews_storage[-15:]))})
+
+    @web_app.route("/api/reviews", methods=["POST"])
+    def _web_review_add():
+        uid, user = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        raw = str((request.json or {}).get("text", "")).strip()
+        if not raw:
+            return jsonify({"ok": False, "reason": "vide"})
+        clean = security_core.sanitize_input(raw)
+        is_threat, _ = security_core.analyze_traffic(raw)
+        if is_threat or clean == "[BLOCKED_INJECTION_ATTEMPT]" or any(x in raw.lower() for x in ["http://", "https://", "t.me/"]):
+            return jsonify({"ok": False, "reason": "Liens/spam interdits"})
+        name = re.sub(r'[<>]', '', (user.get("first_name") or "Аноним"))[:20]
+        user_reviews_storage.append({"user": name, "text": clean, "date": time.strftime("%d.%m.%Y %H:%M")})
+        save_reviews()
+        try:
+            sender.send_message_direct(ADMIN_CHAT_ID, f"💬 Nouvel avis (app) de {name}:\n\n{clean}", None, None)
+        except Exception:
+            pass
+        return jsonify({"ok": True})
+
+    @web_app.route("/api/proofs")
+    def _web_proofs():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        return jsonify({"proofs": [f"/img/{fid}" for fid in cloud_proofs[-12:] if fid]})
+
+    @web_app.route("/api/tariffs")
+    def _web_tariffs():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        ads = [{"key": k, "icon": v.get("icon", ""), "name": v.get("name", k), "price": v.get("price", "")}
+               for k, v in ADS_TARIFFS.items()]
+        vip = [{"key": k, "icon": v.get("icon", ""), "name": v.get("name", k), "price": v.get("price", "")}
+               for k, v in VIP_TARIFFS.items()]
+        methods = [{"key": k, "label": v.get("label", k), "coin": v.get("coin", ""),
+                    "network": v.get("network", ""), "wallet_key": v.get("wallet_key", "")}
+                   for k, v in PAYMENT_METHODS.items()]
+        wallets = {k: v.get("address", "") for k, v in SAFEPAL_WALLETS.items()}
+        return jsonify({"ads": ads, "vip": vip, "methods": methods, "wallets": wallets})
+
+    @web_app.route("/api/pay", methods=["POST"])
+    def _web_pay():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        b = request.json or {}
+        kind = b.get("kind")
+        method = PAYMENT_METHODS.get(b.get("method_key", ""))
+        content = str(b.get("content", ""))
+        if not method:
+            return jsonify({"status": "failed", "reason": "Méthode inconnue"})
+        network = method["network"]
+        our_addr = SAFEPAL_WALLETS.get(method["wallet_key"], {}).get("address", "")
+        tx_hash = extract_ton_hash(content) if network == "ton" else extract_tx_hash(content)
+        verify_fn = {"bitcoin": verify_btc, "ton": verify_ton, "tron": verify_usdt_trc20}.get(network)
+        if not verify_fn or not tx_hash or not our_addr:
+            return jsonify({"status": "failed", "reason": "Hash introuvable ou adresse non configurée"})
+
+        if kind == "vip":
+            vinfo = VIP_TARIFFS.get(b.get("tariff_key", ""), {})
+            days = vinfo.get("days", 0)
+            ok, reason = verify_fn(tx_hash, parse_price_usd(vinfo.get("price", "0")), our_addr)
+            if ok:
+                canon = _ton_hash_to_hex(tx_hash) if network == "ton" else tx_hash
+                mark_tx_used(canon or tx_hash)
+                grant_vip(uid, days)
+                try:
+                    sender.send_message_direct(ADMIN_CHAT_ID, f"👑 VIP acheté (app)\n👤 {uid}\n📋 {vinfo.get('name')}\n💰 {reason}", None, None)
+                except Exception:
+                    pass
+                return jsonify({"status": "vip", "days": days})
+            return jsonify({"status": "failed", "reason": reason})
+
+        # kind == "ad"
+        tinfo = ADS_TARIFFS.get(b.get("tariff_key", ""), {})
+        ok, reason = verify_fn(tx_hash, parse_price_usd(tinfo.get("price", "0")), our_addr)
+        if not ok:
+            return jsonify({"status": "failed", "reason": reason})
+        canon = _ton_hash_to_hex(tx_hash) if network == "ton" else tx_hash
+        mark_tx_used(canon or tx_hash)
+        creative = clean_ad_creative(content, canon or tx_hash)
+        order_id = f"ord_{uid}_{int(time.time())}"
+        dur_h = tinfo.get("duration_hours", 0)
+        is_threat, threat_reason = security_core.analyze_traffic(creative)
+        if is_threat:
+            pending_ad_orders[order_id] = {
+                "user_id": uid, "tariff": tinfo.get("name", ""), "tariff_key": b.get("tariff_key", ""),
+                "coin": method["coin"], "content": creative, "created_at": time.time(), "paid": True,
+            }
+            try:
+                sender.send_message_direct(ADMIN_CHAT_ID,
+                    f"🛡 Pub payée (app) à modérer\n👤 {uid}\n⚠️ {threat_reason}\n\n{creative}", None, None)
+            except Exception:
+                pass
+            return jsonify({"status": "moderation"})
+        if dur_h > 0:
+            try:
+                ads_manager.add_ad(order_id, uid, time.time() + dur_h * 3600, creative)
+            except Exception:
+                pass
+        sender.broadcast_ad(creative, verified_users, ADMIN_CHAT_ID, tariff_name=tinfo.get("name", ""), order_id=order_id)
+        return jsonify({"status": "sent"})
+
+    @web_app.route("/api/alerts")
+    def _web_alerts():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        mine = [{"coin": a["coin"], "op": a["op"], "value": a["value"]}
+                for a in price_alerts if a.get("user") == uid]
+        return jsonify({"alerts": mine})
+
+    @web_app.route("/api/alerts", methods=["POST"])
+    def _web_alert_add():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        b = request.json or {}
+        coin = str(b.get("coin", "")).lower()
+        op = b.get("op", ">")
+        try:
+            value = float(b.get("value", 0))
+        except Exception:
+            value = 0
+        if coin not in COIN_ID_MAP:
+            return jsonify({"ok": False, "reason": "Monnaie non supportée"})
+        if value <= 0:
+            return jsonify({"ok": False, "reason": "Prix invalide"})
+        if sum(1 for a in price_alerts if a.get("user") == uid) >= 10:
+            return jsonify({"ok": False, "reason": "Limite de 10 alertes"})
+        price_alerts.append({"user": uid, "coin": coin, "op": op, "value": value})
+        save_price_alerts()
+        return jsonify({"ok": True})
+
+    @web_app.route("/api/alerts_clear", methods=["POST"])
+    def _web_alerts_clear():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        price_alerts[:] = [a for a in price_alerts if a.get("user") != uid]
+        save_price_alerts()
+        return jsonify({"ok": True})
+
+    @web_app.route("/api/lang", methods=["POST"])
+    def _web_lang():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        lang = (request.json or {}).get("lang", "ru")
+        set_lang(uid, lang)
+        return jsonify({"ok": True, "lang": get_lang(uid)})
+
+    @web_app.route("/api/digest", methods=["POST"])
+    def _web_digest():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        if uid in digest_subs:
+            digest_subs.discard(uid)
+            on = False
+        else:
+            digest_subs.add(uid)
+            on = True
+        save_digest_subs()
+        return jsonify({"on": on})
+
+    @web_app.route("/api/help")
+    def _web_help():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        return jsonify({"text": t("help", get_lang(uid)) or "Aide indisponible."})
+
+    # ---------------- ADMIN ----------------
+    @web_app.route("/api/admin/stats")
+    def _web_adm_stats():
+        uid, _ = _webapp_uid()
+        if not uid or not _is_admin(uid):
+            return jsonify({"error": "forbidden"}), 403
+        active_timers = sum(len(x) for x in user_game_timers.values())
+        subs_total = sum(len(v) for v in combo_subscribers.values())
+        total_ref = sum(len(v) for v in referral_store["invited"].values())
+        text = (
+            "🎛 Statistiques\n"
+            f"👥 Utilisateurs : {len(verified_users)}\n"
+            f"🚫 Bannis : {len(account_guard.banned)}\n"
+            f"⏰ Timers actifs : {active_timers}\n"
+            f"🔔 Abonnements combo : {subs_total}\n"
+            f"📢 Pubs actives : {len(ads_manager.storage)}\n"
+            f"🧾 Demandes en attente : {len(pending_ad_orders)}\n"
+            f"💬 Avis : {len(user_reviews_storage)}\n"
+            f"💎 Preuves : {len(cloud_proofs)}\n"
+            f"👥 Parrainages : {total_ref}\n"
+            f"✅ Paiements vérifiés : {len(used_tx_hashes)}\n"
+            f"🌐 Réseau externe : {'⚠️ dégradé' if is_degraded() else '✅ OK'}"
+        )
+        return jsonify({"text": text})
+
+    @web_app.route("/api/admin/broadcast", methods=["POST"])
+    def _web_adm_broadcast():
+        uid, _ = _webapp_uid()
+        if not uid or not _is_admin(uid):
+            return jsonify({"error": "forbidden"}), 403
+        text = str((request.json or {}).get("text", "")).strip()
+        if not text:
+            return jsonify({"ok": False})
+        sender.broadcast_message(text, verified_users, ADMIN_CHAT_ID)
+        return jsonify({"ok": True})
+
+    @web_app.route("/api/admin/vipgrant", methods=["POST"])
+    def _web_adm_vip():
+        uid, _ = _webapp_uid()
+        if not uid or not _is_admin(uid):
+            return jsonify({"error": "forbidden"}), 403
+        b = request.json or {}
+        try:
+            tuid, days = int(b.get("uid")), int(b.get("days"))
+        except Exception:
+            return jsonify({"ok": False})
+        grant_vip(tuid, days)
+        try:
+            sender.send_message_direct(tuid, f"👑 VIP activé {days} j !", None, None)
+        except Exception:
+            pass
+        return jsonify({"ok": True})
+
+    @web_app.route("/api/admin/ban", methods=["POST"])
+    def _web_adm_ban():
+        uid, _ = _webapp_uid()
+        if not uid or not _is_admin(uid):
+            return jsonify({"error": "forbidden"}), 403
+        account_guard.ban((request.json or {}).get("uid"), "ban via app admin")
+        return jsonify({"ok": True})
+
+    @web_app.route("/api/admin/unban", methods=["POST"])
+    def _web_adm_unban():
+        uid, _ = _webapp_uid()
+        if not uid or not _is_admin(uid):
+            return jsonify({"error": "forbidden"}), 403
+        account_guard.unban((request.json or {}).get("uid"))
+        return jsonify({"ok": True})
+
+    @web_app.route("/api/admin/scam", methods=["POST"])
+    def _web_adm_scam():
+        uid, _ = _webapp_uid()
+        if not uid or not _is_admin(uid):
+            return jsonify({"error": "forbidden"}), 403
+        ok = link_guard.add_scam_domain((request.json or {}).get("domain", ""))
+        return jsonify({"ok": bool(ok)})
+
+    @web_app.route("/api/admin/backup", methods=["POST"])
+    def _web_adm_backup():
+        uid, _ = _webapp_uid()
+        if not uid or not _is_admin(uid):
+            return jsonify({"error": "forbidden"}), 403
+        threading.Thread(target=backup_all_files, args=(bot, ADMIN_CHAT_ID), daemon=True).start()
+        return jsonify({"ok": True})
+
+    @web_app.route("/img/<path:file_id>")
+    def _web_img(file_id):
+        """Proxy image Telegram : le token reste côté serveur."""
+        try:
+            fp = _img_path_cache.get(file_id)
+            if not fp:
+                fp = bot.get_file(file_id).file_path
+                _img_path_cache[file_id] = fp
+            r = requests.get(f"https://api.telegram.org/file/bot{TOKEN}/{fp}", timeout=10)
+            return Response(r.content, mimetype="image/jpeg")
+        except Exception:
+            return Response(status=404)
+
+
+def run_web_server():
+    """Sert le Mini App en local (le tunnel / l'URL publique pointe dessus)."""
+    if not _FLASK_OK:
+        return
+    try:
+        logger.info(f"🌐 Serveur Mini App en écoute sur http://localhost:{WEBAPP_PORT}")
+        web_app.run(host="0.0.0.0", port=WEBAPP_PORT, threaded=True, use_reloader=False)
+    except Exception as e:
+        logger.error(f"Serveur Mini App arrêté : {e}")
+
+
+def setup_webapp_button():
+    """Installe le bouton menu Telegram (☰ → 🚀 App) qui ouvre le Mini App."""
+    if not WEBAPP_URL:
+        return
+    web_app = types.WebAppInfo(url=WEBAPP_URL)
+    try:
+        # Selon la version de pyTelegramBotAPI, MenuButtonWebApp exige (ou non)
+        # l'argument positionnel `type`. On tente d'abord avec, puis sans.
+        try:
+            menu_btn = types.MenuButtonWebApp(type="web_app", text="🚀 App", web_app=web_app)
+        except TypeError:
+            menu_btn = types.MenuButtonWebApp(text="🚀 App", web_app=web_app)
+        bot.set_chat_menu_button(menu_button=menu_btn)
+        logger.info("✅ Bouton Mini App installé dans le menu Telegram.")
+    except Exception as e:
+        logger.error(f"Bouton Mini App non installé : {e}")
+
+
+def _cloudflared_arch_suffix():
+    """Renvoie le suffixe d'architecture cloudflared (arm64/arm/amd64/386)
+    correspondant au CPU courant, ou None si inconnu."""
+    m = (platform.machine() or "").lower()
+    if m in ("aarch64", "arm64"):
+        return "arm64"
+    if m.startswith("arm") or m in ("armv7l", "armv6l"):
+        return "arm"
+    if m in ("x86_64", "amd64"):
+        return "amd64"
+    if m in ("i386", "i686", "x86"):
+        return "386"
+    return None
+
+
+def ensure_cloudflared():
+    """Retourne le chemin d'un exécutable cloudflared utilisable.
+    Si absent, tente une installation auto (Termux → pkg, Debian/Kali → .deb,
+    sinon binaire officiel téléchargé localement). Renvoie None si impossible."""
+    # 1) Déjà présent dans le PATH ?
+    found = shutil.which("cloudflared")
+    if found:
+        return found
+
+    # 1bis) Binaire déjà téléchargé lors d'un run précédent ?
+    local_bin = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cloudflared")
+    if os.path.isfile(local_bin) and os.access(local_bin, os.X_OK):
+        return local_bin
+
+    print("📦 cloudflared absent — tentative d'installation auto...", flush=True)
+
+    # 2) Termux → gestionnaire de paquets pkg
+    if shutil.which("pkg"):
+        try:
+            subprocess.run(["pkg", "install", "-y", "cloudflared"], timeout=600)
+            found = shutil.which("cloudflared")
+            if found:
+                print("✅ cloudflared installé via pkg (Termux).", flush=True)
+                return found
+        except Exception as e:
+            logger.warning(f"🌐 Install via pkg échouée : {e}")
+
+    arch = _cloudflared_arch_suffix()
+    if not arch:
+        logger.warning(f"🌐 Architecture CPU inconnue ({platform.machine()}), "
+                       "install auto impossible.")
+        return None
+
+    # 3) Debian/Kali → paquet .deb officiel
+    if shutil.which("dpkg"):
+        try:
+            deb_arch = {"arm64": "arm64", "arm": "arm", "amd64": "amd64", "386": "386"}[arch]
+            url = ("https://github.com/cloudflare/cloudflared/releases/latest/"
+                   f"download/cloudflared-linux-{deb_arch}.deb")
+            deb_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "cloudflared.deb")
+            print(f"📦 Téléchargement {url} ...", flush=True)
+            urllib.request.urlretrieve(url, deb_path)
+            # dpkg -i nécessite souvent les droits root ; sudo si dispo.
+            installer = (["sudo", "dpkg", "-i", deb_path]
+                         if shutil.which("sudo") else ["dpkg", "-i", deb_path])
+            subprocess.run(installer, timeout=600)
+            try:
+                os.remove(deb_path)
+            except Exception:
+                pass
+            found = shutil.which("cloudflared")
+            if found:
+                print("✅ cloudflared installé via .deb.", flush=True)
+                return found
+        except Exception as e:
+            logger.warning(f"🌐 Install via .deb échouée : {e}")
+
+    # 4) Dernier recours : binaire brut téléchargé dans le dossier du bot
+    try:
+        url = ("https://github.com/cloudflare/cloudflared/releases/latest/"
+               f"download/cloudflared-linux-{arch}")
+        print(f"📦 Téléchargement du binaire {url} ...", flush=True)
+        urllib.request.urlretrieve(url, local_bin)
+        st = os.stat(local_bin)
+        os.chmod(local_bin, st.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        if os.access(local_bin, os.X_OK):
+            print("✅ cloudflared téléchargé (binaire local).", flush=True)
+            return local_bin
+    except Exception as e:
+        logger.warning(f"🌐 Téléchargement du binaire échoué : {e}")
+
+    return None
+
+
+# État courant du tunnel cloudflared (pour l'auto-réparation du lien).
+_cf_tunnel = {"proc": None, "url": None, "fails": 0}
+
+
+def _announce_tunnel_url(new_url):
+    """Met à jour WEBAPP_URL, réinstalle le bouton menu et prévient l'admin —
+    uniquement si l'URL a changé (évite le spam à chaque reconnexion)."""
+    global WEBAPP_URL
+    if not new_url or new_url == WEBAPP_URL:
+        return
+    WEBAPP_URL = new_url
+    _cf_tunnel["url"] = new_url
+    logger.info(f"🌐 Tunnel actif → {WEBAPP_URL}")
+    setup_webapp_button()
+    try:
+        bot.send_message(
+            ADMIN_CHAT_ID,
+            f"🌐 *Mini App en ligne !*\nURL publique : {WEBAPP_URL}\n"
+            "Le bouton 🚀 App (menu ☰) est à jour automatiquement.",
+            parse_mode="Markdown"
+        )
+    except Exception:
+        pass
+
+
+def start_cloudflared_tunnel():
+    """Superviseur cloudflared : (re)lance le tunnel EN BOUCLE et s'auto-répare.
+    Si cloudflared s'arrête (perte réseau, veille du téléphone, tunnel cassé),
+    on le relance tout seul, on récupère la NOUVELLE URL, on réinstalle le
+    bouton et on prévient l'admin. => le lien se répare sans intervention.
+    Si cloudflared est absent, tente d'abord de l'installer automatiquement."""
+    cf_bin = ensure_cloudflared()
+    if not cf_bin:
+        logger.warning("🌐 cloudflared introuvable et install auto impossible. "
+                       "Installe-le une fois (ex. `pkg install cloudflared` / "
+                       "binaire officiel) ou renseigne WEBAPP_URL manuellement.")
+        try:
+            bot.send_message(ADMIN_CHAT_ID,
+                             "🌐 Mini App : cloudflared n'est pas installé et "
+                             "l'installation automatique a échoué.\n"
+                             "Installe-le une fois, ou mets une URL dans WEBAPP_URL.")
+        except Exception:
+            pass
+        return
+
+    pattern = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+    backoff = 5
+    while True:
+        proc = None
+        try:
+            proc = subprocess.Popen(
+                [cf_bin, "tunnel", "--no-autoupdate", "--url", f"http://localhost:{WEBAPP_PORT}"],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+            )
+            _cf_tunnel["proc"] = proc
+            _cf_tunnel["fails"] = 0
+            # Lecture bloquante de la sortie : capte l'URL et garde le thread
+            # « accroché » au process tant qu'il vit.
+            for line in proc.stdout:
+                m = pattern.search(line)
+                if m:
+                    backoff = 5                       # tunnel OK → reset du back-off
+                    _announce_tunnel_url(m.group(0))
+            # La sortie s'est fermée => cloudflared s'est arrêté : on relance.
+            logger.warning("🌐 Tunnel cloudflared arrêté — relance automatique...")
+        except Exception as e:
+            logger.error(f"🌐 Superviseur cloudflared : {e}")
+        finally:
+            try:
+                if proc and proc.poll() is None:
+                    proc.terminate()
+            except Exception:
+                pass
+            _cf_tunnel["proc"] = None
+        time.sleep(backoff)
+        backoff = min(300, backoff * 2)               # back-off progressif (max 5 min)
+
+
+def cloudflared_health_watchdog():
+    """Sonde l'URL publique toutes les 2 min. Si elle renvoie une erreur
+    Cloudflare (530 = 1033 « tunnel non routé », ou 5xx) 3 fois de suite,
+    on tue cloudflared : le superviseur relance alors un tunnel NEUF.
+    => auto-réparation du lien même si le process reste « vivant » mais cassé."""
+    while True:
+        time.sleep(120)
+        url = _cf_tunnel.get("url")
+        proc = _cf_tunnel.get("proc")
+        if not url or not proc:
+            continue
+        try:
+            r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+            # 530 = erreur 1033 (tunnel non routé) ; 502/503/504 = origine injoignable.
+            if r.status_code in (502, 503, 504, 530):
+                _cf_tunnel["fails"] = _cf_tunnel.get("fails", 0) + 1
+            else:
+                _cf_tunnel["fails"] = 0
+        except Exception:
+            _cf_tunnel["fails"] = _cf_tunnel.get("fails", 0) + 1
+        # 3 échecs consécutifs (~6 min) → relance forcée du tunnel.
+        if _cf_tunnel.get("fails", 0) >= 3:
+            logger.error("🌐 [CF-WATCHDOG] Lien cassé (1033/5xx) — relance forcée du tunnel.")
+            _cf_tunnel["fails"] = 0
+            try:
+                if proc and proc.poll() is None:
+                    proc.terminate()              # le superviseur relancera un tunnel neuf
+            except Exception:
+                pass
+
+
+# Démarrage du serveur web + URL publique (manuelle ou auto-tunnel).
+if _FLASK_OK:
+    threading.Thread(target=run_web_server, daemon=True).start()
+    if WEBAPP_URL:
+        setup_webapp_button()
+        print(f"🌐 Mini App web : ACTIF → {WEBAPP_URL}", flush=True)
+    elif WEBAPP_AUTOTUNNEL:
+        threading.Thread(target=start_cloudflared_tunnel, daemon=True).start()
+        threading.Thread(target=cloudflared_health_watchdog, daemon=True).start()
+        print(f"🌐 Mini App web : serveur lancé (port {WEBAPP_PORT}) · tunnel cloudflared auto + auto-réparation en cours...", flush=True)
+    else:
+        print(f"🌐 Mini App web : serveur local lancé (port {WEBAPP_PORT}) mais sans URL publique (WEBAPP_URL vide, auto-tunnel off).", flush=True)
+else:
+    print("🌐 Mini App web : désactivé (Flask indisponible).", flush=True)
 
 if __name__ == "__main__":
     # ========================================================
