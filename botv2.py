@@ -20,6 +20,9 @@ import json
 from datetime import datetime
 import math
 import subprocess
+import shutil
+import platform
+import stat
 from colorama import Fore
 import urllib.parse
 from typing import Tuple, Dict, List, Any
@@ -5483,27 +5486,122 @@ def setup_webapp_button():
         logger.error(f"Bouton Mini App non installé : {e}")
 
 
+def _cloudflared_arch_suffix():
+    """Renvoie le suffixe d'architecture cloudflared (arm64/arm/amd64/386)
+    correspondant au CPU courant, ou None si inconnu."""
+    m = (platform.machine() or "").lower()
+    if m in ("aarch64", "arm64"):
+        return "arm64"
+    if m.startswith("arm") or m in ("armv7l", "armv6l"):
+        return "arm"
+    if m in ("x86_64", "amd64"):
+        return "amd64"
+    if m in ("i386", "i686", "x86"):
+        return "386"
+    return None
+
+
+def ensure_cloudflared():
+    """Retourne le chemin d'un exécutable cloudflared utilisable.
+    Si absent, tente une installation auto (Termux → pkg, Debian/Kali → .deb,
+    sinon binaire officiel téléchargé localement). Renvoie None si impossible."""
+    # 1) Déjà présent dans le PATH ?
+    found = shutil.which("cloudflared")
+    if found:
+        return found
+
+    # 1bis) Binaire déjà téléchargé lors d'un run précédent ?
+    local_bin = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cloudflared")
+    if os.path.isfile(local_bin) and os.access(local_bin, os.X_OK):
+        return local_bin
+
+    print("📦 cloudflared absent — tentative d'installation auto...", flush=True)
+
+    # 2) Termux → gestionnaire de paquets pkg
+    if shutil.which("pkg"):
+        try:
+            subprocess.run(["pkg", "install", "-y", "cloudflared"], timeout=600)
+            found = shutil.which("cloudflared")
+            if found:
+                print("✅ cloudflared installé via pkg (Termux).", flush=True)
+                return found
+        except Exception as e:
+            logger.warning(f"🌐 Install via pkg échouée : {e}")
+
+    arch = _cloudflared_arch_suffix()
+    if not arch:
+        logger.warning(f"🌐 Architecture CPU inconnue ({platform.machine()}), "
+                       "install auto impossible.")
+        return None
+
+    # 3) Debian/Kali → paquet .deb officiel
+    if shutil.which("dpkg"):
+        try:
+            deb_arch = {"arm64": "arm64", "arm": "arm", "amd64": "amd64", "386": "386"}[arch]
+            url = ("https://github.com/cloudflare/cloudflared/releases/latest/"
+                   f"download/cloudflared-linux-{deb_arch}.deb")
+            deb_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "cloudflared.deb")
+            print(f"📦 Téléchargement {url} ...", flush=True)
+            urllib.request.urlretrieve(url, deb_path)
+            # dpkg -i nécessite souvent les droits root ; sudo si dispo.
+            installer = (["sudo", "dpkg", "-i", deb_path]
+                         if shutil.which("sudo") else ["dpkg", "-i", deb_path])
+            subprocess.run(installer, timeout=600)
+            try:
+                os.remove(deb_path)
+            except Exception:
+                pass
+            found = shutil.which("cloudflared")
+            if found:
+                print("✅ cloudflared installé via .deb.", flush=True)
+                return found
+        except Exception as e:
+            logger.warning(f"🌐 Install via .deb échouée : {e}")
+
+    # 4) Dernier recours : binaire brut téléchargé dans le dossier du bot
+    try:
+        url = ("https://github.com/cloudflare/cloudflared/releases/latest/"
+               f"download/cloudflared-linux-{arch}")
+        print(f"📦 Téléchargement du binaire {url} ...", flush=True)
+        urllib.request.urlretrieve(url, local_bin)
+        st = os.stat(local_bin)
+        os.chmod(local_bin, st.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        if os.access(local_bin, os.X_OK):
+            print("✅ cloudflared téléchargé (binaire local).", flush=True)
+            return local_bin
+    except Exception as e:
+        logger.warning(f"🌐 Téléchargement du binaire échoué : {e}")
+
+    return None
+
+
 def start_cloudflared_tunnel():
     """Lance cloudflared, capture l'URL https://…trycloudflare.com, la place
     automatiquement dans WEBAPP_URL, installe le bouton et prévient l'admin.
-    Aucune manip manuelle : l'URL publique est trouvée toute seule."""
+    Aucune manip manuelle : l'URL publique est trouvée toute seule.
+    Si cloudflared est absent, tente d'abord de l'installer automatiquement."""
     global WEBAPP_URL
-    try:
-        proc = subprocess.Popen(
-            ["cloudflared", "tunnel", "--url", f"http://localhost:{WEBAPP_PORT}"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
-        )
-    except FileNotFoundError:
-        logger.warning("🌐 cloudflared introuvable. Installe-le une fois "
-                       "(ex. `pkg install cloudflared` / binaire officiel) "
-                       "ou renseigne WEBAPP_URL manuellement.")
+
+    cf_bin = ensure_cloudflared()
+    if not cf_bin:
+        logger.warning("🌐 cloudflared introuvable et install auto impossible. "
+                       "Installe-le une fois (ex. `pkg install cloudflared` / "
+                       "binaire officiel) ou renseigne WEBAPP_URL manuellement.")
         try:
             bot.send_message(ADMIN_CHAT_ID,
-                             "🌐 Mini App : cloudflared n'est pas installé sur le téléphone.\n"
+                             "🌐 Mini App : cloudflared n'est pas installé et "
+                             "l'installation automatique a échoué.\n"
                              "Installe-le une fois, ou mets une URL dans WEBAPP_URL.")
         except Exception:
             pass
         return
+
+    try:
+        proc = subprocess.Popen(
+            [cf_bin, "tunnel", "--url", f"http://localhost:{WEBAPP_PORT}"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+        )
     except Exception as e:
         logger.error(f"🌐 Lancement cloudflared impossible : {e}")
         return
