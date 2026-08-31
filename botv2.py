@@ -2836,7 +2836,14 @@ class BackgroundSchedulerManager:
         last_reset_day = None
         last_daily_day = None
         was_degraded = False
-        run_check_now = True
+
+        # Au démarrage : on NE rescane PAS. On reconstruit l'état « déjà trouvé
+        # aujourd'hui » depuis l'historique (persistant sur disque) — ainsi un
+        # redémarrage en journée ne relance aucun scraping inutile.
+        for _key in self.manager.found_today:
+            _fid, _ = find_today_combo_fileid(_key)
+            if _fid:
+                self.manager.found_today[_key] = True
 
         while True:
             now_time = time.time()
@@ -2854,11 +2861,18 @@ class BackgroundSchedulerManager:
             if last_reset_day != current_day:
                 self.manager.reset_daily_status()
                 last_reset_day = current_day
-                run_check_now = True
+                # Après remise à zéro, on ré-applique ce qui est déjà dans
+                # l'historique pour aujourd'hui (cas d'un redémarrage juste après minuit).
+                for _key in self.manager.found_today:
+                    _fid, _ = find_today_combo_fileid(_key)
+                    if _fid:
+                        self.manager.found_today[_key] = True
 
     # 2. Проверка и сбор комбо-картинок
             has_unfound_games = any(not found for found in self.manager.found_today.values())
-            if (run_check_now or current_hour >= 9) and has_unfound_games:
+            # On ne scrape QU'À PARTIR de 9h, puis à chaque cycle (10 min) tant
+            # qu'il reste des jeux sans combo pour aujourd'hui (pas à chaque redémarrage).
+            if current_hour >= 9 and has_unfound_games:
                 self.logger.info("🛡️ [AUTO-CHECKER] Запуск проверки комбо-картинок...")
                 
                 for key, info in self.manager.combo_games.items():
@@ -2910,8 +2924,6 @@ class BackgroundSchedulerManager:
                                     self.logger.error(f"Ошибка отправки авто-фото администратору: {e}")
                     except Exception as e:
                         self.logger.error(f"Ошибка авто-проверки игры {key}: {e}")
-
-                run_check_now = False
 
            # 3. Проверка и обновление игровых таймеров пользователей
             try:
@@ -5070,7 +5082,8 @@ updater_thread.start()
 
 # Фоновый поток авто-проверки комбо / таймеров / рекламы.
 # ВАЖНО: запускаем ДО infinity_polling(), т.к. polling блокирует поток.
-# run_daily_checker() при старте сразу делает первую проверку комбо.
+# run_daily_checker() НЕ сканирует при старте: только с 9:00 и до тех пор,
+# пока не найдёт все комбо; уже найденное за сегодня берётся из истории.
 combo_checker_thread = threading.Thread(target=daily_auto_checker, daemon=True)
 combo_checker_thread.start()
 print("🔎 Фоновый чекер комбо запущен.", flush=True)
