@@ -1213,10 +1213,23 @@ def _slugify_game(name: str) -> str:
 ADMIN_GAME_CATEGORIES = ("combo", "phone", "faucet")
 
 
-def _derive_name_from_ref(*refs) -> str:
-    """Retrouve le NOM depuis un lien Telegram (`t.me/<bot>`) : on interroge
-    l'API Telegram (get_chat) pour le nom affiché du bot ; à défaut on embellit
-    le username. Renvoie '' si aucun lien Telegram exploitable."""
+def _prettify_username(uname: str) -> str:
+    """Embellit un username en nom lisible : DoodlePlayBot → Doodle Play."""
+    pretty = re.sub(r'(?i)(bot|app)$', '', uname)          # retire "bot"/"app" final
+    pretty = re.sub(r'(?<=[a-z0-9])(?=[A-Z])', ' ', pretty)  # coupe le camelCase : DoodlePlay → Doodle Play
+    pretty = re.sub(r'(?<=[a-zA-Z])(?=[0-9])', ' ', pretty)  # coupe lettre→chiffre : signal2193 → signal 2193
+    pretty = re.sub(r'[_\-]+', ' ', pretty).strip()
+    if pretty and pretty == pretty.lower():                  # tout en minuscule → capitalise
+        pretty = pretty.title()
+    return pretty[:24]
+
+
+def _fetch_ref_info(*refs) -> tuple:
+    """Depuis un lien Telegram (`t.me/<bot>`), récupère le (nom, description) RÉELS
+    du bot via l'API Telegram (get_chat) : nom = first_name affiché, description =
+    champ description/bio du bot. Le nom a un fallback « embelli » du username.
+    Renvoie ('', '') si aucun lien Telegram exploitable."""
+    name, desc = "", ""
     for ref in refs:
         if not ref:
             continue
@@ -1227,19 +1240,23 @@ def _derive_name_from_ref(*refs) -> str:
         try:
             chat = bot.get_chat("@" + uname)
             nm = (getattr(chat, "first_name", None) or getattr(chat, "title", None) or "").strip()
-            if nm:
-                return nm[:24]
+            d = (getattr(chat, "description", None) or getattr(chat, "bio", None) or "").strip()
+            if nm and not name:
+                name = nm[:24]
+            if d and not desc:
+                desc = d
         except Exception:
             pass
-        pretty = re.sub(r'(?i)(bot|app)$', '', uname)          # retire "bot"/"app" final
-        pretty = re.sub(r'(?<=[a-z0-9])(?=[A-Z])', ' ', pretty)  # coupe le camelCase : DoodlePlay → Doodle Play
-        pretty = re.sub(r'(?<=[a-zA-Z])(?=[0-9])', ' ', pretty)  # coupe lettre→chiffre : signal2193 → signal 2193
-        pretty = re.sub(r'[_\-]+', ' ', pretty).strip()
-        if pretty and pretty == pretty.lower():                  # tout en minuscule → capitalise
-            pretty = pretty.title()
-        if pretty:
-            return pretty[:24]
-    return ""
+        if not name:                              # fallback : nom embelli depuis le username
+            name = _prettify_username(uname)
+        if name and desc:
+            break
+    return name, desc
+
+
+def _derive_name_from_ref(*refs) -> str:
+    """Nom seul (utilisé par register_admin_game quand le nom est vide)."""
+    return _fetch_ref_info(*refs)[0]
 
 
 def _admin_game_target(category: str):
@@ -3891,12 +3908,13 @@ class MessageInputHandler:
                 return
             if step == "adm_addgame_ref2":
                 _ag["ref2"] = "" if skip else val
-                # Nom auto-déduit du lien Telegram (si possible).
-                auto = _derive_name_from_ref(_ag.get("ref1", ""), _ag.get("ref2", ""))
-                _ag["auto_name"] = auto
+                # Nom + description auto-déduits du lien Telegram (si possible).
+                auto_name, auto_desc = _fetch_ref_info(_ag.get("ref1", ""), _ag.get("ref2", ""))
+                _ag["auto_name"] = auto_name
+                _ag["auto_desc"] = auto_desc
                 _ag["step"] = "adm_addgame_name"
                 self.user_input_states[chat_id] = _ag
-                sugg = f"\n💡 Nom détecté : *{auto}* — envoie `-` pour l'utiliser." if auto else ""
+                sugg = f"\n💡 Nom détecté : *{auto_name}* — envoie `-` pour l'utiliser." if auto_name else ""
                 self.sender.send_message_direct(
                     chat_id, f"*Étape 3/4* — envoie le *nom* de l'item :{sugg}", parse_mode="Markdown")
                 return
@@ -3905,11 +3923,17 @@ class MessageInputHandler:
                 _ag["step"] = "adm_addgame_text"
                 self.user_input_states[chat_id] = _ag
                 lbl = "stratégie" if _ag.get("category", "combo") == "combo" else "description"
+                auto_desc = _ag.get("auto_desc", "")
+                if auto_desc:
+                    hint = (f"\n💡 Description détectée (envoie `-` pour l'utiliser) :\n_{auto_desc[:200]}_")
+                else:
+                    hint = ""
                 self.sender.send_message_direct(
-                    chat_id, f"*Étape 4/4* — envoie une *{lbl}* (ou `-` pour ignorer) :", parse_mode="Markdown")
+                    chat_id, f"*Étape 4/4* — envoie une *{lbl}* (ou `-` pour {'utiliser la description détectée' if auto_desc else 'ignorer'}) :{hint}", parse_mode="Markdown")
                 return
             if step == "adm_addgame_text":
-                extra = "" if skip else raw_text.strip()
+                # `-` = utiliser la description auto-détectée (vide si aucune).
+                extra = _ag.get("auto_desc", "") if skip else raw_text.strip()
                 cat = _ag.get("category", "combo")
                 self.user_input_states.pop(chat_id, None)
                 if not _ag.get("ref1") and not _ag.get("ref2"):
@@ -3917,11 +3941,13 @@ class MessageInputHandler:
                     return
                 key, data = register_admin_game(_ag.get("name", ""), _ag.get("ref1", ""), _ag.get("ref2", ""), extra, cat)
                 catlbl = {"combo": "🎮 Jeux combo", "phone": "📱 Téléphone", "faucet": "🚰 Faucets"}.get(cat, cat)
+                has_txt = bool(data.get("strategy") or data.get("description"))
                 self.sender.send_message_direct(
                     chat_id,
                     f"✅ *{data['name']}* ajouté dans {catlbl} !\n"
                     f"🔗 ref_link_1 : `{data.get('ref_link_1', '—')}`\n"
-                    f"🔗 ref_link_2 : `{data.get('ref_link_2', '—')}`",
+                    f"🔗 ref_link_2 : `{data.get('ref_link_2', '—')}`\n"
+                    f"🧠 {'stratégie' if cat == 'combo' else 'description'} : {'oui' if has_txt else 'non'}",
                     parse_mode="Markdown"
                 )
                 return
@@ -6284,7 +6310,7 @@ WEBAPP_HTML = r"""<!doctype html>
       <input id="ad-g1" placeholder="ref_link_1 (https://t.me/…)" style="margin-top:8px">
       <input id="ad-g2" placeholder="ref_link_2 (optionnel)" style="margin-top:8px">
       <input id="ad-gn" placeholder="Nom (vide = auto depuis le lien)" style="margin-top:8px">
-      <textarea id="ad-gs" placeholder="Stratégie / description (optionnel)" style="margin-top:8px"></textarea>
+      <textarea id="ad-gs" placeholder="Stratégie / description (vide = auto depuis le lien)" style="margin-top:8px"></textarea>
       <button class="btn sm" style="width:100%;margin-top:10px" onclick="admAddGame()">Ajouter</button>
       <div id="adm-games" style="margin-top:12px"></div>
     </div>
@@ -7300,8 +7326,15 @@ if _FLASK_OK:
         ref2 = str(b.get("ref_link_2", "")).strip()
         strategy = str(b.get("strategy", "")).strip()
         category = str(b.get("category", "combo")).strip() or "combo"
-        if not ref1 and not ref2:          # nom facultatif (auto depuis le lien)
+        if not ref1 and not ref2:          # nom/description facultatifs (auto depuis le lien)
             return jsonify({"ok": False, "error": "Au moins un ref_link requis"})
+        # Nom et/ou description auto-déduits du lien Telegram si laissés vides.
+        if not name or not strategy:
+            an, ad = _fetch_ref_info(ref1, ref2)
+            if not name:
+                name = an
+            if not strategy:
+                strategy = ad
         key, gdata = register_admin_game(name, ref1, ref2, strategy, category)
         return jsonify({"ok": True, "key": key, "name": gdata["name"], "category": gdata.get("category", "combo")})
 
