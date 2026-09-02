@@ -1231,8 +1231,12 @@ def _derive_name_from_ref(*refs) -> str:
                 return nm[:24]
         except Exception:
             pass
-        pretty = re.sub(r'(?i)(bot|app)$', '', uname)
-        pretty = re.sub(r'[_\-]+', ' ', pretty).strip().title()
+        pretty = re.sub(r'(?i)(bot|app)$', '', uname)          # retire "bot"/"app" final
+        pretty = re.sub(r'(?<=[a-z0-9])(?=[A-Z])', ' ', pretty)  # coupe le camelCase : DoodlePlay → Doodle Play
+        pretty = re.sub(r'(?<=[a-zA-Z])(?=[0-9])', ' ', pretty)  # coupe lettre→chiffre : signal2193 → signal 2193
+        pretty = re.sub(r'[_\-]+', ' ', pretty).strip()
+        if pretty and pretty == pretty.lower():                  # tout en minuscule → capitalise
+            pretty = pretty.title()
         if pretty:
             return pretty[:24]
     return ""
