@@ -75,6 +75,15 @@ from private_config import (
     TOKEN,
 )
 
+# Couche base de données SQLite (quêtes, badges, tombola, airdrops + toutes les
+# données persistantes). Thread-safe + WAL : écritures atomiques.
+# Init AVANT les load_*() du module (ils lisent déjà la base au démarrage).
+import botdb
+try:
+    botdb.init_db()
+except Exception as _db_err:
+    print(f"⚠️ Base SQLite indisponible ({_db_err}).", flush=True)
+
 # ============================================================
 # 🌐 CONFIG MINI APP WEB (botv2) — interface stylée dans Telegram
 # ============================================================
@@ -1055,8 +1064,46 @@ user_reviews_storage = []
 pending_ad_orders = {}
 active_farm_threads = {}  # {chat_id: thread_object}
 
+def _kv_or_json(kv_key, json_path, is_list=False):
+    """Charge une structure : SQLite en priorité ; sinon MIGRATION UNIQUE depuis
+    l'ancien fichier .json (puis persistée en base pour les prochains démarrages)."""
+    try:
+        if botdb.kv_exists(kv_key):
+            return botdb.kv_load(kv_key, [] if is_list else {})
+    except Exception as e:
+        logger.error(f"kv load {kv_key}: {e}")
+    raw = [] if is_list else {}
+    migrated = False
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, (list, dict)):
+                raw, migrated = loaded, True
+        except Exception as e:
+            logger.error(f"Migration {json_path}: {e}")
+    try:
+        botdb.kv_save(kv_key, raw)
+        if migrated:
+            logger.info(f"🔁 Migré '{kv_key}' depuis {json_path} → SQLite")
+    except Exception as e:
+        logger.error(f"kv save {kv_key}: {e}")
+    return raw
+
+
 def load_verified_users():
     users = set()
+    try:
+        if botdb.kv_exists("verified_users"):
+            for x in botdb.kv_load("verified_users", []):
+                try:
+                    users.add(int(x))
+                except (ValueError, TypeError):
+                    pass
+            return users
+    except Exception as e:
+        logger.error(f"kv load verified_users: {e}")
+    # Migration depuis l'ancien fichier texte (une ligne = un id).
     if os.path.exists(VERIFIED_FILE):
         try:
             with open(VERIFIED_FILE, "r", encoding="utf-8") as f:
@@ -1065,27 +1112,29 @@ def load_verified_users():
                     if line.isdigit():
                         users.add(int(line))
         except Exception as e:
-            logger.error(f"Ошибка загрузки верифицированных пользователей: {e}")
+            logger.error(f"Migration verified_users: {e}")
+    try:
+        botdb.kv_save("verified_users", list(users))
+        if users:
+            logger.info("🔁 Migré 'verified_users' → SQLite")
+    except Exception:
+        pass
     return users
 
-def save_verified_user(user_id):
+def _save_verified():
     try:
-        verified_users.add(user_id)
-        with open(VERIFIED_FILE, "a", encoding="utf-8") as f:
-            f.write(f"{user_id}\n")
+        botdb.kv_save("verified_users", list(verified_users))
     except Exception as e:
-        logger.error(f"Ошибка сохранения пользователя в файл: {e}")
+        logger.error(f"Ошибка сохранения verified_users: {e}")
+
+def save_verified_user(user_id):
+    verified_users.add(user_id)
+    _save_verified()
 
 def remove_verified_user(user_id):
-    """Удаляет пользователя из базы (например, если он заблокировал бота).
-    Перезаписывает файл целиком актуальным составом множества."""
-    try:
-        verified_users.discard(user_id)
-        with open(VERIFIED_FILE, "w", encoding="utf-8") as f:
-            for uid in verified_users:
-                f.write(f"{uid}\n")
-    except Exception as e:
-        logger.error(f"Ошибка удаления пользователя из файла: {e}")
+    """Удаляет пользователя из базы (например, если он заблокировал бота)."""
+    verified_users.discard(user_id)
+    _save_verified()
 
 verified_users = load_verified_users()
 
@@ -1096,27 +1145,121 @@ USER_STATS_FILE = "user_game_stats.json"
 
 def load_user_stats():
     data = {}
-    if os.path.exists(USER_STATS_FILE):
+    raw = _kv_or_json("user_game_stats", USER_STATS_FILE)
+    for k, v in (raw or {}).items():
         try:
-            with open(USER_STATS_FILE, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-            for k, v in raw.items():
-                try:
-                    data[int(k)] = v          # ключи-чаты в JSON — строки → int
-                except (ValueError, TypeError):
-                    data[k] = v
-        except Exception as e:
-            logger.error(f"Ошибка загрузки статов профиля: {e}")
+            data[int(k)] = v                  # ключи-чаты в JSON — строки → int
+        except (ValueError, TypeError):
+            data[k] = v
     return data
 
 def save_user_stats():
     try:
-        with open(USER_STATS_FILE, "w", encoding="utf-8") as f:
-            json.dump(user_game_stats, f, ensure_ascii=False, indent=2)
+        botdb.kv_save("user_game_stats", user_game_stats)
     except Exception as e:
         logger.error(f"Ошибка сохранения статов профиля: {e}")
 
 user_game_stats = load_user_stats()
+
+# ── Jeux ajoutés par l'admin (persistés en base, fusionnés aux combo-jeux) ──
+# Les jeux de config.py restent en dur ; ceux ajoutés depuis l'admin (Telegram
+# ou mini-app web) sont stockés en base (kv_store) et injectés dans
+# manager.combo_games au démarrage. Ils portent le drapeau "admin_added" pour
+# que le scraper de combos les ignore (ils n'ont pas de page miningcombo).
+def load_admin_games():
+    raw = botdb.kv_load("admin_games", {}) or {}
+    return raw if isinstance(raw, dict) else {}
+
+def save_admin_games():
+    try:
+        botdb.kv_save("admin_games", admin_games)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения admin-игр: {e}")
+
+admin_games = load_admin_games()
+
+
+def _slugify_game(name: str) -> str:
+    """Nom → clé courte ascii (pour callback_data et clés de dict)."""
+    base = re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")
+    return base or "game"
+
+
+def register_admin_game(name: str, ref_link_1: str = "", ref_link_2: str = "",
+                        strategy: str = "") -> tuple:
+    """Crée un jeu ajouté par l'admin : persiste en base ET l'injecte dans la
+    liste live des combo-jeux (manager.combo_games). Renvoie (key, data)."""
+    base = _slugify_game(name)
+    key, i = base, 2
+    existing = set(manager.combo_games) | set(admin_games)
+    while key in existing:
+        key = f"{base}-{i}"
+        i += 1
+    # Nom court : il sert aussi de callback_data (profgame_/statcheckin_ < 64 o).
+    data = {"name": (name or "").strip()[:24], "admin_added": True, "path": ""}
+    if (ref_link_1 or "").strip():
+        data["ref_link_1"] = ref_link_1.strip()
+    if (ref_link_2 or "").strip():
+        data["ref_link_2"] = ref_link_2.strip()
+    if (strategy or "").strip():
+        data["strategy"] = strategy.strip()
+    admin_games[key] = data
+    save_admin_games()
+    manager.combo_games[key] = data          # visible immédiatement (sans redémarrage)
+    return key, data
+
+
+def remove_admin_game(key: str) -> dict | None:
+    """Supprime un jeu ajouté par l'admin (base + liste live). Renvoie le jeu
+    supprimé, ou None s'il n'existait pas / n'était pas un jeu admin."""
+    data = admin_games.pop(key, None)
+    if data is None:
+        return None
+    save_admin_games()
+    # Ne retire de combo_games que si c'est bien un jeu admin (jamais un jeu config).
+    if manager.combo_games.get(key, {}).get("admin_added"):
+        manager.combo_games.pop(key, None)
+    manager.found_today.pop(key, None)
+    return data
+
+
+def _parse_level(stat) -> int | None:
+    """Extrait un entier de niveau d'un texte libre ('8', 'Уровень 20', '15 ур')."""
+    if stat is None:
+        return None
+    m = re.search(r"\d+", str(stat))
+    return int(m.group()) if m else None
+
+
+def build_level_checklist_html(gname: str, level: int, window: int = 8) -> str:
+    """Rendu HTML de la progression : niveaux passés BARRÉS, niveau courant mis
+    en avant, prochains niveaux listés. Ex : niveau 8 → уровни 1–7 barrés."""
+    import html as _html
+    g = _html.escape(str(gname))
+    lines = [f"🎮 <b>{g}</b>", f"📊 Текущий уровень: <b>{level}</b>", ""]
+    start = max(1, level - window)
+    if start > 1:
+        lines.append(f"✅ <s>уровни 1–{start - 1} пройдены</s>")
+    for lvl in range(start, level):
+        lines.append(f"✅ <s>уровень {lvl}</s>")
+    lines.append(f"🔸 <b>уровень {level}</b> — текущий")
+    for lvl in range(level + 1, level + 4):
+        lines.append(f"⬜️ уровень {lvl}")
+    lines.append("")
+    lines.append("👉 Нажми «✅ +1 уровень (чек-ин)», когда пройдёшь текущий.")
+    return "\n".join(lines)
+
+
+def _game_stat_keyboard(gname: str, has_level: bool):
+    """Clavier de la fiche stat d'un jeu (chèck-in + éditer + supprimer)."""
+    kb = types.InlineKeyboardMarkup()
+    if has_level:
+        kb.row(types.InlineKeyboardButton(text="✅ +1 уровень (чек-ин)", callback_data=f"statcheckin_{gname}"))
+    kb.row(
+        types.InlineKeyboardButton(text="✏️ Изменить", callback_data=f"statedit_{gname}"),
+        types.InlineKeyboardButton(text="🗑 Удалить", callback_data=f"statdel_{gname}")
+    )
+    return kb
 
 # ── История найденных комбо (общая для всех) ──────────────────────────────
 # Тоже только file_id Telegram + дата; картинки — на серверах Telegram.
@@ -1124,18 +1267,12 @@ COMBO_HISTORY_FILE = "combo_history.json"
 COMBO_HISTORY_MAX = 60           # держим последние N записей
 
 def load_combo_history():
-    if os.path.exists(COMBO_HISTORY_FILE):
-        try:
-            with open(COMBO_HISTORY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error(f"Ошибка загрузки истории комбо: {e}")
-    return []
+    d = _kv_or_json("combo_history", COMBO_HISTORY_FILE, is_list=True)
+    return d if isinstance(d, list) else []
 
 def save_combo_history():
     try:
-        with open(COMBO_HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(combo_history[-COMBO_HISTORY_MAX:], f, ensure_ascii=False, indent=2)
+        botdb.kv_save("combo_history", combo_history[-COMBO_HISTORY_MAX:])
     except Exception as e:
         logger.error(f"Ошибка сохранения истории комбо: {e}")
 
@@ -1162,38 +1299,22 @@ REVIEWS_FILE = "reviews.json"
 PROOFS_FILE = "proofs.json"
 
 def load_reviews():
-    if os.path.exists(REVIEWS_FILE):
-        try:
-            with open(REVIEWS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    return data
-        except Exception as e:
-            logger.error(f"Ошибка загрузки отзывов: {e}")
-    return []
+    d = _kv_or_json("reviews", REVIEWS_FILE, is_list=True)
+    return d if isinstance(d, list) else []
 
 def save_reviews():
     try:
-        with open(REVIEWS_FILE, "w", encoding="utf-8") as f:
-            json.dump(user_reviews_storage, f, ensure_ascii=False, indent=2)
+        botdb.kv_save("reviews", user_reviews_storage)
     except Exception as e:
         logger.error(f"Ошибка сохранения отзывов: {e}")
 
 def load_proofs():
-    if os.path.exists(PROOFS_FILE):
-        try:
-            with open(PROOFS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    return data
-        except Exception as e:
-            logger.error(f"Ошибка загрузки скринов выплат: {e}")
-    return []
+    d = _kv_or_json("proofs", PROOFS_FILE, is_list=True)
+    return d if isinstance(d, list) else []
 
 def save_proofs():
     try:
-        with open(PROOFS_FILE, "w", encoding="utf-8") as f:
-            json.dump(cloud_proofs, f, ensure_ascii=False, indent=2)
+        botdb.kv_save("proofs", cloud_proofs)
     except Exception as e:
         logger.error(f"Ошибка сохранения скринов выплат: {e}")
 
@@ -1208,23 +1329,17 @@ TIMERS_FILE = "user_timers.json"
 
 def load_timers():
     data = {}
-    if os.path.exists(TIMERS_FILE):
+    raw = _kv_or_json("user_timers", TIMERS_FILE)
+    for k, v in (raw or {}).items():
         try:
-            with open(TIMERS_FILE, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-            for k, v in raw.items():
-                try:
-                    data[int(k)] = v
-                except (ValueError, TypeError):
-                    data[k] = v
-        except Exception as e:
-            logger.error(f"Ошибка загрузки таймеров: {e}")
+            data[int(k)] = v
+        except (ValueError, TypeError):
+            data[k] = v
     return data
 
 def save_timers():
     try:
-        with open(TIMERS_FILE, "w", encoding="utf-8") as f:
-            json.dump(user_game_timers, f, ensure_ascii=False, indent=2)
+        botdb.kv_save("user_timers", user_game_timers)
     except Exception as e:
         logger.error(f"Ошибка сохранения таймеров: {e}")
 
@@ -1234,20 +1349,14 @@ user_game_timers = load_timers()
 COMBO_SUBS_FILE = "combo_subs.json"
 
 def load_combo_subs():
-    if os.path.exists(COMBO_SUBS_FILE):
-        try:
-            with open(COMBO_SUBS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    return {k: list(v) for k, v in data.items()}
-        except Exception as e:
-            logger.error(f"Ошибка загрузки подписок на комбо: {e}")
+    d = _kv_or_json("combo_subs", COMBO_SUBS_FILE)
+    if isinstance(d, dict):
+        return {k: list(v) for k, v in d.items()}
     return {}
 
 def save_combo_subs():
     try:
-        with open(COMBO_SUBS_FILE, "w", encoding="utf-8") as f:
-            json.dump(combo_subscribers, f, ensure_ascii=False, indent=2)
+        botdb.kv_save("combo_subs", combo_subscribers)
     except Exception as e:
         logger.error(f"Ошибка сохранения подписок на комбо: {e}")
 
@@ -1274,21 +1383,15 @@ REFERRALS_FILE = "referrals.json"
 
 def load_referrals():
     base = {"ref_of": {}, "invited": {}}
-    if os.path.exists(REFERRALS_FILE):
-        try:
-            with open(REFERRALS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                base["ref_of"] = data.get("ref_of", {})
-                base["invited"] = data.get("invited", {})
-        except Exception as e:
-            logger.error(f"Ошибка загрузки рефералов: {e}")
+    d = _kv_or_json("referrals", REFERRALS_FILE)
+    if isinstance(d, dict):
+        base["ref_of"] = d.get("ref_of", {})
+        base["invited"] = d.get("invited", {})
     return base
 
 def save_referrals():
     try:
-        with open(REFERRALS_FILE, "w", encoding="utf-8") as f:
-            json.dump(referral_store, f, ensure_ascii=False, indent=2)
+        botdb.kv_save("referrals", referral_store)
     except Exception as e:
         logger.error(f"Ошибка сохранения рефералов: {e}")
 
@@ -1463,33 +1566,33 @@ GAMIFY_FILE = "gamification.json"
 
 def load_gamify():
     base = {"points": {}, "streak": {}, "vip_until": {}}
-    if os.path.exists(GAMIFY_FILE):
-        try:
-            with open(GAMIFY_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                base["points"] = data.get("points", {})
-                base["streak"] = data.get("streak", {})
-                base["vip_until"] = data.get("vip_until", {})
-        except Exception as e:
-            logger.error(f"Ошибка загрузки геймификации: {e}")
+    d = _kv_or_json("gamification", GAMIFY_FILE)
+    if isinstance(d, dict):
+        base["points"] = d.get("points", {})
+        base["streak"] = d.get("streak", {})
+        base["vip_until"] = d.get("vip_until", {})
     return base
 
 def save_gamify():
     try:
-        with open(GAMIFY_FILE, "w", encoding="utf-8") as f:
-            json.dump(gamify_store, f, ensure_ascii=False, indent=2)
+        botdb.kv_save("gamification", gamify_store)
     except Exception as e:
         logger.error(f"Ошибка сохранения геймификации: {e}")
 
 gamify_store = load_gamify()
 
+# Verrou (réentrant) sérialisant TOUTES les mutations de points/série/VIP.
+# Empêche les conditions de course entre threads polling + threads Flask
+# (ex. double débit lors d'un achat de tickets de tombola quasi simultané).
+_points_lock = threading.RLock()
+
 def get_points(uid) -> int:
     return int(gamify_store["points"].get(str(uid), 0))
 
 def add_points(uid, n: int):
-    gamify_store["points"][str(uid)] = get_points(uid) + int(n)
-    save_gamify()
+    with _points_lock:
+        gamify_store["points"][str(uid)] = get_points(uid) + int(n)
+        save_gamify()
 
 def get_streak(uid) -> int:
     return int(gamify_store["streak"].get(str(uid), {}).get("count", 0))
@@ -1498,16 +1601,17 @@ def daily_checkin(uid):
     """Ежедневный бонус. Возвращает (claimed_now, streak, reward, total_points)."""
     today = time.strftime("%Y-%m-%d", time.localtime())
     yest = time.strftime("%Y-%m-%d", time.localtime(time.time() - 86400))
-    st = gamify_store["streak"].get(str(uid), {"count": 0, "last": ""})
-    if st.get("last") == today:
-        return False, st.get("count", 0), 0, get_points(uid)
-    st["count"] = st.get("count", 0) + 1 if st.get("last") == yest else 1
-    st["last"] = today
-    gamify_store["streak"][str(uid)] = st
-    reward = 10 + min(st["count"], 7) * 5      # база + бонус за серию (потолок)
-    gamify_store["points"][str(uid)] = get_points(uid) + reward
-    save_gamify()
-    return True, st["count"], reward, get_points(uid)
+    with _points_lock:
+        st = gamify_store["streak"].get(str(uid), {"count": 0, "last": ""})
+        if st.get("last") == today:
+            return False, st.get("count", 0), 0, get_points(uid)
+        st["count"] = st.get("count", 0) + 1 if st.get("last") == yest else 1
+        st["last"] = today
+        gamify_store["streak"][str(uid)] = st
+        reward = 10 + min(st["count"], 7) * 5      # база + бонус за серию (потолок)
+        gamify_store["points"][str(uid)] = get_points(uid) + reward
+        save_gamify()
+        return True, st["count"], reward, get_points(uid)
 
 def points_leaderboard(n: int = 10):
     items = [(uid, p) for uid, p in gamify_store["points"].items() if p]
@@ -1522,11 +1626,12 @@ def vip_days_left(uid) -> int:
     return max(0, int(left // 86400))
 
 def grant_vip(uid, days: int):
-    now = time.time()
-    cur = gamify_store["vip_until"].get(str(uid), 0)
-    base = cur if cur > now else now          # продлеваем, если VIP ещё активен
-    gamify_store["vip_until"][str(uid)] = base + days * 86400
-    save_gamify()
+    with _points_lock:
+        now = time.time()
+        cur = gamify_store["vip_until"].get(str(uid), 0)
+        base = cur if cur > now else now          # продлеваем, если VIP ещё активен
+        gamify_store["vip_until"][str(uid)] = base + days * 86400
+        save_gamify()
 
 # ── Комбо из кэша дня (мгновенно, без повторного скрейпинга) ───────────────
 def find_today_combo_fileid(game_key):
@@ -1537,10 +1642,12 @@ def find_today_combo_fileid(game_key):
     return None, None
 
 # ── Резервная копия всех данных (защита от потери телефона) ────────────────
+# Les 12 stores migrés (points, profils, timers, gamification, référencements,
+# alertes, digest, langues, reviews, proofs, historique/abonnements combo,
+# utilisateurs vérifiés) vivent désormais dans botdata.db → inclus via le
+# snapshot SQLite ajouté automatiquement au backup. On ne liste ici que les
+# fichiers encore autonomes (non migrés).
 BACKUP_FILES = [
-    VERIFIED_FILE, USER_STATS_FILE, COMBO_HISTORY_FILE, REVIEWS_FILE,
-    PROOFS_FILE, TIMERS_FILE, COMBO_SUBS_FILE, REFERRALS_FILE, GAMIFY_FILE,
-    "price_alerts.json", "digest_subs.json", "user_langs.json",
     "banned_users.txt", "scam_domains.txt", "ai_knowledge.json",
     ACTIVE_ADS_FILE, "used_tx_hashes.txt",
 ]
@@ -1548,7 +1655,15 @@ BACKUP_FILES = [
 def backup_all_files(bot_instance, admin_chat_id):
     """Отправляет все файлы данных админу (восстановление при потере телефона)."""
     sent, missing = 0, []
-    for fname in BACKUP_FILES:
+    files = list(BACKUP_FILES)
+    # Snapshot COHÉRENT de la base SQLite (VACUUM INTO) avant l'envoi — sûr en WAL.
+    try:
+        snap = botdb.backup_db()
+        if snap and os.path.exists(snap):
+            files.append(snap)
+    except Exception as e:
+        logger.error(f"Snapshot SQLite pour backup échoué: {e}")
+    for fname in files:
         if os.path.exists(fname):
             try:
                 with open(fname, "rb") as f:
@@ -1583,20 +1698,12 @@ COIN_ID_MAP = {
 PRICE_ALERTS_FILE = "price_alerts.json"
 
 def load_price_alerts():
-    if os.path.exists(PRICE_ALERTS_FILE):
-        try:
-            with open(PRICE_ALERTS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    return data
-        except Exception as e:
-            logger.error(f"Ошибка загрузки ценовых алертов: {e}")
-    return []
+    d = _kv_or_json("price_alerts", PRICE_ALERTS_FILE, is_list=True)
+    return d if isinstance(d, list) else []
 
 def save_price_alerts():
     try:
-        with open(PRICE_ALERTS_FILE, "w", encoding="utf-8") as f:
-            json.dump(price_alerts, f, ensure_ascii=False, indent=2)
+        botdb.kv_save("price_alerts", price_alerts)
     except Exception as e:
         logger.error(f"Ошибка сохранения ценовых алертов: {e}")
 
@@ -1606,20 +1713,19 @@ price_alerts = load_price_alerts()
 DIGEST_FILE = "digest_subs.json"
 
 def load_digest_subs():
-    if os.path.exists(DIGEST_FILE):
-        try:
-            with open(DIGEST_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    return set(int(x) for x in data)
-        except Exception as e:
-            logger.error(f"Ошибка загрузки подписок дайджеста: {e}")
-    return set()
+    d = _kv_or_json("digest_subs", DIGEST_FILE, is_list=True)
+    out = set()
+    if isinstance(d, list):
+        for x in d:
+            try:
+                out.add(int(x))
+            except (ValueError, TypeError):
+                pass
+    return out
 
 def save_digest_subs():
     try:
-        with open(DIGEST_FILE, "w", encoding="utf-8") as f:
-            json.dump(list(digest_subs), f, ensure_ascii=False, indent=2)
+        botdb.kv_save("digest_subs", list(digest_subs))
     except Exception as e:
         logger.error(f"Ошибка сохранения подписок дайджеста: {e}")
 
@@ -1630,23 +1736,17 @@ LANGS_FILE = "user_langs.json"
 
 def load_langs():
     data = {}
-    if os.path.exists(LANGS_FILE):
+    raw = _kv_or_json("user_langs", LANGS_FILE)
+    for k, v in (raw or {}).items():
         try:
-            with open(LANGS_FILE, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-            for k, v in raw.items():
-                try:
-                    data[int(k)] = v
-                except (ValueError, TypeError):
-                    data[k] = v
-        except Exception as e:
-            logger.error(f"Ошибка загрузки языков: {e}")
+            data[int(k)] = v
+        except (ValueError, TypeError):
+            data[k] = v
     return data
 
 def save_langs():
     try:
-        with open(LANGS_FILE, "w", encoding="utf-8") as f:
-            json.dump(user_langs, f, ensure_ascii=False, indent=2)
+        botdb.kv_save("user_langs", user_langs)
     except Exception as e:
         logger.error(f"Ошибка сохранения языков: {e}")
 
@@ -2237,6 +2337,9 @@ class MiningComboManager:
     def fetch_combo(self, game_key: str):
         if game_key not in self.combo_games:
             return None, "Игра не найдена"
+        # Jeux ajoutés par l'admin : pas de page miningcombo → aucun combo à scraper.
+        if self.combo_games[game_key].get("admin_added") or not self.combo_games[game_key].get("path"):
+            return None, "Нет комбо для этой игры"
         try:
             url = f"{self.base_url}{self.combo_games[game_key]['path']}"
             res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
@@ -2494,8 +2597,12 @@ class MessageProcessor:
                     t("daily_bonus", lang).format(reward=reward, streak=streak, total=total),
                     None, "Markdown"
                 )
+                award_quest(chat_id, "checkin")
+                award_quest(chat_id, "streak_week")
         except Exception:
             pass
+        # Badges liés à l'activité (premier pas, série, points…).
+        refresh_badges(chat_id)
 
     @staticmethod
     def handle_menu_or_commands(message: types.Message):
@@ -2899,7 +3006,7 @@ class ProfileManager:
             mark = "✅" if nm in my_stats else "➕"
             keyboard_markup.row(types.InlineKeyboardButton(text=f"{mark} {nm}", callback_data=f"profgame_{nm}"))
         # Возможность добавить игру ВНЕ списка (ручной ввод «Название | Уровень»).
-        keyboard_markup.row(types.InlineKeyboardButton(text="➕ Другая игра (вручную)", callback_data="prof_add"))
+        keyboard_markup.row(types.InlineKeyboardButton(text="➕ Своя игра / чек-ин лист", callback_data="prof_add"))
         keyboard_markup.row(
             types.InlineKeyboardButton(text="📜 История комбо", callback_data="combo_hist"),
             types.InlineKeyboardButton(text="👥 Пригласить", callback_data="ref_invite")
@@ -2907,9 +3014,15 @@ class ProfileManager:
         keyboard_markup.row(MenuManager.get_ai_button())
 
         vip_line = f"👑 VIP активен ({vip_days_left(chat_id)} дн.)\n" if is_vip(chat_id) else ""
+        try:
+            _bl = botdb.badges_line(chat_id)
+        except Exception:
+            _bl = ""
+        badges_line_txt = f"🏅 {_bl}\n" if _bl else ""
         profile_text = (
             f"👤 **Профиль:** {user_name}\n"
             f"{vip_line}"
+            f"{badges_line_txt}"
             f"💰 Очки: **{get_points(chat_id)}** · 🔥 Серия: **{get_streak(chat_id)}** дн. · 👥 Друзей: **{referral_count(chat_id)}**\n\n"
             f"🏆 Игр с вашими статами: **{len(my_stats)}**\n\n"
             "👇 Нажмите на игру, чтобы посмотреть или добавить свой прогресс.\n"
@@ -3003,6 +3116,8 @@ class BackgroundSchedulerManager:
                 self.logger.info("🛡️ [AUTO-CHECKER] Запуск проверки комбо-картинок...")
                 
                 for key, info in self.manager.combo_games.items():
+                    if info.get("admin_added"):
+                        continue                   # jeu admin : pas de combo à scraper
                     if self.manager.found_today.get(key, False):
                         continue
 
@@ -3196,6 +3311,12 @@ class BackgroundSchedulerManager:
             except Exception as e:
                 self.logger.error(f"Ошибка уведомления о восстановлении: {e}")
 
+            # 5c. Diffusion des nouveaux airdrops aux abonnés (chaque cycle ~10 min).
+            try:
+                push_new_airdrops()
+            except Exception as e:
+                self.logger.error(f"Diffusion airdrops: {e}")
+
             # 6. ЕЖЕДНЕВНЫЕ АВТОНОМНЫЕ ЗАДАЧИ (раз в сутки, после DAILY_TASK_HOUR):
             #    авто-бэкап · отчёт о здоровье · утренний дайджест · уборка.
             try:
@@ -3333,6 +3454,8 @@ class MenuTextProcessor:
         elif text in ["⚡ Проверить все комбо", "/all_combo"]:
             self.sender.send_message_direct(chat_id, "🔍 **Запущен массовый сбор комбо...**")
             for key, info in self.manager.combo_games.items():
+                if info.get("admin_added"):
+                    continue                       # jeu admin : pas de combo
                 # Сначала пробуем отдать комбо дня из кэша (мгновенно, без скрейпинга).
                 fid, dtext = find_today_combo_fileid(key)
                 if fid:
@@ -3537,6 +3660,27 @@ class MenuTextProcessor:
                 "оно уйдёт ВСЕМ пользователям бота.",
                 parse_mode="Markdown"
             )
+        elif text == "/addgame" and str(chat_id) == str(ADMIN_CHAT_ID):
+            user_input_states[chat_id] = {"step": "adm_addgame_name"}
+            self.sender.send_message_direct(
+                chat_id,
+                "🎮 *Ajout d'un jeu combo*\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                "Étape 1/4 — envoie le *nom* du jeu (ex : `🟡 Doodle Jump`) :",
+                parse_mode="Markdown"
+            )
+        elif text == "/delgame" and str(chat_id) == str(ADMIN_CHAT_ID):
+            if not admin_games:
+                self.sender.send_message_direct(chat_id, "📭 Aucun jeu ajouté par l'admin à supprimer.\n(Les jeux de config.py ne sont pas supprimables ici.)")
+            else:
+                kb = types.InlineKeyboardMarkup()
+                for gk, gd in admin_games.items():
+                    kb.row(types.InlineKeyboardButton(text=f"🗑 {gd.get('name', gk)}", callback_data=f"admdelgame_{gk}"))
+                self.sender.send_message_direct(
+                    chat_id,
+                    "🗑 *Supprimer un jeu*\n━━━━━━━━━━━━━━━━━━\nChoisis le jeu à retirer :",
+                    reply_markup=kb, parse_mode="Markdown"
+                )
         elif text in ["💎 Скрины выплат", "/proofs"]:
             if not self.cloud_proofs:
                 self.sender.send_message_direct(chat_id, "💎 Скринов пока нет.")
@@ -3646,6 +3790,50 @@ class MessageInputHandler:
             self.sender.broadcast_message(raw_text, self.verified_users, self.admin_chat_id)
             self.sender.send_message_direct(chat_id, "📣 Рассылка запущена по всей базе. Отчёт придёт по завершении.", parse_mode="Markdown")
             return
+
+        # 0-bis. Ajout d'un jeu combo par l'admin (flux guidé nom → ref1 → ref2 → stratégie).
+        _ag = self.user_input_states.get(chat_id, {})
+        if chat_id == self.admin_chat_id and str(_ag.get("step", "")).startswith("adm_addgame_"):
+            step = _ag["step"]
+            val = raw_text.strip()
+            skip = val in ("-", "—", "нет", "non", "skip", "no")
+            if step == "adm_addgame_name":
+                if not val:
+                    self.sender.send_message_direct(chat_id, "⚠️ Nom vide. Renvoie le *nom* du jeu :", parse_mode="Markdown")
+                    return
+                _ag.update(step="adm_addgame_ref1", name=val[:40])
+                self.user_input_states[chat_id] = _ag
+                self.sender.send_message_direct(
+                    chat_id, "Étape 2/4 — envoie *ref_link_1* (ou `-` pour ignorer) :", parse_mode="Markdown")
+                return
+            if step == "adm_addgame_ref1":
+                _ag.update(step="adm_addgame_ref2", ref1="" if skip else val)
+                self.user_input_states[chat_id] = _ag
+                self.sender.send_message_direct(
+                    chat_id, "Étape 3/4 — envoie *ref_link_2* (ou `-` pour ignorer) :", parse_mode="Markdown")
+                return
+            if step == "adm_addgame_ref2":
+                _ag.update(step="adm_addgame_strat", ref2="" if skip else val)
+                self.user_input_states[chat_id] = _ag
+                self.sender.send_message_direct(
+                    chat_id, "Étape 4/4 — envoie une *stratégie / texte* (ou `-` pour ignorer) :", parse_mode="Markdown")
+                return
+            if step == "adm_addgame_strat":
+                strategy = "" if skip else raw_text.strip()
+                self.user_input_states.pop(chat_id, None)
+                if not _ag.get("ref1") and not _ag.get("ref2"):
+                    self.sender.send_message_direct(chat_id, "⚠️ Jeu annulé : au moins un ref_link est requis. Recommence avec /addgame.")
+                    return
+                key, data = register_admin_game(_ag.get("name", ""), _ag.get("ref1", ""), _ag.get("ref2", ""), strategy)
+                self.sender.send_message_direct(
+                    chat_id,
+                    f"✅ Jeu *{data['name']}* ajouté aux combo-jeux !\n"
+                    f"🔗 ref_link_1 : `{data.get('ref_link_1', '—')}`\n"
+                    f"🔗 ref_link_2 : `{data.get('ref_link_2', '—')}`\n"
+                    f"🧠 stratégie : {'oui' if data.get('strategy') else 'non'}",
+                    parse_mode="Markdown"
+                )
+                return
 
         # 1. Обработка ввода текста отзыва (с фильтрацией безопасности)
         if chat_id in self.user_input_states and self.user_input_states[chat_id].get("step") == "waiting_review_text":
@@ -3972,6 +4160,7 @@ class MessageInputHandler:
                     report_text += "\n\n⚠️ _Данные из кэша: внешняя сеть временно недоступна._"
 
                 self.sender.send_message_direct(chat_id, report_text, parse_mode="Markdown")
+                award_quest(chat_id, "converter")
                 self.user_calc_states.pop(chat_id, None)
                 return
             except Exception as e:
@@ -4051,6 +4240,8 @@ class CallbackQueryHandler:
                     ref = pending_ref.pop(chat_id, None)
                     if ref and record_referral(chat_id, ref):
                         add_points(ref, 50)          # награда за приглашение
+                        award_quest(ref, "invite_week")
+                        refresh_badges(ref)
                         try:
                             self.sender.send_message_direct(
                                 ref,
@@ -4392,6 +4583,7 @@ class CallbackQueryHandler:
                     self.user_game_timers[chat_id] = {}
                 self.user_game_timers[chat_id][parts[1]] = {"target": time.time() + (hours * 3600), "duration_hours": float(hours)}
                 save_timers()
+                award_quest(chat_id, "set_timer")
                 try:
                     self.bot.answer_callback_query(call.id, f"✅ Таймер на {hours}ч установлен!")
                 except:
@@ -4426,7 +4618,15 @@ class CallbackQueryHandler:
 
             if data == "prof_add":
                 self.user_input_states[chat_id] = {"step": "waiting_game_info"}
-                self.sender.send_message_direct(chat_id, "✍️ **Введите данные в формате:**\n`Название игры | Уровень`", parse_mode="Markdown")
+                self.sender.send_message_direct(
+                    chat_id,
+                    "✍️ *Своя игра / свой чек-ин лист*\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "Введите данные в формате :\n`Название игры | Уровень`\n\n"
+                    "💡 Если указать *числовой* уровень (например `8`), появится "
+                    "чек-ин: пройденные уровни будут вычёркиваться.",
+                    parse_mode="Markdown"
+                )
                 return
 
             # Клик по игре в профиле → показываем СТАТЫ ИМЕННО ЭТОЙ игры
@@ -4435,19 +4635,22 @@ class CallbackQueryHandler:
                 gname = data[len("profgame_"):]
                 info = user_game_stats.get(chat_id, {}).get(gname)
                 if info:
-                    caption = f"🎮 *{gname}*\n📊 Стат / Уровень: `{info.get('stat', 'Н/Д')}`"
-                    row_kb = types.InlineKeyboardMarkup()
-                    row_kb.row(
-                        types.InlineKeyboardButton(text="✏️ Изменить", callback_data=f"statedit_{gname}"),
-                        types.InlineKeyboardButton(text="🗑 Удалить", callback_data=f"statdel_{gname}")
-                    )
+                    lvl = _parse_level(info.get("stat"))
+                    row_kb = _game_stat_keyboard(gname, has_level=lvl is not None)
+                    # Niveau numérique → checklist avec niveaux passés BARRÉS (HTML).
+                    if lvl is not None:
+                        caption = build_level_checklist_html(gname, lvl)
+                        parse = "HTML"
+                    else:
+                        caption = f"🎮 *{gname}*\n📊 Стат / Уровень: `{info.get('stat', 'Н/Д')}`"
+                        parse = "Markdown"
                     if info.get("photo"):
                         try:
-                            self.bot.send_photo(chat_id, photo=info["photo"], caption=caption, parse_mode="Markdown", reply_markup=row_kb)
+                            self.bot.send_photo(chat_id, photo=info["photo"], caption=caption, parse_mode=parse, reply_markup=row_kb)
                         except Exception:
-                            self.sender.send_message_direct(chat_id, caption, parse_mode="Markdown", reply_markup=row_kb)
+                            self.sender.send_message_direct(chat_id, caption, parse_mode=parse, reply_markup=row_kb)
                     else:
-                        self.sender.send_message_direct(chat_id, caption, parse_mode="Markdown", reply_markup=row_kb)
+                        self.sender.send_message_direct(chat_id, caption, parse_mode=parse, reply_markup=row_kb)
                 else:
                     self.user_input_states[chat_id] = {"step": "waiting_game_stat", "game": gname}
                     self.sender.send_message_direct(
@@ -4513,6 +4716,67 @@ class CallbackQueryHandler:
                 else:
                     try:
                         self.bot.answer_callback_query(call.id, "Записи больше нет")
+                    except Exception:
+                        pass
+                return
+
+            # Чек-ин: +1 к уровню игры (предыдущий уровень становится «пройденным» / барним).
+            if data.startswith("statcheckin_"):
+                gname = data[len("statcheckin_"):]
+                info = user_game_stats.get(chat_id, {}).get(gname)
+                lvl = _parse_level(info.get("stat")) if info else None
+                if info is None or lvl is None:
+                    try:
+                        self.bot.answer_callback_query(call.id, "Сначала укажите числовой уровень")
+                    except Exception:
+                        pass
+                    return
+                lvl += 1
+                info["stat"] = str(lvl)
+                save_user_stats()
+                try:
+                    self.bot.answer_callback_query(call.id, f"✅ Уровень {lvl}! Предыдущий вычеркнут.")
+                except Exception:
+                    pass
+                caption = build_level_checklist_html(gname, lvl)
+                row_kb = _game_stat_keyboard(gname, has_level=True)
+                try:
+                    if getattr(call.message, "content_type", "") == "photo":
+                        self.bot.edit_message_caption(caption, chat_id=chat_id, message_id=call.message.message_id,
+                                                      parse_mode="HTML", reply_markup=row_kb)
+                    else:
+                        self.bot.edit_message_text(caption, chat_id=chat_id, message_id=call.message.message_id,
+                                                   parse_mode="HTML", reply_markup=row_kb)
+                except Exception:
+                    self.sender.send_message_direct(chat_id, caption, parse_mode="HTML", reply_markup=row_kb)
+                return
+
+            # Suppression d'un jeu ajouté par l'admin (ADMIN UNIQUEMENT).
+            if data.startswith("admdelgame_"):
+                if str(chat_id) != str(ADMIN_CHAT_ID):
+                    try:
+                        self.bot.answer_callback_query(call.id, "⛔ Réservé à l'admin")
+                    except Exception:
+                        pass
+                    return
+                gk = data[len("admdelgame_"):]
+                removed = remove_admin_game(gk)
+                try:
+                    self.bot.answer_callback_query(call.id, f"🗑 «{removed['name']}» supprimé" if removed else "Déjà supprimé")
+                except Exception:
+                    pass
+                # Reconstruit la liste restante (ou message vide).
+                if admin_games:
+                    kb = types.InlineKeyboardMarkup()
+                    for _k, _d in admin_games.items():
+                        kb.row(types.InlineKeyboardButton(text=f"🗑 {_d.get('name', _k)}", callback_data=f"admdelgame_{_k}"))
+                    try:
+                        self.bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=kb)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        self.bot.edit_message_text("📭 Plus aucun jeu ajouté par l'admin.", chat_id=chat_id, message_id=call.message.message_id)
                     except Exception:
                         pass
                 return
@@ -4597,6 +4861,7 @@ class CallbackQueryHandler:
             if data.startswith("finfo_"):
                 info = self.manager.crypto_faucets[data.replace("finfo_", "")]
                 self.sender.send_message_direct(chat_id, f"🚰 **{info['name']}**\n\n{info['description']}", parse_mode="Markdown")
+                award_quest(chat_id, "faucet_visit")
                 return
 
             if data.startswith("cur_"):
@@ -4621,6 +4886,8 @@ class CallbackQueryHandler:
             if data.startswith("game_"):
                 key = data.replace("game_", "")
                 if key in self.manager.combo_games:
+                    award_quest(chat_id, "open_combo")
+                    award_quest(chat_id, "combo_week")
                     try:
                         self.bot.answer_callback_query(call.id, "Загрузка...")
                     except:
@@ -4761,7 +5028,119 @@ def handle_start_ai_chat(call: types.CallbackQuery):
 @bot.message_handler(func=lambda message: message.from_user.id in AI_CHAT_ACTIVE, content_types=['text'])
 def handle_ai_text_messages(message: types.Message):
     ai_chat_handler.handle_ai_text_messages(message)
-    
+
+
+# ============================================================
+# 🎯 COMMANDES ENGAGEMENT : /quests /badges /raffle /airdrops
+# Enregistrées AVANT le catch-all → priorité garantie.
+# ============================================================
+def _cmd_guard(message):
+    """Vérifie ban + vérification. Renvoie chat_id ou None."""
+    cid = message.chat.id
+    try:
+        if account_guard.is_banned(message.from_user.id):
+            return None
+        if cid not in verified_users:
+            sender.send_message_direct(cid, "⚠️ Passez d'abord la vérification via /start.")
+            return None
+    except Exception:
+        return None
+    return cid
+
+@bot.message_handler(commands=['quests', 'quetes'])
+def _cmd_quests(message: types.Message):
+    cid = _cmd_guard(message)
+    if cid is not None:
+        sender.send_message_direct(cid, quests_text(cid), parse_mode="Markdown")
+
+@bot.message_handler(commands=['badges'])
+def _cmd_badges(message: types.Message):
+    cid = _cmd_guard(message)
+    if cid is not None:
+        refresh_badges(cid)                       # débloque d'éventuels badges en retard
+        sender.send_message_direct(cid, badges_text(cid), parse_mode="Markdown")
+
+@bot.message_handler(commands=['raffle', 'tombola'])
+def _cmd_raffle(message: types.Message):
+    cid = _cmd_guard(message)
+    if cid is None:
+        return
+    args = (message.text or "").split()[1:]
+    is_admin = str(cid) == str(ADMIN_CHAT_ID)
+    if not args:
+        sender.send_message_direct(cid, raffle_text(cid), parse_mode="Markdown")
+        return
+    sub = args[0].lower()
+    if sub == "buy":
+        n = int(args[1]) if len(args) > 1 and args[1].isdigit() else 0
+        sender.send_message_direct(cid, buy_raffle_tickets(cid, n), parse_mode="Markdown")
+        return
+    if sub == "new" and is_admin:
+        try:
+            hours = float(args[1])
+            prize = " ".join(args[2:]) or "Lot mystère"
+            rid = botdb.create_raffle(prize, hours)
+            sender.send_message_direct(cid, f"🎟 Tombola #{rid} ouverte : *{prize}* ({hours}h).", parse_mode="Markdown")
+        except Exception:
+            sender.send_message_direct(cid, "Format : `/raffle new <heures> <lot>`", parse_mode="Markdown")
+        return
+    if sub == "draw" and is_admin:
+        r = botdb.get_open_raffle()
+        if not r:
+            sender.send_message_direct(cid, "Aucune tombola ouverte.")
+            return
+        plist = botdb.raffle_participants(r["id"])
+        d = botdb.draw_raffle(r["id"])
+        if not d["ok"]:
+            sender.send_message_direct(cid, f"Tirage impossible : {d['reason']}")
+            return
+        for uid, _tk in plist:
+            try:
+                if uid == d["winner"]:
+                    sender.send_message_direct(uid, f"🎉 *GAGNÉ !* Tombola : *{d['prize']}*.\nContacte l'admin pour recevoir ton lot.", None, "Markdown")
+                else:
+                    sender.send_message_direct(uid, f"🎟 Tombola terminée : *{d['prize']}* remporté par un autre joueur. Merci d'avoir participé !", None, "Markdown")
+            except Exception:
+                pass
+            time.sleep(0.03)
+        sender.send_message_direct(cid, f"✅ Tirage effectué. Gagnant : `{d['winner']}`.", parse_mode="Markdown")
+        return
+    sender.send_message_direct(cid, raffle_text(cid), parse_mode="Markdown")
+
+@bot.message_handler(commands=['airdrops', 'airdrop'])
+def _cmd_airdrops(message: types.Message):
+    cid = _cmd_guard(message)
+    if cid is None:
+        return
+    args = (message.text or "").split()[1:]
+    is_admin = str(cid) == str(ADMIN_CHAT_ID)
+    if not args:
+        sender.send_message_direct(cid, airdrops_text(cid), parse_mode="Markdown")
+        return
+    sub = args[0].lower()
+    if sub == "sub":
+        try:
+            now_sub = botdb.toggle_airdrop_sub(cid)
+            sender.send_message_direct(cid, "🔔 Abonné aux alertes airdrops !" if now_sub else "🔕 Désabonné des airdrops.")
+        except Exception:
+            sender.send_message_direct(cid, "⚠️ Action indisponible.")
+        return
+    if sub == "add" and is_admin:
+        rest = (message.text or "").split(maxsplit=2)
+        payload = rest[2] if len(rest) > 2 else ""
+        segs = [s.strip() for s in payload.split("|")]
+        if len(segs) >= 2 and segs[0] and segs[1]:
+            if not segs[1].lower().startswith(("http://", "https://")):
+                sender.send_message_direct(cid, "⚠️ L'URL doit commencer par http:// ou https://.", parse_mode="Markdown")
+                return
+            aid = botdb.add_airdrop(segs[0], segs[1], segs[2] if len(segs) > 2 else "")
+            sender.send_message_direct(cid, f"🪂 Airdrop #{aid} ajouté : *{segs[0]}*. Diffusion aux abonnés au prochain cycle.", parse_mode="Markdown")
+        else:
+            sender.send_message_direct(cid, "Format : `/airdrops add Titre | https://url | note`", parse_mode="Markdown")
+        return
+    sender.send_message_direct(cid, airdrops_text(cid), parse_mode="Markdown")
+
+
 def get_reviews_keyboard():
     return MenuManager.get_matrix_keyboard(REVIEWS_KEYBOARD_DATA)
 
@@ -4795,7 +5174,15 @@ def get_combo_list_keyboard(page=0):
     )
 def get_single_game_keyboard(key, page):
     data = manager.combo_games.get(key, {})
-    return ContentKeyboardManager.get_single_game_keyboard(key, page, data, SINGLE_GAME_ACTIONS)
+    actions = SINGLE_GAME_ACTIONS
+    # Jeux ajoutés par l'admin : pas de combo à scraper ; tactique seulement si
+    # une stratégie a été renseignée. On garde les boutons ref_link (Play).
+    if data.get("admin_added"):
+        actions = dict(SINGLE_GAME_ACTIONS)
+        actions.pop("combo", None)
+        if not data.get("strategy"):
+            actions.pop("tactics", None)
+    return ContentKeyboardManager.get_single_game_keyboard(key, page, data, actions)
     
 def get_phone_miners_keyboard():
     return ContentKeyboardManager.get_catalog_keyboard(
@@ -4862,6 +5249,164 @@ def send_combo_result(chat_id, info, img_bytes, date_text):
 
 def show_user_profile(chat_id):
     return profile_manager.show_user_profile(chat_id, user_game_stats)
+
+
+# ============================================================
+# 🎯 ENGAGEMENT : quêtes, badges, tombola, airdrops (couche botdb)
+# Toutes les fonctions sont DÉFENSIVES : une panne base n'impacte pas le bot.
+# ============================================================
+def _user_badge_stats(chat_id):
+    return {
+        "points": get_points(chat_id), "streak": get_streak(chat_id),
+        "referrals": referral_count(chat_id),
+        "quests_done": botdb.quests_completed_count(chat_id),
+        "vip": is_vip(chat_id),
+    }
+
+def refresh_badges(chat_id):
+    """Débloque les badges désormais mérités et notifie l'utilisateur."""
+    try:
+        for emoji, title in botdb.check_badges(chat_id, _user_badge_stats(chat_id)):
+            try:
+                sender.send_message_direct(chat_id, f"🏅 Nouveau badge : {emoji} *{title}* !", None, "Markdown")
+            except Exception:
+                pass
+    except Exception as e:
+        logger.error(f"refresh_badges: {e}")
+
+def award_quest(chat_id, quest_key, inc=1):
+    """Fait progresser une quête ; crédite points + badges à l'achèvement."""
+    try:
+        r = botdb.quest_progress(chat_id, quest_key, inc)
+    except Exception as e:
+        logger.error(f"award_quest {quest_key}: {e}")
+        return
+    if r.get("completed_now"):
+        try:
+            add_points(chat_id, r["reward"])
+            sender.send_message_direct(
+                chat_id, f"✅ Quête accomplie : {r['title']}\n🎁 *+{r['reward']} points* !", None, "Markdown"
+            )
+        except Exception:
+            pass
+        refresh_badges(chat_id)
+
+def quests_text(chat_id) -> str:
+    """Rendu texte de l'écran des quêtes du jour / de la semaine."""
+    try:
+        items = botdb.list_quests(chat_id)
+    except Exception:
+        return "⚠️ Quêtes momentanément indisponibles."
+    daily = [q for q in items if q["scope"] == "daily"]
+    weekly = [q for q in items if q["scope"] == "weekly"]
+    def _line(q):
+        mark = "✅" if q["completed"] else f"{q['progress']}/{q['target']}"
+        return f"{mark} {q['title']} — *+{q['reward']}*"
+    lines = ["🎯 *Tes quêtes*", "━━━━━━━━━━━━━━━━━━", "*Chaque jour :*"]
+    lines += [_line(q) for q in daily]
+    lines += ["", "*Cette semaine :*"]
+    lines += [_line(q) for q in weekly]
+    lines += ["", "_Les points débloquent badges 🏅, VIP 👑 et tickets de tombola 🎟._"]
+    return "\n".join(lines)
+
+def badges_text(chat_id) -> str:
+    try:
+        items = botdb.badges_overview(chat_id)
+    except Exception:
+        return "⚠️ Badges momentanément indisponibles."
+    got = sum(1 for b in items if b["unlocked"])
+    lines = [f"🏅 *Tes badges* ({got}/{len(items)})", "━━━━━━━━━━━━━━━━━━"]
+    for b in items:
+        if b["unlocked"]:
+            lines.append(f"{b['emoji']} *{b['title']}* — {b['desc']} ✅")
+        else:
+            lines.append(f"🔒 {b['title']} — _{b['desc']}_")
+    return "\n".join(lines)
+
+# Coût d'un ticket de tombola en points.
+RAFFLE_TICKET_COST = 100
+
+def raffle_text(chat_id) -> str:
+    try:
+        st = botdb.raffle_stats()
+    except Exception:
+        return "⚠️ Tombola momentanément indisponible."
+    r = st["raffle"]
+    if not r:
+        return ("🎟 *Tombola*\n━━━━━━━━━━━━━━━━━━\n"
+                "Aucune tombola en cours pour le moment. Reviens bientôt !")
+    left = int(r["ends_at"] - time.time())
+    when = f"{left // 3600}h {(left % 3600) // 60}m" if left > 0 else "clôture imminente"
+    mine = botdb.user_tickets(chat_id)
+    return (
+        "🎟 *Tombola en cours*\n━━━━━━━━━━━━━━━━━━\n"
+        f"🎁 Lot : *{r['prize']}*\n"
+        f"⏳ Fin dans : *{when}*\n"
+        f"👥 Participants : *{st['participants']}* · 🎟 Tickets : *{st['total_tickets']}*\n"
+        f"🎫 Tes tickets : *{mine}*\n\n"
+        f"1 ticket = *{RAFFLE_TICKET_COST}* points. Tu as *{get_points(chat_id)}* pts.\n"
+        "Achète : `/raffle buy <nombre>`"
+    )
+
+def buy_raffle_tickets(chat_id, n: int) -> str:
+    """Achète des tickets en dépensant des points (points = source de vérité)."""
+    if n <= 0:
+        return "⚠️ Indique un nombre de tickets positif. Ex : `/raffle buy 3`"
+    try:
+        if not botdb.get_open_raffle():
+            return "❌ Aucune tombola en cours."
+    except Exception:
+        return "⚠️ Tombola indisponible."
+    cost = n * RAFFLE_TICKET_COST
+    # Section critique : contrôle du solde + débit doivent être ATOMIQUES
+    # (sinon deux achats simultanés pourraient tous deux passer le test).
+    with _points_lock:
+        if get_points(chat_id) < cost:
+            return f"❌ Il te faut *{cost}* points ({n}×{RAFFLE_TICKET_COST}), tu as *{get_points(chat_id)}*."
+        add_points(chat_id, -cost)                # débit d'abord
+        res = botdb.add_tickets(chat_id, n)
+        if not res["ok"]:
+            add_points(chat_id, cost)             # remboursement si échec
+            return f"❌ {res['reason']}"
+    return f"🎟 *+{n} ticket(s)* achetés (−{cost} pts). Total : *{res['tickets']}* tickets. Bonne chance !"
+
+def airdrops_text(chat_id) -> str:
+    try:
+        drops = botdb.list_airdrops(active_only=True, limit=15)
+        subbed = botdb.is_airdrop_subscribed(chat_id)
+    except Exception:
+        return "⚠️ Airdrops momentanément indisponibles."
+    head = ("🪂 *Airdrops actifs*\n━━━━━━━━━━━━━━━━━━\n"
+            f"{'🔔 Tu es abonné aux alertes.' if subbed else '🔕 Non abonné.'} "
+            "Bascule : `/airdrops sub`\n\n")
+    if not drops:
+        return head + "Aucun airdrop listé pour l'instant."
+    body = []
+    for d in drops:
+        note = f"\n   _{d['note']}_" if d.get("note") else ""
+        body.append(f"• *{d['title']}*\n   🔗 {d['url']}{note}")
+    return head + "\n\n".join(body) + ("\n\n⚠️ _Ne donne JAMAIS ta seed-phrase. "
+                                       "Un airdrop légitime ne la demande pas._")
+
+def push_new_airdrops():
+    """Pousse les airdrops actifs aux abonnés qui ne les ont pas encore reçus."""
+    try:
+        pending = botdb.pending_airdrop_pushes()
+    except Exception as e:
+        logger.error(f"push_new_airdrops: {e}")
+        return
+    for drop, targets in pending:
+        note = f"\n_{drop['note']}_" if drop.get("note") else ""
+        msg = (f"🪂 *Nouvel airdrop !*\n━━━━━━━━━━━━━━━━━━\n"
+               f"*{drop['title']}*\n🔗 {drop['url']}{note}\n\n"
+               "⚠️ _Jamais ta seed-phrase._")
+        for uid in targets:
+            try:
+                sender.send_message_direct(uid, msg, None, "Markdown")
+                botdb.mark_airdrop_pushed(drop["id"], uid)
+            except Exception:
+                botdb.mark_airdrop_pushed(drop["id"], uid)  # évite le renvoi en boucle
+            time.sleep(0.05)
     
 def daily_auto_checker():
     scheduler_manager.run_daily_checker(user_game_timers)
@@ -5144,6 +5689,13 @@ updater_thread = threading.Thread(target=background_independent_updater, args=(7
 sender = NotificationSender(bot, logger)
 # Инициализация виртуального помощника
 ai_assistant = BotVirtualAssistant()
+# Base SQLite (quêtes / badges / tombola / airdrops). Non bloquant : si la base
+# est indisponible, le bot tourne quand même (les fonctions liées sont défensives).
+try:
+    botdb.init_db()
+    print("🗄️ Base SQLite initialisée (quêtes, badges, tombola, airdrops).", flush=True)
+except Exception as _db_err:
+    print(f"⚠️ Base SQLite indisponible ({_db_err}). Fonctions d'engagement désactivées.", flush=True)
 # Инициализация усиленного защитного модуля
 sec_guard = AdvancedSecurityGuard()
 security_core = UltimateSecurityCore()
@@ -5154,6 +5706,10 @@ account_guard = AccountGuard(bot, SCAM_USERNAME_MARKERS, ADMIN_CHAT_ID)
 # Инициализация менеджеров
 image_handler = ImageHandler(logger, target_width=600)
 manager = MiningComboManager()
+# Fusionne les jeux ajoutés par l'admin (base) dans la liste des combo-jeux.
+for _gk, _gd in admin_games.items():
+    if isinstance(_gd, dict) and _gd.get("name"):
+        manager.combo_games[_gk] = _gd
 # 1. Сначала создаем экземпляр процессора
 message_processor = MessageProcessor(bot, logger, sender, manager)
 
@@ -5546,6 +6102,34 @@ WEBAPP_HTML = r"""<!doctype html>
     <div class="card2" id="aide" style="white-space:pre-wrap"></div>
   </section>
 
+  <!-- QUÊTES -->
+  <section id="v-quests" class="view hide">
+    <div class="back" onclick="show('home')">⬅️ Retour</div>
+    <div class="sec-title">🎯 Mes quêtes</div>
+    <div id="quests"><div class="skel"></div><div class="skel"></div></div>
+  </section>
+
+  <!-- BADGES -->
+  <section id="v-badges" class="view hide">
+    <div class="back" onclick="show('home')">⬅️ Retour</div>
+    <div class="sec-title">🏅 Mes badges</div>
+    <div id="badges"><div class="skel"></div></div>
+  </section>
+
+  <!-- TOMBOLA -->
+  <section id="v-raffle" class="view hide">
+    <div class="back" onclick="show('home')">⬅️ Retour</div>
+    <div class="sec-title">🎟 Tombola</div>
+    <div id="raffle"><div class="skel"></div></div>
+  </section>
+
+  <!-- AIRDROPS -->
+  <section id="v-airdrops" class="view hide">
+    <div class="back" onclick="show('home')">⬅️ Retour</div>
+    <div class="sec-title">🪂 Airdrops</div>
+    <div id="airdrops"><div class="skel"></div></div>
+  </section>
+
   <!-- ADMIN -->
   <section id="v-admin" class="view hide">
     <div class="back" onclick="show('home')">⬅️ Retour</div>
@@ -5573,6 +6157,15 @@ WEBAPP_HTML = r"""<!doctype html>
       <b>🔗 Domaine scam</b>
       <input id="ad-sc" placeholder="ex: scam-site.top">
       <button class="btn sm" style="width:100%;margin-top:10px" onclick="admScam()">Ajouter au blacklist</button>
+    </div>
+    <div class="card2">
+      <b>🎮 Ajouter un jeu</b>
+      <input id="ad-gn" placeholder="Nom du jeu (ex: 🟡 Doodle Jump)">
+      <input id="ad-g1" placeholder="ref_link_1 (https://t.me/…)" style="margin-top:8px">
+      <input id="ad-g2" placeholder="ref_link_2 (optionnel)" style="margin-top:8px">
+      <textarea id="ad-gs" placeholder="Stratégie / texte (optionnel)" style="margin-top:8px"></textarea>
+      <button class="btn sm" style="width:100%;margin-top:10px" onclick="admAddGame()">Ajouter le jeu</button>
+      <div id="adm-games" style="margin-top:12px"></div>
     </div>
     <button class="btn gold" onclick="admBackup()">💾 Lancer un backup complet</button>
   </section>
@@ -5605,7 +6198,8 @@ function post(path, body){ return api(path, {method:"POST", body:JSON.stringify(
 
 const loaders = {combos:loadCombos, earn:loadEarn, prices:loadPrices, top:loadTop,
   profil:loadProfil, timers:loadTimers, avis:loadAvis, preuves:loadPreuves,
-  pub:loadPub, vip:loadVip, alertes:loadAlertes, aide:loadAide, admin:loadAdmin};
+  pub:loadPub, vip:loadVip, alertes:loadAlertes, aide:loadAide, admin:loadAdmin,
+  quests:loadQuests, badges:loadBadges, raffle:loadRaffle, airdrops:loadAirdrops};
 
 function show(v){
   document.querySelectorAll(".view").forEach(s=>s.classList.add("hide"));
@@ -5617,6 +6211,8 @@ function show(v){
 }
 
 const MENU = [
+  ["quests","🎯","Quêtes"],["badges","🏅","Badges"],["raffle","🎟","Tombola"],
+  ["airdrops","🪂","Airdrops"],
   ["profil","👤","Profil"],["timers","⏰","Timers"],["earn","💰","Gagner"],
   ["combos","🎯","Combos"],["prices","🧮","Prix"],["top","🏆","Top"],
   ["avis","💬","Avis"],["preuves","💎","Preuves"],["pub","📢","Pub"],
@@ -5843,10 +6439,90 @@ async function setLang(l){ try{ await post("/api/lang",{lang:l}); toast("✅ Lan
 async function toggleDigest(){ try{ const d=await post("/api/digest",{}); toast(d.on?"🌅 Digest activé":"🌅 Digest désactivé"); }catch(e){ toast("Erreur"); } }
 async function loadAide(){ try{ const d=await api("/api/help"); $("#aide").textContent=d.text; }catch(e){ $("#aide").textContent="Connexion requise."; } }
 
+async function loadQuests(){
+  try{
+    const d = await api("/api/quests"); const box=$("#quests");
+    if(!d.quests.length){ box.innerHTML='<div class="empty">Aucune quête.</div>'; return; }
+    const daily=d.quests.filter(q=>q.scope==='daily'), weekly=d.quests.filter(q=>q.scope==='weekly');
+    const row=q=>`<div class="row"><div class="n">${esc(q.title)}
+        <div class="s">${q.completed?'✅ Accompli':(q.progress+'/'+q.target)}</div></div>
+        <div class="${q.completed?'up':''}" style="font-weight:800">+${q.reward}</div></div>`;
+    box.innerHTML = '<div class="sec-title">Chaque jour</div>'+daily.map(row).join("")
+      +'<div class="sec-title">Cette semaine</div>'+weekly.map(row).join("")
+      +'<div class="empty">Les points débloquent badges 🏅, VIP 👑 et tickets 🎟.</div>';
+  }catch(e){ $("#quests").innerHTML='<div class="empty">Connexion requise.</div>'; }
+}
+
+async function loadBadges(){
+  try{
+    const d = await api("/api/badges"); const box=$("#badges");
+    const got=d.badges.filter(b=>b.unlocked).length;
+    box.innerHTML = `<div class="s" style="margin-bottom:8px">${got}/${d.badges.length} débloqués</div>`
+      + d.badges.map(b=>`<div class="row" style="${b.unlocked?'':'opacity:.55'}">
+        <div style="font-size:22px">${b.unlocked?b.emoji:'🔒'}</div>
+        <div class="n">${esc(b.title)}<div class="s">${esc(b.desc)}</div></div>
+        ${b.unlocked?'<div class="up">✅</div>':''}</div>`).join("");
+  }catch(e){ $("#badges").innerHTML='<div class="empty">Connexion requise.</div>'; }
+}
+
+async function loadRaffle(){
+  try{
+    const d = await api("/api/raffle"); const box=$("#raffle");
+    if(!d.open){ box.innerHTML='<div class="empty">🎟 Aucune tombola en cours. Reviens bientôt !</div>'; return; }
+    const h=Math.floor(d.ends_in/3600), m=Math.floor(d.ends_in%3600/60);
+    box.innerHTML = `
+      <div class="card2"><b>🎁 ${esc(d.prize)}</b>
+        <p>⏳ Fin dans ${h}h ${m}m · 👥 ${d.participants} joueurs · 🎟 ${d.total_tickets} tickets</p>
+        <div class="s">🎫 Tes tickets : <b>${d.my_tickets}</b> · 💰 Tes points : <b>${d.points}</b></div>
+      </div>
+      <div class="card2">
+        <label>Nombre de tickets (1 = ${d.ticket_cost} pts)</label>
+        <input id="rf-n" type="number" inputmode="numeric" placeholder="1" min="1">
+        <button class="btn sm" style="width:100%;margin-top:10px" onclick="buyTickets()">🎟 Acheter</button>
+      </div>`;
+  }catch(e){ $("#raffle").innerHTML='<div class="empty">Connexion requise.</div>'; }
+}
+async function buyTickets(){
+  const n=parseInt($("#rf-n").value||"0");
+  if(!n){ toast("Nombre de tickets ?"); return; }
+  try{ const d=await post("/api/raffle/buy",{count:n});
+    toast(d.msg||(d.ok?"🎟 Achetés !":"Refusé")); if(d.ok){ loadRaffle(); loadMe(); } }
+  catch(e){ toast("Erreur"); }
+}
+
+async function loadAirdrops(){
+  try{
+    const d = await api("/api/airdrops"); const box=$("#airdrops");
+    const head=`<button class="btn ${d.subscribed?'ghost':''}" onclick="subAir()">${d.subscribed?'🔕 Se désabonner des alertes':'🔔 M\'abonner aux alertes'}</button>`;
+    if(!d.airdrops.length){ box.innerHTML=head+'<div class="empty">Aucun airdrop listé.</div>'; return; }
+    box.innerHTML = head + d.airdrops.map(a=>`<div class="card2"><b>🪂 ${esc(a.title)}</b>
+      ${a.note?`<p>${esc(a.note)}</p>`:''}
+      <a class="pill" href="${a.url}" target="_blank">🔗 Ouvrir</a></div>`).join("")
+      + '<div class="empty">⚠️ Ne donne JAMAIS ta seed-phrase.</div>';
+  }catch(e){ $("#airdrops").innerHTML='<div class="empty">Connexion requise.</div>'; }
+}
+async function subAir(){ try{ const d=await post("/api/airdrops/sub",{});
+  toast(d.subscribed?"🔔 Abonné !":"🔕 Désabonné"); loadAirdrops(); }catch(e){ toast("Erreur"); } }
+
 async function loadAdmin(){
   if(!ME.is_admin){ show('home'); return; }
   try{ const d=await api("/api/admin/stats"); $("#adm-stats").textContent=d.text; }catch(e){ $("#adm-stats").textContent="Erreur"; }
+  loadAdmGames();
 }
+async function loadAdmGames(){
+  const box=$("#adm-games"); if(!box) return;
+  try{ const d=await api("/api/admin/games"); const gs=d.games||[];
+    if(!gs.length){ box.innerHTML='<div class="muted" style="font-size:13px">Aucun jeu ajouté.</div>'; return; }
+    box.innerHTML='<b style="font-size:13px">Jeux ajoutés</b>'+gs.map(g=>
+      `<div style="display:flex;align-items:center;gap:8px;margin-top:6px">
+         <span style="flex:1;font-size:13px">${esc(g.name)}</span>
+         <button class="btn sm red" onclick="admDelGame('${esc(g.key)}')">🗑</button>
+       </div>`).join('');
+  }catch(e){ box.innerHTML=''; }
+}
+async function admDelGame(key){
+  try{ const d=await post("/api/admin/delgame",{key});
+    toast(d.ok?"🗑 Jeu supprimé":"⚠️ Introuvable"); loadAdmGames(); }catch(e){ toast("Erreur"); } }
 async function admBroadcast(){ const text=$("#ad-bc").value.trim(); if(!text){toast("Message ?");return;}
   try{ await post("/api/admin/broadcast",{text}); $("#ad-bc").value=""; toast("📣 Diffusion lancée"); }catch(e){ toast("Erreur"); } }
 async function admVip(){ const uid=$("#ad-vu").value.trim(), days=parseInt($("#ad-vd").value||"0");
@@ -5857,6 +6533,11 @@ async function admBan(b){ const uid=$("#ad-bu").value.trim(); if(!uid){toast("ID
 async function admScam(){ const domain=$("#ad-sc").value.trim(); if(!domain){toast("Domaine ?");return;}
   try{ const d=await post("/api/admin/scam",{domain}); $("#ad-sc").value=""; toast(d.ok?"🚫 Ajouté":"⚠️ Invalide"); }catch(e){ toast("Erreur"); } }
 async function admBackup(){ try{ await post("/api/admin/backup",{}); toast("💾 Backup lancé (voir Telegram)"); }catch(e){ toast("Erreur"); } }
+async function admAddGame(){ const name=$("#ad-gn").value.trim(), r1=$("#ad-g1").value.trim(), r2=$("#ad-g2").value.trim(), s=$("#ad-gs").value.trim();
+  if(!name||(!r1&&!r2)){toast("Nom + ≥1 lien ?");return;}
+  try{ const d=await post("/api/admin/addgame",{name,ref_link_1:r1,ref_link_2:r2,strategy:s});
+    if(d.ok){ $("#ad-gn").value="";$("#ad-g1").value="";$("#ad-g2").value="";$("#ad-gs").value=""; toast("🎮 Jeu ajouté : "+d.name); loadAdmGames(); }
+    else toast("⚠️ "+(d.error||"Erreur")); }catch(e){ toast("Erreur"); } }
 
 $("#checkin").onclick=async()=>{
   try{ const d=await post("/api/checkin",{});
@@ -5878,6 +6559,41 @@ loadMe();
 if _FLASK_OK:
     web_app = Flask(__name__)
     _img_path_cache = {}
+
+    # ---- Rate-limiting mémoire : fenêtre glissante par utilisateur/IP ----
+    _rl_lock = threading.Lock()
+    _rl_hits = {}                     # {clé: [timestamps]}
+    RL_WINDOW = 10.0                  # fenêtre en secondes
+    RL_MAX = 40                       # requêtes max /api/ par fenêtre et par clé
+
+    def _rate_limited(key: str) -> bool:
+        now = time.time()
+        cutoff = now - RL_WINDOW
+        with _rl_lock:
+            arr = _rl_hits.get(key)
+            if arr is None:
+                arr = []
+                _rl_hits[key] = arr
+            while arr and arr[0] < cutoff:
+                arr.pop(0)
+            if len(arr) >= RL_MAX:
+                return True
+            arr.append(now)
+            # Nettoyage léger : purge les clés inactives quand la table gonfle.
+            if len(_rl_hits) > 5000:
+                for k in [k for k, v in list(_rl_hits.items()) if not v or v[-1] < cutoff]:
+                    _rl_hits.pop(k, None)
+            return False
+
+    @web_app.before_request
+    def _rl_guard():
+        # On ne limite que les endpoints /api/ (pas l'index ni les images).
+        if request.path.startswith("/api/"):
+            init = request.headers.get("X-Telegram-Init-Data", "") or request.args.get("initData", "")
+            ok, user = verify_init_data(init)
+            key = f"u{user.get('id')}" if (ok and user.get("id")) else f"ip{request.remote_addr}"
+            if _rate_limited(key):
+                return jsonify({"error": "rate_limited"}), 429
 
     def _webapp_uid():
         init = request.headers.get("X-Telegram-Init-Data", "") or request.args.get("initData", "")
@@ -6287,6 +7003,85 @@ if _FLASK_OK:
             return jsonify({"error": "auth"}), 401
         return jsonify({"text": t("help", get_lang(uid)) or "Aide indisponible."})
 
+    # ---------------- ENGAGEMENT (quêtes, badges, tombola, airdrops) --------
+    @web_app.route("/api/quests")
+    def _web_quests():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        try:
+            items = botdb.list_quests(uid)
+        except Exception:
+            items = []
+        return jsonify({"quests": items})
+
+    @web_app.route("/api/badges")
+    def _web_badges():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        try:
+            botdb.check_badges(uid, _user_badge_stats(uid))   # débloque en direct
+            items = botdb.badges_overview(uid)
+        except Exception:
+            items = []
+        return jsonify({"badges": items})
+
+    @web_app.route("/api/raffle")
+    def _web_raffle():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        try:
+            st = botdb.raffle_stats()
+            r = st["raffle"]
+            data = {
+                "open": bool(r),
+                "prize": r["prize"] if r else "",
+                "ends_in": max(0, int(r["ends_at"] - time.time())) if r else 0,
+                "participants": st["participants"], "total_tickets": st["total_tickets"],
+                "my_tickets": botdb.user_tickets(uid) if r else 0,
+                "points": get_points(uid), "ticket_cost": RAFFLE_TICKET_COST,
+            }
+        except Exception:
+            data = {"open": False}
+        return jsonify(data)
+
+    @web_app.route("/api/raffle/buy", methods=["POST"])
+    def _web_raffle_buy():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        try:
+            n = int((request.json or {}).get("count", 0))
+        except Exception:
+            n = 0
+        msg = buy_raffle_tickets(uid, n)
+        return jsonify({"ok": msg.startswith("🎟"), "msg": re.sub(r'\*', '', msg)})
+
+    @web_app.route("/api/airdrops")
+    def _web_airdrops():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        try:
+            drops = botdb.list_airdrops(active_only=True, limit=20)
+            subbed = botdb.is_airdrop_subscribed(uid)
+        except Exception:
+            drops, subbed = [], False
+        return jsonify({"airdrops": drops, "subscribed": subbed})
+
+    @web_app.route("/api/airdrops/sub", methods=["POST"])
+    def _web_airdrops_sub():
+        uid, _ = _webapp_uid()
+        if not uid:
+            return jsonify({"error": "auth"}), 401
+        try:
+            now_sub = botdb.toggle_airdrop_sub(uid)
+        except Exception:
+            now_sub = False
+        return jsonify({"subscribed": now_sub})
+
     # ---------------- ADMIN ----------------
     @web_app.route("/api/admin/stats")
     def _web_adm_stats():
@@ -6371,6 +7166,43 @@ if _FLASK_OK:
             return jsonify({"error": "forbidden"}), 403
         threading.Thread(target=backup_all_files, args=(bot, ADMIN_CHAT_ID), daemon=True).start()
         return jsonify({"ok": True})
+
+    @web_app.route("/api/admin/addgame", methods=["POST"])
+    def _web_adm_addgame():
+        uid, _ = _webapp_uid()
+        if not uid or not _is_admin(uid):
+            return jsonify({"error": "forbidden"}), 403
+        b = request.json or {}
+        name = str(b.get("name", "")).strip()
+        ref1 = str(b.get("ref_link_1", "")).strip()
+        ref2 = str(b.get("ref_link_2", "")).strip()
+        strategy = str(b.get("strategy", "")).strip()
+        if not name or (not ref1 and not ref2):
+            return jsonify({"ok": False, "error": "Nom + au moins un ref_link requis"})
+        key, gdata = register_admin_game(name, ref1, ref2, strategy)
+        return jsonify({"ok": True, "key": key, "name": gdata["name"]})
+
+    @web_app.route("/api/admin/games")
+    def _web_adm_games():
+        uid, _ = _webapp_uid()
+        if not uid or not _is_admin(uid):
+            return jsonify({"error": "forbidden"}), 403
+        games = [{
+            "key": gk,
+            "name": gd.get("name", gk),
+            "ref_link_1": gd.get("ref_link_1", ""),
+            "ref_link_2": gd.get("ref_link_2", ""),
+        } for gk, gd in admin_games.items()]
+        return jsonify({"games": games})
+
+    @web_app.route("/api/admin/delgame", methods=["POST"])
+    def _web_adm_delgame():
+        uid, _ = _webapp_uid()
+        if not uid or not _is_admin(uid):
+            return jsonify({"error": "forbidden"}), 403
+        key = str((request.json or {}).get("key", "")).strip()
+        removed = remove_admin_game(key)
+        return jsonify({"ok": removed is not None})
 
     @web_app.route("/img/<path:file_id>")
     def _web_img(file_id):
