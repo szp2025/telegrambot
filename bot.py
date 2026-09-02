@@ -1161,6 +1161,106 @@ def save_user_stats():
 
 user_game_stats = load_user_stats()
 
+# ── Jeux ajoutés par l'admin (persistés en base, fusionnés aux combo-jeux) ──
+# Les jeux de config.py restent en dur ; ceux ajoutés depuis l'admin (Telegram
+# ou mini-app web) sont stockés en base (kv_store) et injectés dans
+# manager.combo_games au démarrage. Ils portent le drapeau "admin_added" pour
+# que le scraper de combos les ignore (ils n'ont pas de page miningcombo).
+def load_admin_games():
+    raw = botdb.kv_load("admin_games", {}) or {}
+    return raw if isinstance(raw, dict) else {}
+
+def save_admin_games():
+    try:
+        botdb.kv_save("admin_games", admin_games)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения admin-игр: {e}")
+
+admin_games = load_admin_games()
+
+
+def _slugify_game(name: str) -> str:
+    """Nom → clé courte ascii (pour callback_data et clés de dict)."""
+    base = re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")
+    return base or "game"
+
+
+def register_admin_game(name: str, ref_link_1: str = "", ref_link_2: str = "",
+                        strategy: str = "") -> tuple:
+    """Crée un jeu ajouté par l'admin : persiste en base ET l'injecte dans la
+    liste live des combo-jeux (manager.combo_games). Renvoie (key, data)."""
+    base = _slugify_game(name)
+    key, i = base, 2
+    existing = set(manager.combo_games) | set(admin_games)
+    while key in existing:
+        key = f"{base}-{i}"
+        i += 1
+    # Nom court : il sert aussi de callback_data (profgame_/statcheckin_ < 64 o).
+    data = {"name": (name or "").strip()[:24], "admin_added": True, "path": ""}
+    if (ref_link_1 or "").strip():
+        data["ref_link_1"] = ref_link_1.strip()
+    if (ref_link_2 or "").strip():
+        data["ref_link_2"] = ref_link_2.strip()
+    if (strategy or "").strip():
+        data["strategy"] = strategy.strip()
+    admin_games[key] = data
+    save_admin_games()
+    manager.combo_games[key] = data          # visible immédiatement (sans redémarrage)
+    return key, data
+
+
+def remove_admin_game(key: str) -> dict | None:
+    """Supprime un jeu ajouté par l'admin (base + liste live). Renvoie le jeu
+    supprimé, ou None s'il n'existait pas / n'était pas un jeu admin."""
+    data = admin_games.pop(key, None)
+    if data is None:
+        return None
+    save_admin_games()
+    # Ne retire de combo_games que si c'est bien un jeu admin (jamais un jeu config).
+    if manager.combo_games.get(key, {}).get("admin_added"):
+        manager.combo_games.pop(key, None)
+    manager.found_today.pop(key, None)
+    return data
+
+
+def _parse_level(stat) -> int | None:
+    """Extrait un entier de niveau d'un texte libre ('8', 'Уровень 20', '15 ур')."""
+    if stat is None:
+        return None
+    m = re.search(r"\d+", str(stat))
+    return int(m.group()) if m else None
+
+
+def build_level_checklist_html(gname: str, level: int, window: int = 8) -> str:
+    """Rendu HTML de la progression : niveaux passés BARRÉS, niveau courant mis
+    en avant, prochains niveaux listés. Ex : niveau 8 → уровни 1–7 barrés."""
+    import html as _html
+    g = _html.escape(str(gname))
+    lines = [f"🎮 <b>{g}</b>", f"📊 Текущий уровень: <b>{level}</b>", ""]
+    start = max(1, level - window)
+    if start > 1:
+        lines.append(f"✅ <s>уровни 1–{start - 1} пройдены</s>")
+    for lvl in range(start, level):
+        lines.append(f"✅ <s>уровень {lvl}</s>")
+    lines.append(f"🔸 <b>уровень {level}</b> — текущий")
+    for lvl in range(level + 1, level + 4):
+        lines.append(f"⬜️ уровень {lvl}")
+    lines.append("")
+    lines.append("👉 Нажми «✅ +1 уровень (чек-ин)», когда пройдёшь текущий.")
+    return "\n".join(lines)
+
+
+def _game_stat_keyboard(gname: str, has_level: bool):
+    """Clavier de la fiche stat d'un jeu (chèck-in + éditer + supprimer)."""
+    kb = types.InlineKeyboardMarkup()
+    if has_level:
+        kb.row(types.InlineKeyboardButton(text="✅ +1 уровень (чек-ин)", callback_data=f"statcheckin_{gname}"))
+    kb.row(
+        types.InlineKeyboardButton(text="✏️ Изменить", callback_data=f"statedit_{gname}"),
+        types.InlineKeyboardButton(text="🗑 Удалить", callback_data=f"statdel_{gname}")
+    )
+    return kb
+
 # ── История найденных комбо (общая для всех) ──────────────────────────────
 # Тоже только file_id Telegram + дата; картинки — на серверах Telegram.
 COMBO_HISTORY_FILE = "combo_history.json"
@@ -2237,6 +2337,9 @@ class MiningComboManager:
     def fetch_combo(self, game_key: str):
         if game_key not in self.combo_games:
             return None, "Игра не найдена"
+        # Jeux ajoutés par l'admin : pas de page miningcombo → aucun combo à scraper.
+        if self.combo_games[game_key].get("admin_added") or not self.combo_games[game_key].get("path"):
+            return None, "Нет комбо для этой игры"
         try:
             url = f"{self.base_url}{self.combo_games[game_key]['path']}"
             res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
@@ -2903,7 +3006,7 @@ class ProfileManager:
             mark = "✅" if nm in my_stats else "➕"
             keyboard_markup.row(types.InlineKeyboardButton(text=f"{mark} {nm}", callback_data=f"profgame_{nm}"))
         # Возможность добавить игру ВНЕ списка (ручной ввод «Название | Уровень»).
-        keyboard_markup.row(types.InlineKeyboardButton(text="➕ Другая игра (вручную)", callback_data="prof_add"))
+        keyboard_markup.row(types.InlineKeyboardButton(text="➕ Своя игра / чек-ин лист", callback_data="prof_add"))
         keyboard_markup.row(
             types.InlineKeyboardButton(text="📜 История комбо", callback_data="combo_hist"),
             types.InlineKeyboardButton(text="👥 Пригласить", callback_data="ref_invite")
@@ -3013,6 +3116,8 @@ class BackgroundSchedulerManager:
                 self.logger.info("🛡️ [AUTO-CHECKER] Запуск проверки комбо-картинок...")
                 
                 for key, info in self.manager.combo_games.items():
+                    if info.get("admin_added"):
+                        continue                   # jeu admin : pas de combo à scraper
                     if self.manager.found_today.get(key, False):
                         continue
 
@@ -3349,6 +3454,8 @@ class MenuTextProcessor:
         elif text in ["⚡ Проверить все комбо", "/all_combo"]:
             self.sender.send_message_direct(chat_id, "🔍 **Запущен массовый сбор комбо...**")
             for key, info in self.manager.combo_games.items():
+                if info.get("admin_added"):
+                    continue                       # jeu admin : pas de combo
                 # Сначала пробуем отдать комбо дня из кэша (мгновенно, без скрейпинга).
                 fid, dtext = find_today_combo_fileid(key)
                 if fid:
@@ -3553,6 +3660,27 @@ class MenuTextProcessor:
                 "оно уйдёт ВСЕМ пользователям бота.",
                 parse_mode="Markdown"
             )
+        elif text == "/addgame" and str(chat_id) == str(ADMIN_CHAT_ID):
+            user_input_states[chat_id] = {"step": "adm_addgame_name"}
+            self.sender.send_message_direct(
+                chat_id,
+                "🎮 *Ajout d'un jeu combo*\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                "Étape 1/4 — envoie le *nom* du jeu (ex : `🟡 Doodle Jump`) :",
+                parse_mode="Markdown"
+            )
+        elif text == "/delgame" and str(chat_id) == str(ADMIN_CHAT_ID):
+            if not admin_games:
+                self.sender.send_message_direct(chat_id, "📭 Aucun jeu ajouté par l'admin à supprimer.\n(Les jeux de config.py ne sont pas supprimables ici.)")
+            else:
+                kb = types.InlineKeyboardMarkup()
+                for gk, gd in admin_games.items():
+                    kb.row(types.InlineKeyboardButton(text=f"🗑 {gd.get('name', gk)}", callback_data=f"admdelgame_{gk}"))
+                self.sender.send_message_direct(
+                    chat_id,
+                    "🗑 *Supprimer un jeu*\n━━━━━━━━━━━━━━━━━━\nChoisis le jeu à retirer :",
+                    reply_markup=kb, parse_mode="Markdown"
+                )
         elif text in ["💎 Скрины выплат", "/proofs"]:
             if not self.cloud_proofs:
                 self.sender.send_message_direct(chat_id, "💎 Скринов пока нет.")
@@ -3662,6 +3790,50 @@ class MessageInputHandler:
             self.sender.broadcast_message(raw_text, self.verified_users, self.admin_chat_id)
             self.sender.send_message_direct(chat_id, "📣 Рассылка запущена по всей базе. Отчёт придёт по завершении.", parse_mode="Markdown")
             return
+
+        # 0-bis. Ajout d'un jeu combo par l'admin (flux guidé nom → ref1 → ref2 → stratégie).
+        _ag = self.user_input_states.get(chat_id, {})
+        if chat_id == self.admin_chat_id and str(_ag.get("step", "")).startswith("adm_addgame_"):
+            step = _ag["step"]
+            val = raw_text.strip()
+            skip = val in ("-", "—", "нет", "non", "skip", "no")
+            if step == "adm_addgame_name":
+                if not val:
+                    self.sender.send_message_direct(chat_id, "⚠️ Nom vide. Renvoie le *nom* du jeu :", parse_mode="Markdown")
+                    return
+                _ag.update(step="adm_addgame_ref1", name=val[:40])
+                self.user_input_states[chat_id] = _ag
+                self.sender.send_message_direct(
+                    chat_id, "Étape 2/4 — envoie *ref_link_1* (ou `-` pour ignorer) :", parse_mode="Markdown")
+                return
+            if step == "adm_addgame_ref1":
+                _ag.update(step="adm_addgame_ref2", ref1="" if skip else val)
+                self.user_input_states[chat_id] = _ag
+                self.sender.send_message_direct(
+                    chat_id, "Étape 3/4 — envoie *ref_link_2* (ou `-` pour ignorer) :", parse_mode="Markdown")
+                return
+            if step == "adm_addgame_ref2":
+                _ag.update(step="adm_addgame_strat", ref2="" if skip else val)
+                self.user_input_states[chat_id] = _ag
+                self.sender.send_message_direct(
+                    chat_id, "Étape 4/4 — envoie une *stratégie / texte* (ou `-` pour ignorer) :", parse_mode="Markdown")
+                return
+            if step == "adm_addgame_strat":
+                strategy = "" if skip else raw_text.strip()
+                self.user_input_states.pop(chat_id, None)
+                if not _ag.get("ref1") and not _ag.get("ref2"):
+                    self.sender.send_message_direct(chat_id, "⚠️ Jeu annulé : au moins un ref_link est requis. Recommence avec /addgame.")
+                    return
+                key, data = register_admin_game(_ag.get("name", ""), _ag.get("ref1", ""), _ag.get("ref2", ""), strategy)
+                self.sender.send_message_direct(
+                    chat_id,
+                    f"✅ Jeu *{data['name']}* ajouté aux combo-jeux !\n"
+                    f"🔗 ref_link_1 : `{data.get('ref_link_1', '—')}`\n"
+                    f"🔗 ref_link_2 : `{data.get('ref_link_2', '—')}`\n"
+                    f"🧠 stratégie : {'oui' if data.get('strategy') else 'non'}",
+                    parse_mode="Markdown"
+                )
+                return
 
         # 1. Обработка ввода текста отзыва (с фильтрацией безопасности)
         if chat_id in self.user_input_states and self.user_input_states[chat_id].get("step") == "waiting_review_text":
@@ -4446,7 +4618,15 @@ class CallbackQueryHandler:
 
             if data == "prof_add":
                 self.user_input_states[chat_id] = {"step": "waiting_game_info"}
-                self.sender.send_message_direct(chat_id, "✍️ **Введите данные в формате:**\n`Название игры | Уровень`", parse_mode="Markdown")
+                self.sender.send_message_direct(
+                    chat_id,
+                    "✍️ *Своя игра / свой чек-ин лист*\n"
+                    "━━━━━━━━━━━━━━━━━━\n"
+                    "Введите данные в формате :\n`Название игры | Уровень`\n\n"
+                    "💡 Если указать *числовой* уровень (например `8`), появится "
+                    "чек-ин: пройденные уровни будут вычёркиваться.",
+                    parse_mode="Markdown"
+                )
                 return
 
             # Клик по игре в профиле → показываем СТАТЫ ИМЕННО ЭТОЙ игры
@@ -4455,19 +4635,22 @@ class CallbackQueryHandler:
                 gname = data[len("profgame_"):]
                 info = user_game_stats.get(chat_id, {}).get(gname)
                 if info:
-                    caption = f"🎮 *{gname}*\n📊 Стат / Уровень: `{info.get('stat', 'Н/Д')}`"
-                    row_kb = types.InlineKeyboardMarkup()
-                    row_kb.row(
-                        types.InlineKeyboardButton(text="✏️ Изменить", callback_data=f"statedit_{gname}"),
-                        types.InlineKeyboardButton(text="🗑 Удалить", callback_data=f"statdel_{gname}")
-                    )
+                    lvl = _parse_level(info.get("stat"))
+                    row_kb = _game_stat_keyboard(gname, has_level=lvl is not None)
+                    # Niveau numérique → checklist avec niveaux passés BARRÉS (HTML).
+                    if lvl is not None:
+                        caption = build_level_checklist_html(gname, lvl)
+                        parse = "HTML"
+                    else:
+                        caption = f"🎮 *{gname}*\n📊 Стат / Уровень: `{info.get('stat', 'Н/Д')}`"
+                        parse = "Markdown"
                     if info.get("photo"):
                         try:
-                            self.bot.send_photo(chat_id, photo=info["photo"], caption=caption, parse_mode="Markdown", reply_markup=row_kb)
+                            self.bot.send_photo(chat_id, photo=info["photo"], caption=caption, parse_mode=parse, reply_markup=row_kb)
                         except Exception:
-                            self.sender.send_message_direct(chat_id, caption, parse_mode="Markdown", reply_markup=row_kb)
+                            self.sender.send_message_direct(chat_id, caption, parse_mode=parse, reply_markup=row_kb)
                     else:
-                        self.sender.send_message_direct(chat_id, caption, parse_mode="Markdown", reply_markup=row_kb)
+                        self.sender.send_message_direct(chat_id, caption, parse_mode=parse, reply_markup=row_kb)
                 else:
                     self.user_input_states[chat_id] = {"step": "waiting_game_stat", "game": gname}
                     self.sender.send_message_direct(
@@ -4533,6 +4716,67 @@ class CallbackQueryHandler:
                 else:
                     try:
                         self.bot.answer_callback_query(call.id, "Записи больше нет")
+                    except Exception:
+                        pass
+                return
+
+            # Чек-ин: +1 к уровню игры (предыдущий уровень становится «пройденным» / барним).
+            if data.startswith("statcheckin_"):
+                gname = data[len("statcheckin_"):]
+                info = user_game_stats.get(chat_id, {}).get(gname)
+                lvl = _parse_level(info.get("stat")) if info else None
+                if info is None or lvl is None:
+                    try:
+                        self.bot.answer_callback_query(call.id, "Сначала укажите числовой уровень")
+                    except Exception:
+                        pass
+                    return
+                lvl += 1
+                info["stat"] = str(lvl)
+                save_user_stats()
+                try:
+                    self.bot.answer_callback_query(call.id, f"✅ Уровень {lvl}! Предыдущий вычеркнут.")
+                except Exception:
+                    pass
+                caption = build_level_checklist_html(gname, lvl)
+                row_kb = _game_stat_keyboard(gname, has_level=True)
+                try:
+                    if getattr(call.message, "content_type", "") == "photo":
+                        self.bot.edit_message_caption(caption, chat_id=chat_id, message_id=call.message.message_id,
+                                                      parse_mode="HTML", reply_markup=row_kb)
+                    else:
+                        self.bot.edit_message_text(caption, chat_id=chat_id, message_id=call.message.message_id,
+                                                   parse_mode="HTML", reply_markup=row_kb)
+                except Exception:
+                    self.sender.send_message_direct(chat_id, caption, parse_mode="HTML", reply_markup=row_kb)
+                return
+
+            # Suppression d'un jeu ajouté par l'admin (ADMIN UNIQUEMENT).
+            if data.startswith("admdelgame_"):
+                if str(chat_id) != str(ADMIN_CHAT_ID):
+                    try:
+                        self.bot.answer_callback_query(call.id, "⛔ Réservé à l'admin")
+                    except Exception:
+                        pass
+                    return
+                gk = data[len("admdelgame_"):]
+                removed = remove_admin_game(gk)
+                try:
+                    self.bot.answer_callback_query(call.id, f"🗑 «{removed['name']}» supprimé" if removed else "Déjà supprimé")
+                except Exception:
+                    pass
+                # Reconstruit la liste restante (ou message vide).
+                if admin_games:
+                    kb = types.InlineKeyboardMarkup()
+                    for _k, _d in admin_games.items():
+                        kb.row(types.InlineKeyboardButton(text=f"🗑 {_d.get('name', _k)}", callback_data=f"admdelgame_{_k}"))
+                    try:
+                        self.bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=kb)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        self.bot.edit_message_text("📭 Plus aucun jeu ajouté par l'admin.", chat_id=chat_id, message_id=call.message.message_id)
                     except Exception:
                         pass
                 return
@@ -4930,7 +5174,15 @@ def get_combo_list_keyboard(page=0):
     )
 def get_single_game_keyboard(key, page):
     data = manager.combo_games.get(key, {})
-    return ContentKeyboardManager.get_single_game_keyboard(key, page, data, SINGLE_GAME_ACTIONS)
+    actions = SINGLE_GAME_ACTIONS
+    # Jeux ajoutés par l'admin : pas de combo à scraper ; tactique seulement si
+    # une stratégie a été renseignée. On garde les boutons ref_link (Play).
+    if data.get("admin_added"):
+        actions = dict(SINGLE_GAME_ACTIONS)
+        actions.pop("combo", None)
+        if not data.get("strategy"):
+            actions.pop("tactics", None)
+    return ContentKeyboardManager.get_single_game_keyboard(key, page, data, actions)
     
 def get_phone_miners_keyboard():
     return ContentKeyboardManager.get_catalog_keyboard(
@@ -5454,6 +5706,10 @@ account_guard = AccountGuard(bot, SCAM_USERNAME_MARKERS, ADMIN_CHAT_ID)
 # Инициализация менеджеров
 image_handler = ImageHandler(logger, target_width=600)
 manager = MiningComboManager()
+# Fusionne les jeux ajoutés par l'admin (base) dans la liste des combo-jeux.
+for _gk, _gd in admin_games.items():
+    if isinstance(_gd, dict) and _gd.get("name"):
+        manager.combo_games[_gk] = _gd
 # 1. Сначала создаем экземпляр процессора
 message_processor = MessageProcessor(bot, logger, sender, manager)
 
@@ -5902,6 +6158,15 @@ WEBAPP_HTML = r"""<!doctype html>
       <input id="ad-sc" placeholder="ex: scam-site.top">
       <button class="btn sm" style="width:100%;margin-top:10px" onclick="admScam()">Ajouter au blacklist</button>
     </div>
+    <div class="card2">
+      <b>🎮 Ajouter un jeu</b>
+      <input id="ad-gn" placeholder="Nom du jeu (ex: 🟡 Doodle Jump)">
+      <input id="ad-g1" placeholder="ref_link_1 (https://t.me/…)" style="margin-top:8px">
+      <input id="ad-g2" placeholder="ref_link_2 (optionnel)" style="margin-top:8px">
+      <textarea id="ad-gs" placeholder="Stratégie / texte (optionnel)" style="margin-top:8px"></textarea>
+      <button class="btn sm" style="width:100%;margin-top:10px" onclick="admAddGame()">Ajouter le jeu</button>
+      <div id="adm-games" style="margin-top:12px"></div>
+    </div>
     <button class="btn gold" onclick="admBackup()">💾 Lancer un backup complet</button>
   </section>
 </div>
@@ -6242,7 +6507,22 @@ async function subAir(){ try{ const d=await post("/api/airdrops/sub",{});
 async function loadAdmin(){
   if(!ME.is_admin){ show('home'); return; }
   try{ const d=await api("/api/admin/stats"); $("#adm-stats").textContent=d.text; }catch(e){ $("#adm-stats").textContent="Erreur"; }
+  loadAdmGames();
 }
+async function loadAdmGames(){
+  const box=$("#adm-games"); if(!box) return;
+  try{ const d=await api("/api/admin/games"); const gs=d.games||[];
+    if(!gs.length){ box.innerHTML='<div class="muted" style="font-size:13px">Aucun jeu ajouté.</div>'; return; }
+    box.innerHTML='<b style="font-size:13px">Jeux ajoutés</b>'+gs.map(g=>
+      `<div style="display:flex;align-items:center;gap:8px;margin-top:6px">
+         <span style="flex:1;font-size:13px">${esc(g.name)}</span>
+         <button class="btn sm red" onclick="admDelGame('${esc(g.key)}')">🗑</button>
+       </div>`).join('');
+  }catch(e){ box.innerHTML=''; }
+}
+async function admDelGame(key){
+  try{ const d=await post("/api/admin/delgame",{key});
+    toast(d.ok?"🗑 Jeu supprimé":"⚠️ Introuvable"); loadAdmGames(); }catch(e){ toast("Erreur"); } }
 async function admBroadcast(){ const text=$("#ad-bc").value.trim(); if(!text){toast("Message ?");return;}
   try{ await post("/api/admin/broadcast",{text}); $("#ad-bc").value=""; toast("📣 Diffusion lancée"); }catch(e){ toast("Erreur"); } }
 async function admVip(){ const uid=$("#ad-vu").value.trim(), days=parseInt($("#ad-vd").value||"0");
@@ -6253,6 +6533,11 @@ async function admBan(b){ const uid=$("#ad-bu").value.trim(); if(!uid){toast("ID
 async function admScam(){ const domain=$("#ad-sc").value.trim(); if(!domain){toast("Domaine ?");return;}
   try{ const d=await post("/api/admin/scam",{domain}); $("#ad-sc").value=""; toast(d.ok?"🚫 Ajouté":"⚠️ Invalide"); }catch(e){ toast("Erreur"); } }
 async function admBackup(){ try{ await post("/api/admin/backup",{}); toast("💾 Backup lancé (voir Telegram)"); }catch(e){ toast("Erreur"); } }
+async function admAddGame(){ const name=$("#ad-gn").value.trim(), r1=$("#ad-g1").value.trim(), r2=$("#ad-g2").value.trim(), s=$("#ad-gs").value.trim();
+  if(!name||(!r1&&!r2)){toast("Nom + ≥1 lien ?");return;}
+  try{ const d=await post("/api/admin/addgame",{name,ref_link_1:r1,ref_link_2:r2,strategy:s});
+    if(d.ok){ $("#ad-gn").value="";$("#ad-g1").value="";$("#ad-g2").value="";$("#ad-gs").value=""; toast("🎮 Jeu ajouté : "+d.name); loadAdmGames(); }
+    else toast("⚠️ "+(d.error||"Erreur")); }catch(e){ toast("Erreur"); } }
 
 $("#checkin").onclick=async()=>{
   try{ const d=await post("/api/checkin",{});
@@ -6881,6 +7166,43 @@ if _FLASK_OK:
             return jsonify({"error": "forbidden"}), 403
         threading.Thread(target=backup_all_files, args=(bot, ADMIN_CHAT_ID), daemon=True).start()
         return jsonify({"ok": True})
+
+    @web_app.route("/api/admin/addgame", methods=["POST"])
+    def _web_adm_addgame():
+        uid, _ = _webapp_uid()
+        if not uid or not _is_admin(uid):
+            return jsonify({"error": "forbidden"}), 403
+        b = request.json or {}
+        name = str(b.get("name", "")).strip()
+        ref1 = str(b.get("ref_link_1", "")).strip()
+        ref2 = str(b.get("ref_link_2", "")).strip()
+        strategy = str(b.get("strategy", "")).strip()
+        if not name or (not ref1 and not ref2):
+            return jsonify({"ok": False, "error": "Nom + au moins un ref_link requis"})
+        key, gdata = register_admin_game(name, ref1, ref2, strategy)
+        return jsonify({"ok": True, "key": key, "name": gdata["name"]})
+
+    @web_app.route("/api/admin/games")
+    def _web_adm_games():
+        uid, _ = _webapp_uid()
+        if not uid or not _is_admin(uid):
+            return jsonify({"error": "forbidden"}), 403
+        games = [{
+            "key": gk,
+            "name": gd.get("name", gk),
+            "ref_link_1": gd.get("ref_link_1", ""),
+            "ref_link_2": gd.get("ref_link_2", ""),
+        } for gk, gd in admin_games.items()]
+        return jsonify({"games": games})
+
+    @web_app.route("/api/admin/delgame", methods=["POST"])
+    def _web_adm_delgame():
+        uid, _ = _webapp_uid()
+        if not uid or not _is_admin(uid):
+            return jsonify({"error": "forbidden"}), 403
+        key = str((request.json or {}).get("key", "")).strip()
+        removed = remove_admin_game(key)
+        return jsonify({"ok": removed is not None})
 
     @web_app.route("/img/<path:file_id>")
     def _web_img(file_id):
