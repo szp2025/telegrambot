@@ -451,22 +451,15 @@ class BotVirtualAssistant:
         self.is_offline_mode = True
         self.learned = self._load_learned()   # [{"keys": [...], "answer": "..."}]
 
-    # ---------- Персистентность выученных знаний ----------
+    # ---------- Персистентность выученных знаний (SQLite) ----------
     def _load_learned(self):
-        if os.path.exists(self.KNOWLEDGE_FILE):
-            try:
-                with open(self.KNOWLEDGE_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if isinstance(data, list):
-                        return data
-            except Exception as e:
-                logger.error(f"Ошибка загрузки базы знаний ИИ: {e}")
-        return []
+        # SQLite en priorité, migration unique depuis ai_knowledge.json si besoin.
+        d = _kv_or_json("ai_knowledge", self.KNOWLEDGE_FILE, is_list=True)
+        return d if isinstance(d, list) else []
 
     def _save_learned(self):
         try:
-            with open(self.KNOWLEDGE_FILE, "w", encoding="utf-8") as f:
-                json.dump(self.learned, f, ensure_ascii=False, indent=2)
+            botdb.kv_save("ai_knowledge", self.learned)
         except Exception as e:
             logger.error(f"Ошибка сохранения базы знаний ИИ: {e}")
 
@@ -1091,6 +1084,36 @@ def _kv_or_json(kv_key, json_path, is_list=False):
     return raw
 
 
+def _kv_or_lines(kv_key, txt_path):
+    """Comme _kv_or_json, mais pour les anciens fichiers .txt ligne-par-ligne
+    (une entrée = une ligne). Charge SQLite en priorité ; sinon MIGRATION UNIQUE
+    depuis le fichier texte (puis persistée en base). Renvoie une liste."""
+    try:
+        if botdb.kv_exists(kv_key):
+            d = botdb.kv_load(kv_key, [])
+            return d if isinstance(d, list) else []
+    except Exception as e:
+        logger.error(f"kv load {kv_key}: {e}")
+    lines, migrated = [], False
+    if os.path.exists(txt_path):
+        try:
+            with open(txt_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    s = line.strip()
+                    if s:
+                        lines.append(s)
+            migrated = True
+        except Exception as e:
+            logger.error(f"Migration {txt_path}: {e}")
+    try:
+        botdb.kv_save(kv_key, lines)
+        if migrated:
+            logger.info(f"🔁 Migré '{kv_key}' depuis {txt_path} → SQLite")
+    except Exception as e:
+        logger.error(f"kv save {kv_key}: {e}")
+    return lines
+
+
 def load_verified_users():
     users = set()
     try:
@@ -1642,15 +1665,13 @@ def find_today_combo_fileid(game_key):
     return None, None
 
 # ── Резервная копия всех данных (защита от потери телефона) ────────────────
-# Les 12 stores migrés (points, profils, timers, gamification, référencements,
-# alertes, digest, langues, reviews, proofs, historique/abonnements combo,
-# utilisateurs vérifiés) vivent désormais dans botdata.db → inclus via le
-# snapshot SQLite ajouté automatiquement au backup. On ne liste ici que les
-# fichiers encore autonomes (non migrés).
-BACKUP_FILES = [
-    "banned_users.txt", "scam_domains.txt", "ai_knowledge.json",
-    ACTIVE_ADS_FILE, "used_tx_hashes.txt",
-]
+# TOUS les stores de données vivent désormais dans botdata.db (SQLite) : points,
+# profils, timers, gamification, référencements, alertes, digest, langues,
+# reviews, proofs, historique/abonnements combo, utilisateurs vérifiés, jeux
+# admin, ET les 5 derniers migrés (banned_users, scam_domains, ai_knowledge,
+# active_ads, used_tx_hashes). Le snapshot SQLite ajouté automatiquement au
+# backup les couvre tous → plus aucun fichier .json/.txt de données à lister.
+BACKUP_FILES = []
 
 def backup_all_files(bot_instance, admin_chat_id):
     """Отправляет все файлы данных админу (восстановление при потере телефона)."""
@@ -1785,11 +1806,33 @@ class ActiveAdsManager:
 
     def __init__(self, file_path: str):
         self.file_path = file_path
+        self.kv_key = "active_ads"
         self.storage: dict = self._load_ads()
 
     def _load_ads(self) -> dict:
-        """Загрузка активных объявлений из файла (JSON — с поддержкой текста креатива;
-        со старым pipe-форматом `oid|user_id|expire_time` для обратной совместимости)."""
+        """Charge depuis SQLite ; sinon MIGRATION UNIQUE depuis l'ancien fichier
+        (JSON, ou ancien format pipe `oid|user_id|expire_time`), puis persistance."""
+        def _norm(data):
+            out = {}
+            for oid, d in (data or {}).items():
+                try:
+                    out[oid] = {
+                        "user_id": int(d.get("user_id")),
+                        "expire_time": float(d.get("expire_time", 0)),
+                        "content": d.get("content", ""),
+                    }
+                except Exception:
+                    continue
+            return out
+
+        # 1) Déjà en base ?
+        try:
+            if botdb.kv_exists(self.kv_key):
+                return _norm(botdb.kv_load(self.kv_key, {}) or {})
+        except Exception as e:
+            logger.error(f"kv load {self.kv_key}: {e}")
+
+        # 2) Migration unique depuis l'ancien fichier .txt.
         ads = {}
         if os.path.exists(self.file_path):
             try:
@@ -1797,13 +1840,7 @@ class ActiveAdsManager:
                     raw = f.read().strip()
                 if raw:
                     if raw.lstrip().startswith("{"):
-                        data = json.loads(raw)
-                        for oid, d in data.items():
-                            ads[oid] = {
-                                "user_id": int(d.get("user_id")),
-                                "expire_time": float(d.get("expire_time", 0)),
-                                "content": d.get("content", ""),
-                            }
+                        ads = _norm(json.loads(raw))
                     else:
                         for line in raw.splitlines():
                             parts = line.strip().split("|")
@@ -1815,15 +1852,20 @@ class ActiveAdsManager:
                                 }
             except Exception as e:
                 logger.error(f"Ошибка загрузки активной рекламы: {e}")
+        try:
+            botdb.kv_save(self.kv_key, ads)
+            if ads:
+                logger.info(f"🔁 Migré '{self.kv_key}' depuis {self.file_path} → SQLite")
+        except Exception as e:
+            logger.error(f"kv save {self.kv_key}: {e}")
         return ads
 
     def save_to_file(self):
-        """Сохранение текущего состояния активных объявлений в файл (JSON)."""
+        """Persiste l'état des annonces actives en base SQLite (atomique)."""
         try:
-            with open(self.file_path, "w", encoding="utf-8") as f:
-                json.dump(self.storage, f, ensure_ascii=False, indent=2)
+            botdb.kv_save(self.kv_key, self.storage)
         except Exception as e:
-            logger.error(f"Ошибка сохранения активной рекламы в файл: {e}")
+            logger.error(f"Ошибка сохранения активной рекламы: {e}")
 
     def add_ad(self, order_id: str, user_id: int, expire_time: float, content: str = ""):
         """Добавление новой рекламы с автоматическим сохранением (с текстом креатива)."""
@@ -2021,17 +2063,8 @@ class LinkScamGuard:
 
     # ---- Чёрный список доменов (обучаемый админом) ----
     def _load_scam_domains(self):
-        s = set()
-        if os.path.exists(self.SCAM_FILE):
-            try:
-                with open(self.SCAM_FILE, "r", encoding="utf-8") as f:
-                    for line in f:
-                        d = line.strip().lower()
-                        if d:
-                            s.add(d)
-            except Exception as e:
-                logger.error(f"Ошибка загрузки scam_domains: {e}")
-        return s
+        # SQLite en priorité, migration unique depuis scam_domains.txt si besoin.
+        return {d.lower() for d in _kv_or_lines("scam_domains", self.SCAM_FILE) if d}
 
     def add_scam_domain(self, domain: str) -> bool:
         d = (domain or "").strip().lower()
@@ -2040,8 +2073,7 @@ class LinkScamGuard:
             return False
         self.scam_domains.add(d)
         try:
-            with open(self.SCAM_FILE, "a", encoding="utf-8") as f:
-                f.write(d + "\n")
+            botdb.kv_save("scam_domains", list(self.scam_domains))
         except Exception as e:
             logger.error(f"Ошибка сохранения scam-домена: {e}")
         return True
@@ -2222,16 +2254,13 @@ class AccountGuard:
 
     # ---- Чёрный список ----
     def _load_banned(self):
+        # SQLite en priorité, migration unique depuis banned_users.txt si besoin.
         s = set()
-        if os.path.exists(self.BAN_FILE):
+        for x in _kv_or_lines("banned_users", self.BAN_FILE):
             try:
-                with open(self.BAN_FILE, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line.isdigit():
-                            s.add(int(line))
-            except Exception as e:
-                logger.error(f"Ошибка загрузки banned_users: {e}")
+                s.add(int(x))
+            except (ValueError, TypeError):
+                pass
         return s
 
     def is_banned(self, user_id) -> bool:
@@ -2249,8 +2278,7 @@ class AccountGuard:
             return
         self.banned.add(user_id)
         try:
-            with open(self.BAN_FILE, "a", encoding="utf-8") as f:
-                f.write(f"{user_id}\n")
+            botdb.kv_save("banned_users", list(self.banned))
         except Exception as e:
             logger.error(f"Ошибка сохранения бана: {e}")
         logger.warning(Fore.RED + f"🚫 Забанен пользователь {user_id}: {reason}")
@@ -2263,9 +2291,7 @@ class AccountGuard:
         if user_id in self.banned:
             self.banned.discard(user_id)
             try:
-                with open(self.BAN_FILE, "w", encoding="utf-8") as f:
-                    for uid in self.banned:
-                        f.write(f"{uid}\n")
+                botdb.kv_save("banned_users", list(self.banned))
             except Exception as e:
                 logger.error(f"Ошибка обновления banned_users: {e}")
 
@@ -5420,26 +5446,21 @@ USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
 USED_TX_FILE = "used_tx_hashes.txt"
 
 def _load_used_tx():
+    # SQLite en priorité, migration unique depuis used_tx_hashes.txt si besoin.
     s = set()
-    if os.path.exists(USED_TX_FILE):
-        try:
-            with open(USED_TX_FILE, "r", encoding="utf-8") as f:
-                for line in f:
-                    h = line.strip().lower()
-                    if h:
-                        s.add(h)
-        except Exception as e:
-            logger.error(f"Ошибка загрузки использованных tx: {e}")
+    for h in _kv_or_lines("used_tx_hashes", USED_TX_FILE):
+        h = str(h).strip().lower()
+        if h:
+            s.add(h)
     return s
 
 used_tx_hashes = _load_used_tx()
 
 def mark_tx_used(tx_hash: str):
-    """Помечает хэш как использованный (в памяти и в файле)."""
+    """Помечает хэш как использованный (в памяти и в базе SQLite)."""
     try:
         used_tx_hashes.add(tx_hash.lower())
-        with open(USED_TX_FILE, "a", encoding="utf-8") as f:
-            f.write(tx_hash.lower() + "\n")
+        botdb.kv_save("used_tx_hashes", list(used_tx_hashes))
     except Exception as e:
         logger.error(f"Ошибка сохранения использованного tx: {e}")
 
