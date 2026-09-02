@@ -1208,40 +1208,93 @@ def _slugify_game(name: str) -> str:
     return base or "game"
 
 
+# Catégories d'items ajoutables par l'admin : jeu combo Telegram / mineur
+# téléphone / faucet — chacune rangée dans la liste live correspondante.
+ADMIN_GAME_CATEGORIES = ("combo", "phone", "faucet")
+
+
+def _derive_name_from_ref(*refs) -> str:
+    """Retrouve le NOM depuis un lien Telegram (`t.me/<bot>`) : on interroge
+    l'API Telegram (get_chat) pour le nom affiché du bot ; à défaut on embellit
+    le username. Renvoie '' si aucun lien Telegram exploitable."""
+    for ref in refs:
+        if not ref:
+            continue
+        m = re.search(r't\.me/([A-Za-z0-9_]{3,32})', ref)
+        if not m:
+            continue
+        uname = m.group(1)
+        try:
+            chat = bot.get_chat("@" + uname)
+            nm = (getattr(chat, "first_name", None) or getattr(chat, "title", None) or "").strip()
+            if nm:
+                return nm[:24]
+        except Exception:
+            pass
+        pretty = re.sub(r'(?i)(bot|app)$', '', uname)
+        pretty = re.sub(r'[_\-]+', ' ', pretty).strip().title()
+        if pretty:
+            return pretty[:24]
+    return ""
+
+
+def _admin_game_target(category: str):
+    """Dictionnaire live (dans manager) correspondant à la catégorie."""
+    if category == "phone":
+        return manager.phone_miners
+    if category == "faucet":
+        return manager.crypto_faucets
+    return manager.combo_games
+
+
 def register_admin_game(name: str, ref_link_1: str = "", ref_link_2: str = "",
-                        strategy: str = "") -> tuple:
-    """Crée un jeu ajouté par l'admin : persiste en base ET l'injecte dans la
-    liste live des combo-jeux (manager.combo_games). Renvoie (key, data)."""
+                        extra_text: str = "", category: str = "combo") -> tuple:
+    """Crée un item ajouté par l'admin (jeu combo Telegram / mineur téléphone /
+    faucet) : persiste en base ET l'injecte dans la bonne liste live. Le nom, s'il
+    est vide, est auto-déduit du lien Telegram. Renvoie (key, data)."""
+    if category not in ADMIN_GAME_CATEGORIES:
+        category = "combo"
+    # Nom court : il sert aussi de callback_data (profgame_/statcheckin_ < 64 o).
+    name = (name or "").strip() or _derive_name_from_ref(ref_link_1, ref_link_2) or "Jeu"
     base = _slugify_game(name)
     key, i = base, 2
-    existing = set(manager.combo_games) | set(admin_games)
+    existing = (set(manager.combo_games) | set(manager.phone_miners)
+                | set(manager.crypto_faucets) | set(admin_games))
     while key in existing:
         key = f"{base}-{i}"
         i += 1
-    # Nom court : il sert aussi de callback_data (profgame_/statcheckin_ < 64 o).
-    data = {"name": (name or "").strip()[:24], "admin_added": True, "path": ""}
+    data = {"name": name[:24], "admin_added": True, "category": category}
     if (ref_link_1 or "").strip():
         data["ref_link_1"] = ref_link_1.strip()
     if (ref_link_2 or "").strip():
         data["ref_link_2"] = ref_link_2.strip()
-    if (strategy or "").strip():
-        data["strategy"] = strategy.strip()
+    txt = (extra_text or "").strip()
+    if category == "combo":
+        data["path"] = ""                      # pas de page miningcombo → pas de scraping
+        if txt:
+            data["strategy"] = txt
+    elif category == "phone":
+        data["description"] = txt
+        data["code"] = ""
+    elif category == "faucet":
+        data["description"] = txt
     admin_games[key] = data
     save_admin_games()
-    manager.combo_games[key] = data          # visible immédiatement (sans redémarrage)
+    _admin_game_target(category)[key] = data   # visible immédiatement (sans redémarrage)
     return key, data
 
 
 def remove_admin_game(key: str) -> dict | None:
-    """Supprime un jeu ajouté par l'admin (base + liste live). Renvoie le jeu
-    supprimé, ou None s'il n'existait pas / n'était pas un jeu admin."""
+    """Supprime un item ajouté par l'admin (base + liste live). Renvoie l'item
+    supprimé, ou None s'il n'existait pas / n'était pas un item admin."""
     data = admin_games.pop(key, None)
     if data is None:
         return None
     save_admin_games()
-    # Ne retire de combo_games que si c'est bien un jeu admin (jamais un jeu config).
-    if manager.combo_games.get(key, {}).get("admin_added"):
-        manager.combo_games.pop(key, None)
+    # Ne retire de la liste live que si c'est bien un item admin (jamais du config).
+    target = _admin_game_target(data.get("category", "combo"))
+    if target.get(key, {}).get("admin_added"):
+        target.pop(key, None)
     manager.found_today.pop(key, None)
     return data
 
@@ -3687,13 +3740,15 @@ class MenuTextProcessor:
                 parse_mode="Markdown"
             )
         elif text == "/addgame" and str(chat_id) == str(ADMIN_CHAT_ID):
-            user_input_states[chat_id] = {"step": "adm_addgame_name"}
+            user_input_states.pop(chat_id, None)
+            kb = types.InlineKeyboardMarkup()
+            kb.row(types.InlineKeyboardButton(text="🎮 Jeu Telegram (combo)", callback_data="admgcat_combo"))
+            kb.row(types.InlineKeyboardButton(text="📱 Téléphone (mineur)", callback_data="admgcat_phone"))
+            kb.row(types.InlineKeyboardButton(text="🚰 Faucet", callback_data="admgcat_faucet"))
             self.sender.send_message_direct(
                 chat_id,
-                "🎮 *Ajout d'un jeu combo*\n"
-                "━━━━━━━━━━━━━━━━━━\n"
-                "Étape 1/4 — envoie le *nom* du jeu (ex : `🟡 Doodle Jump`) :",
-                parse_mode="Markdown"
+                "➕ *Ajout d'un item*\n━━━━━━━━━━━━━━━━━━\nChoisis la catégorie :",
+                reply_markup=kb, parse_mode="Markdown"
             )
         elif text == "/delgame" and str(chat_id) == str(ADMIN_CHAT_ID):
             if not admin_games:
@@ -3817,46 +3872,52 @@ class MessageInputHandler:
             self.sender.send_message_direct(chat_id, "📣 Рассылка запущена по всей базе. Отчёт придёт по завершении.", parse_mode="Markdown")
             return
 
-        # 0-bis. Ajout d'un jeu combo par l'admin (flux guidé nom → ref1 → ref2 → stratégie).
+        # 0-bis. Ajout d'un item par l'admin (flux guidé : ref1 → ref2 → nom → texte).
+        #        La catégorie a été choisie via les boutons (callback admgcat_).
         _ag = self.user_input_states.get(chat_id, {})
         if chat_id == self.admin_chat_id and str(_ag.get("step", "")).startswith("adm_addgame_"):
             step = _ag["step"]
             val = raw_text.strip()
             skip = val in ("-", "—", "нет", "non", "skip", "no")
-            if step == "adm_addgame_name":
-                if not val:
-                    self.sender.send_message_direct(chat_id, "⚠️ Nom vide. Renvoie le *nom* du jeu :", parse_mode="Markdown")
-                    return
-                _ag.update(step="adm_addgame_ref1", name=val[:40])
-                self.user_input_states[chat_id] = _ag
-                self.sender.send_message_direct(
-                    chat_id, "Étape 2/4 — envoie *ref_link_1* (ou `-` pour ignorer) :", parse_mode="Markdown")
-                return
             if step == "adm_addgame_ref1":
                 _ag.update(step="adm_addgame_ref2", ref1="" if skip else val)
                 self.user_input_states[chat_id] = _ag
                 self.sender.send_message_direct(
-                    chat_id, "Étape 3/4 — envoie *ref_link_2* (ou `-` pour ignorer) :", parse_mode="Markdown")
+                    chat_id, "*Étape 2/4* — envoie *ref_link_2* (ou `-` pour ignorer) :", parse_mode="Markdown")
                 return
             if step == "adm_addgame_ref2":
-                _ag.update(step="adm_addgame_strat", ref2="" if skip else val)
+                _ag["ref2"] = "" if skip else val
+                # Nom auto-déduit du lien Telegram (si possible).
+                auto = _derive_name_from_ref(_ag.get("ref1", ""), _ag.get("ref2", ""))
+                _ag["auto_name"] = auto
+                _ag["step"] = "adm_addgame_name"
                 self.user_input_states[chat_id] = _ag
+                sugg = f"\n💡 Nom détecté : *{auto}* — envoie `-` pour l'utiliser." if auto else ""
                 self.sender.send_message_direct(
-                    chat_id, "Étape 4/4 — envoie une *stratégie / texte* (ou `-` pour ignorer) :", parse_mode="Markdown")
+                    chat_id, f"*Étape 3/4* — envoie le *nom* de l'item :{sugg}", parse_mode="Markdown")
                 return
-            if step == "adm_addgame_strat":
-                strategy = "" if skip else raw_text.strip()
+            if step == "adm_addgame_name":
+                _ag["name"] = _ag.get("auto_name", "") if skip else val
+                _ag["step"] = "adm_addgame_text"
+                self.user_input_states[chat_id] = _ag
+                lbl = "stratégie" if _ag.get("category", "combo") == "combo" else "description"
+                self.sender.send_message_direct(
+                    chat_id, f"*Étape 4/4* — envoie une *{lbl}* (ou `-` pour ignorer) :", parse_mode="Markdown")
+                return
+            if step == "adm_addgame_text":
+                extra = "" if skip else raw_text.strip()
+                cat = _ag.get("category", "combo")
                 self.user_input_states.pop(chat_id, None)
                 if not _ag.get("ref1") and not _ag.get("ref2"):
-                    self.sender.send_message_direct(chat_id, "⚠️ Jeu annulé : au moins un ref_link est requis. Recommence avec /addgame.")
+                    self.sender.send_message_direct(chat_id, "⚠️ Annulé : au moins un ref_link est requis. Recommence avec /addgame.")
                     return
-                key, data = register_admin_game(_ag.get("name", ""), _ag.get("ref1", ""), _ag.get("ref2", ""), strategy)
+                key, data = register_admin_game(_ag.get("name", ""), _ag.get("ref1", ""), _ag.get("ref2", ""), extra, cat)
+                catlbl = {"combo": "🎮 Jeux combo", "phone": "📱 Téléphone", "faucet": "🚰 Faucets"}.get(cat, cat)
                 self.sender.send_message_direct(
                     chat_id,
-                    f"✅ Jeu *{data['name']}* ajouté aux combo-jeux !\n"
+                    f"✅ *{data['name']}* ajouté dans {catlbl} !\n"
                     f"🔗 ref_link_1 : `{data.get('ref_link_1', '—')}`\n"
-                    f"🔗 ref_link_2 : `{data.get('ref_link_2', '—')}`\n"
-                    f"🧠 stratégie : {'oui' if data.get('strategy') else 'non'}",
+                    f"🔗 ref_link_2 : `{data.get('ref_link_2', '—')}`",
                     parse_mode="Markdown"
                 )
                 return
@@ -4777,6 +4838,27 @@ class CallbackQueryHandler:
                     self.sender.send_message_direct(chat_id, caption, parse_mode="HTML", reply_markup=row_kb)
                 return
 
+            # Choix de la catégorie pour l'ajout d'un item (ADMIN UNIQUEMENT).
+            if data.startswith("admgcat_"):
+                if str(chat_id) != str(ADMIN_CHAT_ID):
+                    try:
+                        self.bot.answer_callback_query(call.id, "⛔ Réservé à l'admin")
+                    except Exception:
+                        pass
+                    return
+                cat = data[len("admgcat_"):]
+                if cat not in ("combo", "phone", "faucet"):
+                    cat = "combo"
+                self.user_input_states[chat_id] = {"step": "adm_addgame_ref1", "category": cat}
+                labels = {"combo": "🎮 Jeu Telegram", "phone": "📱 Mineur téléphone", "faucet": "🚰 Faucet"}
+                self.sender.send_message_direct(
+                    chat_id,
+                    f"{labels.get(cat, cat)} — *Étape 1/4*\n"
+                    "Envoie *ref_link_1* (lien Telegram/URL, ou `-` pour ignorer) :",
+                    parse_mode="Markdown"
+                )
+                return
+
             # Suppression d'un jeu ajouté par l'admin (ADMIN UNIQUEMENT).
             if data.startswith("admdelgame_"):
                 if str(chat_id) != str(ADMIN_CHAT_ID):
@@ -4880,13 +4962,21 @@ class CallbackQueryHandler:
                 return
 
             if data.startswith("pinfo_"):
-                info = self.manager.phone_miners[data.replace("pinfo_", "")]
-                self.sender.send_message_direct(chat_id, f"📱 **{info['name']}**\n\n{info['description']}\n\n🔑 Код: `{info['code']}`", parse_mode="Markdown")
+                info = self.manager.phone_miners.get(data.replace("pinfo_", "")) or {}
+                txt = f"📱 **{info.get('name', 'Майнер')}**"
+                if info.get("description"):
+                    txt += f"\n\n{info['description']}"
+                if info.get("code"):
+                    txt += f"\n\n🔑 Код: `{info['code']}`"
+                self.sender.send_message_direct(chat_id, txt, parse_mode="Markdown")
                 return
 
             if data.startswith("finfo_"):
-                info = self.manager.crypto_faucets[data.replace("finfo_", "")]
-                self.sender.send_message_direct(chat_id, f"🚰 **{info['name']}**\n\n{info['description']}", parse_mode="Markdown")
+                info = self.manager.crypto_faucets.get(data.replace("finfo_", "")) or {}
+                txt = f"🚰 **{info.get('name', 'Кран')}**"
+                if info.get("description"):
+                    txt += f"\n\n{info['description']}"
+                self.sender.send_message_direct(chat_id, txt, parse_mode="Markdown")
                 award_quest(chat_id, "faucet_visit")
                 return
 
@@ -5727,10 +5817,11 @@ account_guard = AccountGuard(bot, SCAM_USERNAME_MARKERS, ADMIN_CHAT_ID)
 # Инициализация менеджеров
 image_handler = ImageHandler(logger, target_width=600)
 manager = MiningComboManager()
-# Fusionne les jeux ajoutés par l'admin (base) dans la liste des combo-jeux.
+# Fusionne les items ajoutés par l'admin (base) dans la bonne liste live selon
+# leur catégorie (combo / phone / faucet).
 for _gk, _gd in admin_games.items():
     if isinstance(_gd, dict) and _gd.get("name"):
-        manager.combo_games[_gk] = _gd
+        _admin_game_target(_gd.get("category", "combo"))[_gk] = _gd
 # 1. Сначала создаем экземпляр процессора
 message_processor = MessageProcessor(bot, logger, sender, manager)
 
@@ -6180,12 +6271,17 @@ WEBAPP_HTML = r"""<!doctype html>
       <button class="btn sm" style="width:100%;margin-top:10px" onclick="admScam()">Ajouter au blacklist</button>
     </div>
     <div class="card2">
-      <b>🎮 Ajouter un jeu</b>
-      <input id="ad-gn" placeholder="Nom du jeu (ex: 🟡 Doodle Jump)">
+      <b>➕ Ajouter un item</b>
+      <select id="ad-gc" style="margin-top:8px">
+        <option value="combo">🎮 Jeu Telegram (combo)</option>
+        <option value="phone">📱 Téléphone (mineur)</option>
+        <option value="faucet">🚰 Faucet</option>
+      </select>
       <input id="ad-g1" placeholder="ref_link_1 (https://t.me/…)" style="margin-top:8px">
       <input id="ad-g2" placeholder="ref_link_2 (optionnel)" style="margin-top:8px">
-      <textarea id="ad-gs" placeholder="Stratégie / texte (optionnel)" style="margin-top:8px"></textarea>
-      <button class="btn sm" style="width:100%;margin-top:10px" onclick="admAddGame()">Ajouter le jeu</button>
+      <input id="ad-gn" placeholder="Nom (vide = auto depuis le lien)" style="margin-top:8px">
+      <textarea id="ad-gs" placeholder="Stratégie / description (optionnel)" style="margin-top:8px"></textarea>
+      <button class="btn sm" style="width:100%;margin-top:10px" onclick="admAddGame()">Ajouter</button>
       <div id="adm-games" style="margin-top:12px"></div>
     </div>
     <button class="btn gold" onclick="admBackup()">💾 Lancer un backup complet</button>
@@ -6532,18 +6628,19 @@ async function loadAdmin(){
 }
 async function loadAdmGames(){
   const box=$("#adm-games"); if(!box) return;
+  const ic={combo:'🎮',phone:'📱',faucet:'🚰'};
   try{ const d=await api("/api/admin/games"); const gs=d.games||[];
-    if(!gs.length){ box.innerHTML='<div class="muted" style="font-size:13px">Aucun jeu ajouté.</div>'; return; }
-    box.innerHTML='<b style="font-size:13px">Jeux ajoutés</b>'+gs.map(g=>
+    if(!gs.length){ box.innerHTML='<div class="muted" style="font-size:13px">Aucun item ajouté.</div>'; return; }
+    box.innerHTML='<b style="font-size:13px">Items ajoutés</b>'+gs.map(g=>
       `<div style="display:flex;align-items:center;gap:8px;margin-top:6px">
-         <span style="flex:1;font-size:13px">${esc(g.name)}</span>
+         <span style="flex:1;font-size:13px">${ic[g.category]||'🎮'} ${esc(g.name)}</span>
          <button class="btn sm red" onclick="admDelGame('${esc(g.key)}')">🗑</button>
        </div>`).join('');
   }catch(e){ box.innerHTML=''; }
 }
 async function admDelGame(key){
   try{ const d=await post("/api/admin/delgame",{key});
-    toast(d.ok?"🗑 Jeu supprimé":"⚠️ Introuvable"); loadAdmGames(); }catch(e){ toast("Erreur"); } }
+    toast(d.ok?"🗑 Supprimé":"⚠️ Introuvable"); loadAdmGames(); }catch(e){ toast("Erreur"); } }
 async function admBroadcast(){ const text=$("#ad-bc").value.trim(); if(!text){toast("Message ?");return;}
   try{ await post("/api/admin/broadcast",{text}); $("#ad-bc").value=""; toast("📣 Diffusion lancée"); }catch(e){ toast("Erreur"); } }
 async function admVip(){ const uid=$("#ad-vu").value.trim(), days=parseInt($("#ad-vd").value||"0");
@@ -6554,10 +6651,10 @@ async function admBan(b){ const uid=$("#ad-bu").value.trim(); if(!uid){toast("ID
 async function admScam(){ const domain=$("#ad-sc").value.trim(); if(!domain){toast("Domaine ?");return;}
   try{ const d=await post("/api/admin/scam",{domain}); $("#ad-sc").value=""; toast(d.ok?"🚫 Ajouté":"⚠️ Invalide"); }catch(e){ toast("Erreur"); } }
 async function admBackup(){ try{ await post("/api/admin/backup",{}); toast("💾 Backup lancé (voir Telegram)"); }catch(e){ toast("Erreur"); } }
-async function admAddGame(){ const name=$("#ad-gn").value.trim(), r1=$("#ad-g1").value.trim(), r2=$("#ad-g2").value.trim(), s=$("#ad-gs").value.trim();
-  if(!name||(!r1&&!r2)){toast("Nom + ≥1 lien ?");return;}
-  try{ const d=await post("/api/admin/addgame",{name,ref_link_1:r1,ref_link_2:r2,strategy:s});
-    if(d.ok){ $("#ad-gn").value="";$("#ad-g1").value="";$("#ad-g2").value="";$("#ad-gs").value=""; toast("🎮 Jeu ajouté : "+d.name); loadAdmGames(); }
+async function admAddGame(){ const name=$("#ad-gn").value.trim(), r1=$("#ad-g1").value.trim(), r2=$("#ad-g2").value.trim(), s=$("#ad-gs").value.trim(), cat=$("#ad-gc").value;
+  if(!r1&&!r2){toast("Au moins 1 lien ?");return;}
+  try{ const d=await post("/api/admin/addgame",{name,ref_link_1:r1,ref_link_2:r2,strategy:s,category:cat});
+    if(d.ok){ $("#ad-gn").value="";$("#ad-g1").value="";$("#ad-g2").value="";$("#ad-gs").value=""; toast("✅ Ajouté : "+d.name); loadAdmGames(); }
     else toast("⚠️ "+(d.error||"Erreur")); }catch(e){ toast("Erreur"); } }
 
 $("#checkin").onclick=async()=>{
@@ -7198,10 +7295,11 @@ if _FLASK_OK:
         ref1 = str(b.get("ref_link_1", "")).strip()
         ref2 = str(b.get("ref_link_2", "")).strip()
         strategy = str(b.get("strategy", "")).strip()
-        if not name or (not ref1 and not ref2):
-            return jsonify({"ok": False, "error": "Nom + au moins un ref_link requis"})
-        key, gdata = register_admin_game(name, ref1, ref2, strategy)
-        return jsonify({"ok": True, "key": key, "name": gdata["name"]})
+        category = str(b.get("category", "combo")).strip() or "combo"
+        if not ref1 and not ref2:          # nom facultatif (auto depuis le lien)
+            return jsonify({"ok": False, "error": "Au moins un ref_link requis"})
+        key, gdata = register_admin_game(name, ref1, ref2, strategy, category)
+        return jsonify({"ok": True, "key": key, "name": gdata["name"], "category": gdata.get("category", "combo")})
 
     @web_app.route("/api/admin/games")
     def _web_adm_games():
@@ -7211,6 +7309,7 @@ if _FLASK_OK:
         games = [{
             "key": gk,
             "name": gd.get("name", gk),
+            "category": gd.get("category", "combo"),
             "ref_link_1": gd.get("ref_link_1", ""),
             "ref_link_2": gd.get("ref_link_2", ""),
         } for gk, gd in admin_games.items()]
