@@ -6296,6 +6296,12 @@ WEBAPP_HTML = r"""<!doctype html>
       </div>
     </div>
     <div class="card2">
+      <b>🔍 Scanner un lien</b>
+      <input id="ad-scan" placeholder="Colle un lien à analyser (scam / suspect / clean)">
+      <button class="btn sm" style="width:100%;margin-top:10px" onclick="admScanLink()">Scanner</button>
+      <div id="adm-scan-res" style="margin-top:10px"></div>
+    </div>
+    <div class="card2">
       <b>🔗 Domaine scam</b>
       <input id="ad-sc" placeholder="ex: scam-site.top">
       <button class="btn sm" style="width:100%;margin-top:10px" onclick="admScam()">Ajouter au blacklist</button>
@@ -6680,6 +6686,24 @@ async function admBan(b){ const uid=$("#ad-bu").value.trim(); if(!uid){toast("ID
   try{ await post("/api/admin/"+(b?"ban":"unban"),{uid}); toast(b?"🚫 Banni":"✅ Débanni"); }catch(e){ toast("Erreur"); } }
 async function admScam(){ const domain=$("#ad-sc").value.trim(); if(!domain){toast("Domaine ?");return;}
   try{ const d=await post("/api/admin/scam",{domain}); $("#ad-sc").value=""; toast(d.ok?"🚫 Ajouté":"⚠️ Invalide"); }catch(e){ toast("Erreur"); } }
+async function admScanLink(){ const text=$("#ad-scan").value.trim(); if(!text){toast("Colle un lien ?");return;}
+  const box=$("#adm-scan-res"); box.innerHTML='<div class="s">⏳ Analyse…</div>';
+  try{ const d=await post("/api/admin/scanlink",{text});
+    if(!d.ok){ box.innerHTML='<div class="s">⚠️ '+esc(d.error||'Erreur')+'</div>'; return; }
+    if(!d.links.length){ box.innerHTML='<div class="s">Aucun lien détecté.</div>'; return; }
+    const vlabel={scam:'🚨 SCAM',suspicious:'⚠️ Suspect',clean:'✅ Clean'};
+    const vcol={scam:'#ff6b6b',suspicious:'#f6c945',clean:'#4dd0a7'};
+    box.innerHTML=d.links.map(l=>`
+      <div class="card2" style="border-color:${vcol[l.verdict]||'var(--line)'}">
+        <b style="color:${vcol[l.verdict]||'var(--txt)'}">${vlabel[l.verdict]||esc(l.verdict)} · ${l.score}/100</b>
+        <div class="s" style="word-break:break-all;margin:4px 0">${esc(l.url)}</div>
+        ${(l.reasons||[]).map(r=>`<div class="s">• ${esc(r)}</div>`).join('')}
+        ${l.verdict!=='clean'?`<button class="btn sm red" style="margin-top:8px" onclick="admScamFromScan('${esc(l.url)}')">➕ Ajouter à la blacklist</button>`:''}
+      </div>`).join('');
+  }catch(e){ box.innerHTML='<div class="s">Erreur</div>'; }
+}
+async function admScamFromScan(url){
+  try{ const d=await post("/api/admin/scam",{domain:url}); toast(d.ok?"🚫 Ajouté à la blacklist":"⚠️ Invalide"); }catch(e){ toast("Erreur"); } }
 async function admBackup(){ try{ await post("/api/admin/backup",{}); toast("💾 Backup lancé (voir Telegram)"); }catch(e){ toast("Erreur"); } }
 async function admAddGame(){ const name=$("#ad-gn").value.trim(), r1=$("#ad-g1").value.trim(), r2=$("#ad-g2").value.trim(), s=$("#ad-gs").value.trim(), cat=$("#ad-gc").value;
   if(!r1&&!r2){toast("Au moins 1 lien ?");return;}
@@ -7306,6 +7330,28 @@ if _FLASK_OK:
             return jsonify({"error": "forbidden"}), 403
         ok = link_guard.add_scam_domain((request.json or {}).get("domain", ""))
         return jsonify({"ok": bool(ok)})
+
+    @web_app.route("/api/admin/scanlink", methods=["POST"])
+    def _web_adm_scanlink():
+        uid, _ = _webapp_uid()
+        if not uid or not _is_admin(uid):
+            return jsonify({"error": "forbidden"}), 403
+        text = str((request.json or {}).get("text", "")).strip()
+        if not text:
+            return jsonify({"ok": False, "error": "Colle un lien à analyser"})
+        res = link_guard.analyze(text)                 # scoring scam/suspect/clean
+        links = [{
+            "url": l["url"],
+            "score": l["score"],
+            "verdict": l["verdict"],
+            "reasons": l["reasons"][:6],
+        } for l in res.get("links", [])]
+        return jsonify({
+            "ok": True,
+            "links": links,
+            "worst": res.get("worst", "clean"),
+            "max_score": res.get("max_score", 0),
+        })
 
     @web_app.route("/api/admin/backup", methods=["POST"])
     def _web_adm_backup():
