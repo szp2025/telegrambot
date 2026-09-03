@@ -42,7 +42,6 @@ update_file() {
 }
 
 BASE="https://raw.githubusercontent.com/szp2025/telegrambot/refs/heads/main"
-
 update_file "$BASE/bot.py" "botv1.py"
 update_file "$BASE/config.py" "config.py"
 update_file "$BASE/updatebot.sh" "updatebot.sh"
