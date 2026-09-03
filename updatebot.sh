@@ -21,25 +21,24 @@ do
     mkdir -p "$(dirname "$TARGET_FILE")"
 
     if curl -s -L "$URL" -o "$TEMP_FILE"; then
-        case "$TARGET_FILE" in
-            (*.py)
-                echo "[UPDATE] Verification syntaxe Python..."
-                if python3 -m py_compile "$TEMP_FILE"; then
-                    echo "[UPDATE] Syntaxe OK."
-                    mv "$TEMP_FILE" "$TARGET_FILE"
-                    echo "[UPDATE] $TARGET_FILE mis a jour."
-                else
-                    echo "[UPDATE] ERREUR de syntaxe dans $TEMP_FILE - annule."
-                    rm -f "$TEMP_FILE"
-                fi
-                ;;
-            (*)
-                # Script shell (.sh) ou autre : on remplace directement.
+        # Extension du fichier = tout apres le dernier point.
+        EXT="${TARGET_FILE##*.}"
+        if [ "$EXT" = "py" ]; then
+            echo "[UPDATE] Verification syntaxe Python..."
+            if python3 -m py_compile "$TEMP_FILE"; then
+                echo "[UPDATE] Syntaxe OK."
                 mv "$TEMP_FILE" "$TARGET_FILE"
-                chmod +x "$TARGET_FILE" 2>/dev/null
                 echo "[UPDATE] $TARGET_FILE mis a jour."
-                ;;
-        esac
+            else
+                echo "[UPDATE] ERREUR de syntaxe dans $TEMP_FILE - annule."
+                rm -f "$TEMP_FILE"
+            fi
+        else
+            # Script shell (.sh) ou autre : on remplace directement.
+            mv "$TEMP_FILE" "$TARGET_FILE"
+            chmod +x "$TARGET_FILE" 2>/dev/null
+            echo "[UPDATE] $TARGET_FILE mis a jour."
+        fi
     else
         echo "[UPDATE] ERREUR: telechargement echoue depuis $URL"
         rm -f "$TEMP_FILE"
