@@ -391,6 +391,10 @@ BOT_COMMANDS = [
     ("alert", "🔔 Ценовой алерт (напр. /alert BTC > 70000)"),
     ("digest", "🌅 Утренний дайджест (вкл/выкл)"),
     ("lang", "🌐 Язык / Language / Langue"),
+    ("quests", "🎯 Квесты / Quêtes du jour"),
+    ("badges", "🏅 Бейджи / Badges"),
+    ("raffle", "🎟 Розыгрыш / Tombola"),
+    ("airdrops", "🪂 Аирдропы / Airdrops"),
     ("help", "❓ Помощь"),
     ("proofs", "Скрины выплат")
 ]
