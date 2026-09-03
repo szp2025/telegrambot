@@ -3,15 +3,10 @@
 # POSIX SH (pas de tableaux bash / [[ ]]) car lance via `sh updatebot.sh` (Termux/dash).
 # Sauver en fins de ligne UNIX (LF), pas CRLF.
 
-# Liste "URL:fichier_cible" (items entre guillemets, aucun espace dans un token).
-for item in \
-    "https://raw.githubusercontent.com/szp2025/telegrambot/refs/heads/main/bot.py:botv1.py" \
-    "https://raw.githubusercontent.com/szp2025/telegrambot/refs/heads/main/config.py:config.py" \
-    "https://raw.githubusercontent.com/szp2025/telegrambot/refs/heads/main/updatebot.sh:updatebot.sh"
-do
-    # URL = tout AVANT le dernier ':' (un seul %) ; cible = tout APRES le dernier ':'.
-    URL="${item%:*}"
-    TARGET_FILE="${item##*:}"
+# Met a jour un fichier : $1 = URL source, $2 = fichier cible local.
+update_file() {
+    URL="$1"
+    TARGET_FILE="$2"
     TEMP_FILE="${TARGET_FILE}_new"
 
     echo "[UPDATE] Fichier: $TARGET_FILE"
@@ -44,4 +39,10 @@ do
         rm -f "$TEMP_FILE"
     fi
     echo "----------------------------------------"
-done
+}
+
+BASE="https://raw.githubusercontent.com/szp2025/telegrambot/refs/heads/main"
+
+update_file "$BASE/bot.py" "botv1.py"
+update_file "$BASE/config.py" "config.py"
+update_file "$BASE/updatebot.sh" "updatebot.sh"
