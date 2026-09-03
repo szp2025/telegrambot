@@ -1320,6 +1320,76 @@ def remove_admin_game(key: str) -> dict | None:
     return data
 
 
+# ── Surcharges (overrides) des jeux de config.py ──────────────────────────
+# config.py reste la SOURCE des jeux d'origine (avec leurs stratégies + paths de
+# scraping). L'admin peut surcharger UNIQUEMENT quelques champs (ref_link_1,
+# ref_link_2, name) de n'importe quel jeu — y compris ceux de config.py — sans
+# éditer le fichier ni casser l'auto-update. Ces surcharges vivent en base
+# (kv_store) et sont ré-appliquées PAR-DESSUS config.py à chaque démarrage.
+OVERRIDE_FIELDS = ("ref_link_1", "ref_link_2", "name")
+
+def load_game_overrides():
+    raw = botdb.kv_load("game_overrides", {}) or {}
+    return raw if isinstance(raw, dict) else {}
+
+def save_game_overrides():
+    try:
+        botdb.kv_save("game_overrides", game_overrides)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения game_overrides: {e}")
+
+game_overrides = load_game_overrides()
+
+
+def _find_game_dict(key: str):
+    """Renvoie le dict live (combo/farm/phone/faucet) contenant la clé, ou None."""
+    for d in (manager.combo_games, manager.independent_farms,
+              manager.phone_miners, manager.crypto_faucets):
+        if key in d:
+            return d
+    return None
+
+
+def set_game_override(key: str, ref_link_1: str = "", ref_link_2: str = "", name: str = "") -> bool:
+    """Surcharge en direct + persiste les champs NON VIDES d'un jeu existant.
+    Renvoie False si la clé n'existe dans aucun catalogue."""
+    d = _find_game_dict(key)
+    if d is None:
+        return False
+    ov = game_overrides.get(key, {})
+    changed = False
+    for field, val in (("ref_link_1", ref_link_1), ("ref_link_2", ref_link_2), ("name", name)):
+        val = (val or "").strip()
+        if val:
+            ov[field] = val[:24] if field == "name" else val
+            d[key][field] = ov[field]        # applique immédiatement
+            changed = True
+    if changed:
+        game_overrides[key] = ov
+        save_game_overrides()
+    return True
+
+
+def reset_game_override(key: str) -> bool:
+    """Supprime la surcharge d'un jeu (retour à config.py au prochain démarrage)."""
+    if key in game_overrides:
+        game_overrides.pop(key, None)
+        save_game_overrides()
+        return True
+    return False
+
+
+def apply_all_game_overrides():
+    """Ré-applique toutes les surcharges par-dessus les jeux live (au démarrage)."""
+    for key, ov in list(game_overrides.items()):
+        d = _find_game_dict(key)
+        if d is None:
+            continue
+        for field, val in (ov or {}).items():
+            if field in OVERRIDE_FIELDS and val:
+                d[key][field] = val
+
+
 def _parse_level(stat) -> int | None:
     """Extrait un entier de niveau d'un texte libre ('8', 'Уровень 20', '15 ур')."""
     if stat is None:
@@ -5852,6 +5922,8 @@ manager = MiningComboManager()
 for _gk, _gd in admin_games.items():
     if isinstance(_gd, dict) and _gd.get("name"):
         _admin_game_target(_gd.get("category", "combo"))[_gk] = _gd
+# Ré-applique les surcharges admin (ref_link/nom) PAR-DESSUS config.py + jeux admin.
+apply_all_game_overrides()
 # 1. Сначала создаем экземпляр процессора
 message_processor = MessageProcessor(bot, logger, sender, manager)
 
@@ -6089,6 +6161,13 @@ WEBAPP_HTML = r"""<!doctype html>
   .pill{display:inline-block;background:var(--btn);color:#fff;border-radius:8px;padding:3px 9px;
     font-size:12px;font-weight:700;margin:3px 4px 0 0;cursor:pointer;text-decoration:none}
   .pill.g{background:var(--sec);border:1px solid var(--line);color:var(--txt)}
+  .acc{background:var(--sec);border:1px solid var(--line);border-radius:12px;margin-bottom:8px;overflow:hidden}
+  .acc-h{display:flex;align-items:center;padding:13px 12px;cursor:pointer;font-weight:700;font-size:14px;user-select:none}
+  .acc-h .chev{margin-left:auto;color:var(--hint);transition:transform .2s;font-size:12px}
+  .acc.open .chev{transform:rotate(90deg)}
+  .acc-b{padding:0 12px 12px;display:none}
+  .acc.open .acc-b{display:block}
+  .sep{height:1px;background:var(--line);margin:12px 0}
 </style>
 </head>
 <body>
@@ -6276,51 +6355,86 @@ WEBAPP_HTML = r"""<!doctype html>
   <section id="v-admin" class="view hide">
     <div class="back" onclick="show('home')">⬅️ Retour</div>
     <div class="sec-title">🛡️ Panneau administrateur</div>
-    <div class="card2" id="adm-stats" style="white-space:pre-wrap">…</div>
-    <div class="card2">
-      <b>📣 Diffusion (broadcast)</b>
-      <textarea id="ad-bc" placeholder="Message à envoyer à toute la base…"></textarea>
-      <button class="btn sm red" style="width:100%;margin-top:10px" onclick="admBroadcast()">Envoyer à tous</button>
-    </div>
-    <div class="card2">
-      <b>👑 Donner un VIP</b>
-      <div class="grid"><input id="ad-vu" placeholder="ID user"><input id="ad-vd" type="number" placeholder="Jours"></div>
-      <button class="btn sm" style="width:100%;margin-top:10px" onclick="admVip()">Attribuer</button>
-    </div>
-    <div class="card2">
-      <b>🚫 Bannir / débannir</b>
-      <input id="ad-bu" placeholder="ID user">
-      <div class="grid" style="margin-top:8px">
-        <button class="btn sm red" onclick="admBan(1)">Bannir</button>
-        <button class="btn sm ghost" onclick="admBan(0)">Débannir</button>
+
+    <div class="acc open">
+      <div class="acc-h" onclick="accToggle(this)">📊 Statistiques<span class="chev">▸</span></div>
+      <div class="acc-b">
+        <div id="adm-stats" style="white-space:pre-wrap;font-size:13px;color:var(--hint)">…</div>
       </div>
     </div>
-    <div class="card2">
-      <b>🔍 Scanner un lien</b>
-      <input id="ad-scan" placeholder="Colle un lien à analyser (scam / suspect / clean)">
-      <button class="btn sm" style="width:100%;margin-top:10px" onclick="admScanLink()">Scanner</button>
-      <div id="adm-scan-res" style="margin-top:10px"></div>
+
+    <div class="acc">
+      <div class="acc-h" onclick="accToggle(this)">🎮 Jeux &amp; liens<span class="chev">▸</span></div>
+      <div class="acc-b">
+        <label>➕ Ajouter un item</label>
+        <select id="ad-gc">
+          <option value="combo">🎮 Jeu Telegram (combo)</option>
+          <option value="phone">📱 Téléphone (mineur)</option>
+          <option value="faucet">🚰 Faucet</option>
+        </select>
+        <input id="ad-g1" placeholder="ref_link_1 (https://t.me/…)" style="margin-top:8px">
+        <input id="ad-g2" placeholder="ref_link_2 (optionnel)" style="margin-top:8px">
+        <input id="ad-gn" placeholder="Nom (vide = auto depuis le lien)" style="margin-top:8px">
+        <textarea id="ad-gs" placeholder="Stratégie / description (vide = auto)" style="margin-top:8px"></textarea>
+        <button class="btn sm" style="width:100%;margin-top:10px" onclick="admAddGame()">Ajouter</button>
+        <div id="adm-games" style="margin-top:10px"></div>
+
+        <div class="sep"></div>
+        <label>✏️ Éditer les liens (config.py inclus)</label>
+        <select id="ov-game" onchange="ovFill()"></select>
+        <input id="ov-name" placeholder="Nom (vide = inchangé)" style="margin-top:8px">
+        <input id="ov-r1" placeholder="ref_link_1" style="margin-top:8px">
+        <input id="ov-r2" placeholder="ref_link_2" style="margin-top:8px">
+        <div class="grid" style="margin-top:10px">
+          <button class="btn sm" onclick="ovSave()">💾 Enregistrer</button>
+          <button class="btn sm ghost" onclick="ovReset()">↩️ Réinit</button>
+        </div>
+      </div>
     </div>
-    <div class="card2">
-      <b>🔗 Domaine scam</b>
-      <input id="ad-sc" placeholder="ex: scam-site.top">
-      <button class="btn sm" style="width:100%;margin-top:10px" onclick="admScam()">Ajouter au blacklist</button>
+
+    <div class="acc">
+      <div class="acc-h" onclick="accToggle(this)">🛡️ Modération<span class="chev">▸</span></div>
+      <div class="acc-b">
+        <label>🔍 Scanner un lien</label>
+        <input id="ad-scan" placeholder="Colle un lien (scam / suspect / clean)">
+        <button class="btn sm" style="width:100%;margin-top:8px" onclick="admScanLink()">Scanner</button>
+        <div id="adm-scan-res" style="margin-top:8px"></div>
+        <div class="sep"></div>
+        <label>🚫 Bannir / débannir</label>
+        <input id="ad-bu" placeholder="ID user">
+        <div class="grid" style="margin-top:8px">
+          <button class="btn sm red" onclick="admBan(1)">Bannir</button>
+          <button class="btn sm ghost" onclick="admBan(0)">Débannir</button>
+        </div>
+        <div class="sep"></div>
+        <label>🔗 Domaine scam → blacklist</label>
+        <input id="ad-sc" placeholder="ex: scam-site.top">
+        <button class="btn sm" style="width:100%;margin-top:8px" onclick="admScam()">Ajouter au blacklist</button>
+      </div>
     </div>
-    <div class="card2">
-      <b>➕ Ajouter un item</b>
-      <select id="ad-gc" style="margin-top:8px">
-        <option value="combo">🎮 Jeu Telegram (combo)</option>
-        <option value="phone">📱 Téléphone (mineur)</option>
-        <option value="faucet">🚰 Faucet</option>
-      </select>
-      <input id="ad-g1" placeholder="ref_link_1 (https://t.me/…)" style="margin-top:8px">
-      <input id="ad-g2" placeholder="ref_link_2 (optionnel)" style="margin-top:8px">
-      <input id="ad-gn" placeholder="Nom (vide = auto depuis le lien)" style="margin-top:8px">
-      <textarea id="ad-gs" placeholder="Stratégie / description (vide = auto depuis le lien)" style="margin-top:8px"></textarea>
-      <button class="btn sm" style="width:100%;margin-top:10px" onclick="admAddGame()">Ajouter</button>
-      <div id="adm-games" style="margin-top:12px"></div>
+
+    <div class="acc">
+      <div class="acc-h" onclick="accToggle(this)">📣 Diffusion<span class="chev">▸</span></div>
+      <div class="acc-b">
+        <textarea id="ad-bc" placeholder="Message à envoyer à toute la base…"></textarea>
+        <button class="btn sm red" style="width:100%;margin-top:10px" onclick="admBroadcast()">Envoyer à tous</button>
+      </div>
     </div>
-    <button class="btn gold" onclick="admBackup()">💾 Lancer un backup complet</button>
+
+    <div class="acc">
+      <div class="acc-h" onclick="accToggle(this)">👑 VIP<span class="chev">▸</span></div>
+      <div class="acc-b">
+        <div class="grid"><input id="ad-vu" placeholder="ID user"><input id="ad-vd" type="number" placeholder="Jours"></div>
+        <button class="btn sm" style="width:100%;margin-top:10px" onclick="admVip()">Attribuer un VIP</button>
+      </div>
+    </div>
+
+    <div class="acc">
+      <div class="acc-h" onclick="accToggle(this)">💾 Système<span class="chev">▸</span></div>
+      <div class="acc-b">
+        <button class="btn gold" onclick="admBackup()">Lancer un backup complet</button>
+      </div>
+    </div>
   </section>
 </div>
 
@@ -6362,6 +6476,8 @@ function show(v){
   window.scrollTo(0,0);
   if(tg&&tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
 }
+function accToggle(h){ h.parentElement.classList.toggle('open');
+  if(tg&&tg.HapticFeedback) tg.HapticFeedback.selectionChanged(); }
 
 const MENU = [
   ["quests","🎯","Quêtes"],["badges","🏅","Badges"],["raffle","🎟","Tombola"],
@@ -6661,7 +6777,31 @@ async function loadAdmin(){
   if(!ME.is_admin){ show('home'); return; }
   try{ const d=await api("/api/admin/stats"); $("#adm-stats").textContent=d.text; }catch(e){ $("#adm-stats").textContent="Erreur"; }
   loadAdmGames();
+  loadOvGames();
 }
+let ALLGAMES=[];
+async function loadOvGames(){
+  const sel=$("#ov-game"); if(!sel) return;
+  const ic={combo:'🎮',farm:'🌾',phone:'📱',faucet:'🚰'};
+  try{ const d=await api("/api/admin/allgames"); ALLGAMES=d.games||[];
+    sel.innerHTML=ALLGAMES.map((g,i)=>`<option value="${i}">${ic[g.cat]||'🎮'} ${esc(g.name)}${g.overridden?' ✏️':''}</option>`).join('');
+    ovFill();
+  }catch(e){ sel.innerHTML=''; }
+}
+function ovFill(){
+  const g=ALLGAMES[parseInt($("#ov-game").value||"0")]; if(!g) return;
+  $("#ov-name").value=""; $("#ov-r1").value=g.ref_link_1||""; $("#ov-r2").value=g.ref_link_2||"";
+}
+async function ovSave(){
+  const g=ALLGAMES[parseInt($("#ov-game").value||"0")]; if(!g){toast("Choisis un jeu");return;}
+  const name=$("#ov-name").value.trim(), r1=$("#ov-r1").value.trim(), r2=$("#ov-r2").value.trim();
+  if(!name&&!r1&&!r2){toast("Rien à changer ?");return;}
+  try{ const d=await post("/api/admin/override",{key:g.key,name,ref_link_1:r1,ref_link_2:r2});
+    toast(d.ok?"💾 Liens mis à jour":"⚠️ Jeu introuvable"); loadOvGames(); }catch(e){ toast("Erreur"); } }
+async function ovReset(){
+  const g=ALLGAMES[parseInt($("#ov-game").value||"0")]; if(!g){toast("Choisis un jeu");return;}
+  try{ const d=await post("/api/admin/override_reset",{key:g.key});
+    toast(d.ok?"↩️ Réinit (effet au redémarrage)":"Rien à réinitialiser"); loadOvGames(); }catch(e){ toast("Erreur"); } }
 async function loadAdmGames(){
   const box=$("#adm-games"); if(!box) return;
   const ic={combo:'🎮',phone:'📱',faucet:'🚰'};
@@ -7406,6 +7546,48 @@ if _FLASK_OK:
         key = str((request.json or {}).get("key", "")).strip()
         removed = remove_admin_game(key)
         return jsonify({"ok": removed is not None})
+
+    @web_app.route("/api/admin/allgames")
+    def _web_adm_allgames():
+        uid, _ = _webapp_uid()
+        if not uid or not _is_admin(uid):
+            return jsonify({"error": "forbidden"}), 403
+        out = []
+        cats = [("combo", manager.combo_games), ("farm", manager.independent_farms),
+                ("phone", manager.phone_miners), ("faucet", manager.crypto_faucets)]
+        for cat, d in cats:
+            for k, v in d.items():
+                out.append({
+                    "key": k, "name": v.get("name", k), "cat": cat,
+                    "ref_link_1": v.get("ref_link_1", ""), "ref_link_2": v.get("ref_link_2", ""),
+                    "admin": bool(v.get("admin_added")),
+                    "overridden": k in game_overrides,
+                })
+        return jsonify({"games": out})
+
+    @web_app.route("/api/admin/override", methods=["POST"])
+    def _web_adm_override():
+        uid, _ = _webapp_uid()
+        if not uid or not _is_admin(uid):
+            return jsonify({"error": "forbidden"}), 403
+        b = request.json or {}
+        key = str(b.get("key", "")).strip()
+        ok = set_game_override(
+            key,
+            str(b.get("ref_link_1", "")).strip(),
+            str(b.get("ref_link_2", "")).strip(),
+            str(b.get("name", "")).strip(),
+        )
+        return jsonify({"ok": ok})
+
+    @web_app.route("/api/admin/override_reset", methods=["POST"])
+    def _web_adm_override_reset():
+        uid, _ = _webapp_uid()
+        if not uid or not _is_admin(uid):
+            return jsonify({"error": "forbidden"}), 403
+        key = str((request.json or {}).get("key", "")).strip()
+        ok = reset_game_override(key)
+        return jsonify({"ok": ok})
 
     @web_app.route("/img/<path:file_id>")
     def _web_img(file_id):
