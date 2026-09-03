@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 
-while IFS= read -r item || [ -n "$item" ]; do
+IFS=$'\n'
+for item in \
+    "https://raw.githubusercontent.com/szp2025/telegrambot/refs/heads/main/bot.py|botv1.py" \
+    "https://raw.githubusercontent.com/szp2025/telegrambot/refs/heads/main/private_config.py|private_config.py" \
+    "https://raw.githubusercontent.com/szp2025/telegrambot/refs/heads/main/updatebot.sh|storage/downloads/updatebot.sh"
+do
     # Пропускаем пустые строки
     [ -z "$item" ] && continue
 
@@ -39,8 +44,4 @@ while IFS= read -r item || [ -n "$item" ]; do
         rm -f "$TEMP_FILE"
     fi
     echo "----------------------------------------"
-done << 'EOF'
-https://raw.githubusercontent.com/szp2025/telegrambot/refs/heads/main/bot.py|botv1.py
-https://raw.githubusercontent.com/szp2025/telegrambot/refs/heads/main/private_config.py|private_config.py
-https://raw.githubusercontent.com/szp2025/telegrambot/refs/heads/main/updatebot.sh|storage/downloads/updatebot.sh
-EOF
+done
