@@ -1,13 +1,16 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# Список файлов для обновления в формате "URL|целевой_путь"
-FILES_TO_UPDATE=(
-    "https://raw.githubusercontent.com/szp2025/telegrambot/refs/heads/main/bot.py|botv1.py"
-    "https://raw.githubusercontent.com/szp2025/telegrambot/refs/heads/main/private_config.py|private_config.py"
-    "https://raw.githubusercontent.com/szp2025/telegrambot/refs/heads/main/updatebot.sh|storage/downloads/updatebot.sh"
-)
+# Список файлов в формате "URL|целевой_путь"
+FILES="
+https://raw.githubusercontent.com/szp2025/telegrambot/refs/heads/main/bot.py|botv1.py
+https://raw.githubusercontent.com/szp2025/telegrambot/refs/heads/main/private_config.py|private_config.py
+https://raw.githubusercontent.com/szp2025/telegrambot/refs/heads/main/updatebot.sh|storage/downloads/updatebot.sh
+"
 
-for item in "${FILES_TO_UPDATE[@]}"; do
+echo "$FILES" | while IFS= read -r item; do
+    # Пропускаем пустые строки
+    [ -z "$item" ] && continue
+
     # Разделяем строку на URL и целевой путь по символу '|'
     URL="${item%%|*}"
     TARGET_FILE="${item##*|}"
@@ -33,7 +36,7 @@ for item in "${FILES_TO_UPDATE[@]}"; do
                 rm -f "$TEMP_FILE"
             fi
         else
-            # Для скрипта оболочки (.sh) или других файлов заменяем сразу
+            # Для скриптов оболочки (.sh) или других файлов заменяем сразу
             mv "$TEMP_FILE" "$TARGET_FILE"
             chmod +x "$TARGET_FILE"
             echo "🚀 Файл $TARGET_FILE успешно обновлен!"
