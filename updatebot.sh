@@ -22,7 +22,7 @@ do
 
     if curl -s -L "$URL" -o "$TEMP_FILE"; then
         case "$TARGET_FILE" in
-            *.py)
+            (*.py)
                 echo "[UPDATE] Verification syntaxe Python..."
                 if python3 -m py_compile "$TEMP_FILE"; then
                     echo "[UPDATE] Syntaxe OK."
@@ -33,7 +33,7 @@ do
                     rm -f "$TEMP_FILE"
                 fi
                 ;;
-            *)
+            (*)
                 # Script shell (.sh) ou autre : on remplace directement.
                 mv "$TEMP_FILE" "$TARGET_FILE"
                 chmod +x "$TARGET_FILE" 2>/dev/null
