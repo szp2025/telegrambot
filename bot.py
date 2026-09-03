@@ -152,62 +152,75 @@ logging.basicConfig(level=logging.INFO)
 
 def background_independent_updater(interval_seconds: int = 7200):
     """
-    Фоновый поток (каждые 2 часа):
-    1. Запускает ./updatebot.sh и ./updbotconfig.sh.
-    2. Проверяет синтаксис каждого файла отдельно через ast.parse.
-    3. Применяет (оставляет) обновление только для безопасного файла, 
-       откатывая или игнорируя поврежденный.
+    Фоновый поток (каждые 2 часа) — авто-обновление с GitHub.
+
+    Un SEUL script `updatebot.sh` télécharge et remplace (avec vérif de syntaxe
+    Python intégrée) : botv1.py (le code du bot) + config.py (jeux/données) + lui-même.
+    NB : config.py est écrasé par la version GitHub — c'est voulu. Les surcharges
+    admin (ref_link, jeux ajoutés) vivent en BASE (game_overrides / admin_games)
+    et sont ré-appliquées PAR-DESSUS config.py au redémarrage → jamais perdues.
+
+    1. Lance `updatebot.sh`.
+    2. Re-vérifie (filet de sécurité) la syntaxe de botv1.py ET config.py.
+    3. Si les deux sont valides → redémarre le process (os.execv) pour appliquer
+       le nouveau code ET le nouveau config.py.
+    (updbotconfig.sh supprimé : config.py est désormais géré par updatebot.sh.)
+
+    Redémarrage UNIQUEMENT si un fichier a RÉELLEMENT changé : on compare un
+    hash SHA-256 de botv1.py + config.py avant/après. Pas de changement → pas de
+    redémarrage (évite les os.execv inutiles toutes les 2h).
     """
+    WATCHED = ("botv1.py", "config.py")
+
+    def _file_hash(path):
+        try:
+            with open(path, "rb") as f:
+                return _hashlib.sha256(f.read()).hexdigest()
+        except Exception:
+            return None                       # fichier absent/illisible
+
     while True:
         time.sleep(interval_seconds)
         print("⏰ [SAFE-UPDATER] Запуск цикла независимой проверки обновлений...")
-        
-        # 1. Запуск обновления бота (botv1.py)
-        try:
-            res_bot = subprocess.run(["sh", "updatebot.sh"], capture_output=True, text=True)
-            if res_bot.returncode == 0:
-                # Двойная проверка синтаксиса Python для botv1.py
-                with open("botv1.py", "r", encoding="utf-8") as f:
-                    bot_code = f.read()
-                ast.parse(bot_code)
-                print("✅ [BOT-UPDATE] botv1.py успешно обновлен и прошел проверку синтаксиса.")
-                bot_ready_to_restart = True
-            else:
-                print(f"⚠️ Ошибка в updatebot.sh: {res_bot.stderr}")
-                bot_ready_to_restart = False
-        except SyntaxError as se:
-            print(f"❌ [BOT SYNTAX ERROR]: Обнаружена ошибка в botv1.py: {se}. Изменения отклонены!")
-            bot_ready_to_restart = False
-        except Exception as e:
-            print(f"⚠️ [BOT-UPDATE SKIPPED]: {e}")
-            bot_ready_to_restart = False
 
-        # 2. Запуск обновления конфига (config.py)
+        ok_to_restart = False
         try:
-            res_cfg = subprocess.run(["sh", "updbotconfig.sh"], capture_output=True, text=True)
-            if res_cfg.returncode == 0:
-                # Двойная проверка синтаксиса Python для config.py
-                with open("config.py", "r", encoding="utf-8") as f:
-                    cfg_code = f.read()
-                ast.parse(cfg_code)
-                print("✅ [CONFIG-UPDATE] config.py успешно обновлен и прошел проверку синтаксиса.")
+            before = {f: _file_hash(f) for f in WATCHED}
+            res = subprocess.run(["sh", "updatebot.sh"], capture_output=True, text=True)
+            if res.returncode != 0:
+                print(f"⚠️ [UPDATE] updatebot.sh завершился с ошибкой: {res.stderr}")
             else:
-                print(f"⚠️ Ошибка в updbotconfig.sh: {res_cfg.stderr}")
-        except SyntaxError as se:
-            print(f"❌ [CONFIG SYNTAX ERROR]: Обнаружена ошибка в config.py: {se}. Изменения отклонены!")
+                after = {f: _file_hash(f) for f in WATCHED}
+                changed = [f for f in WATCHED if before[f] != after[f]]
+                if not changed:
+                    print("✅ [UPDATE] Aucun changement (hash identique) — pas de redémarrage.")
+                else:
+                    # Filet de sécurité : re-parse les fichiers modifiés avant de redémarrer.
+                    valid = True
+                    for fname in changed:
+                        try:
+                            with open(fname, "r", encoding="utf-8") as f:
+                                ast.parse(f.read())
+                            print(f"🆕 [UPDATE] {fname} modifié — syntaxe OK.")
+                        except FileNotFoundError:
+                            print(f"⚠️ [UPDATE] {fname} disparu — ignoré.")
+                        except SyntaxError as se:
+                            print(f"❌ [SYNTAX ERROR] {fname}: {se}. Перезапуск отменён!")
+                            valid = False
+                    ok_to_restart = valid
         except Exception as e:
-            print(f"⚠️ [CONFIG-UPDATE SKIPPED]: {e}")
+            print(f"⚠️ [UPDATE SKIPPED]: {e}")
 
-        # 3. Если обновился хотя бы botv1.py без ошибок — делаем перезапуск процесса
-        if bot_ready_to_restart:
-            print("🔄 [RESTART] Применены безопасные обновления. Перезапуск процесса botv1.py...")
+        # Redémarrage uniquement si un fichier a changé ET est valide.
+        if ok_to_restart:
+            print("🔄 [RESTART] Fichier(s) modifié(s) et valides — перезапуск процесса...")
             try:
                 python_executable = sys.executable
                 os.execv(python_executable, [python_executable] + sys.argv)
             except Exception as err:
                 print(f"❌ Ошибка при перезапуске: {err}")
         else:
-            print("⚡ [SKIP RESTART] Основной файл бота не обновлялся или содержал ошибки. Перезапуск пропущен.")
+            print("⚡ [SKIP RESTART] Rien de neuf ou fichier invalide — перезапуск пропущен.")
 
 
 
