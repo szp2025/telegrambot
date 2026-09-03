@@ -1,13 +1,6 @@
 #!/usr/bin/env bash
 
-# Список файлов в формате "URL|целевой_путь"
-read -r -d '' FILES << 'EOF'
-https://raw.githubusercontent.com/szp2025/telegrambot/refs/heads/main/bot.py|botv1.py
-https://raw.githubusercontent.com/szp2025/telegrambot/refs/heads/main/private_config.py|private_config.py
-https://raw.githubusercontent.com/szp2025/telegrambot/refs/heads/main/updatebot.sh|storage/downloads/updatebot.sh
-EOF
-
-echo "$FILES" | while IFS= read -r item; do
+while IFS= read -r item || [ -n "$item" ]; do
     # Пропускаем пустые строки
     [ -z "$item" ] && continue
 
@@ -46,4 +39,8 @@ echo "$FILES" | while IFS= read -r item; do
         rm -f "$TEMP_FILE"
     fi
     echo "----------------------------------------"
-done
+done << 'EOF'
+https://raw.githubusercontent.com/szp2025/telegrambot/refs/heads/main/bot.py|botv1.py
+https://raw.githubusercontent.com/szp2025/telegrambot/refs/heads/main/private_config.py|private_config.py
+https://raw.githubusercontent.com/szp2025/telegrambot/refs/heads/main/updatebot.sh|storage/downloads/updatebot.sh
+EOF
